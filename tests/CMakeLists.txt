@@ -8,6 +8,12 @@ add_executable(flash3ds_tests
     test_place_object_tag.cpp
     test_display_list.cpp
     test_timeline.cpp
+    test_shape_records.cpp
+    test_define_shape_tag.cpp
+    test_character_dictionary.cpp
+    test_shape_tessellator.cpp
+    test_software_renderer.cpp
+    test_scene_renderer.cpp
 )
 
 target_include_directories(flash3ds_tests PRIVATE

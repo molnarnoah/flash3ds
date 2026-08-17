@@ -71,4 +71,52 @@ std::vector<uint8_t> buildRemoveObject2Bytes(uint16_t depth);
 // FrameLabel (tag 43) body: NUL-terminated name.
 std::vector<uint8_t> buildFrameLabelBytes(const std::string& name);
 
+// ---------------------------------------------------------------------
+// Phase 3: shape (FILLSTYLEARRAY/LINESTYLEARRAY/SHAPERECORD) and
+// DefineSprite body builders, independently bit-packed from the same
+// public SWF spec the production readers (ShapeRecords/DefineShapeTag)
+// implement.
+// ---------------------------------------------------------------------
+
+// A FILLSTYLEARRAY with exactly one solid-color fill style (count=1, type
+// 0x00, then RGB or RGBA depending on `shapeVersion` — DefineShape3+ uses
+// RGBA).
+std::vector<uint8_t> buildSolidFillStyleArrayBytes(uint8_t r, uint8_t g, uint8_t b, uint8_t a,
+                                                     int shapeVersion);
+
+// An empty (count=0) LINESTYLEARRAY.
+std::vector<uint8_t> buildEmptyLineStyleArrayBytes();
+
+// A LINESTYLEARRAY with exactly one line style.
+std::vector<uint8_t> buildSolidLineStyleArrayBytes(uint16_t widthTwips, uint8_t r, uint8_t g,
+                                                     uint8_t b, uint8_t a, int shapeVersion);
+
+// The SHAPERECORD stream (NumFillBits/NumLineBits + records +
+// EndShapeRecord) for a simple axis-aligned rectangle: MoveTo(0,0) with
+// fillStyle1=1 (and lineStyleIndex=1 if `withLine`), then three straight
+// edges (right, down, left) — the fourth (closing) edge back to the origin
+// is left implicit, matching how ShapeTessellator closes polygons.
+std::vector<uint8_t> buildRectShapeRecordsBytes(int32_t widthTwips, int32_t heightTwips,
+                                                 bool withLine = false);
+
+// A full ShapeWithStyle body (fill styles + line styles + shape records)
+// for a solid-filled rectangle, ready to follow a DefineShape tag's
+// CharacterId+Bounds fields.
+std::vector<uint8_t> buildSolidRectShapeWithStyleBytes(int shapeVersion, uint8_t r, uint8_t g,
+                                                         uint8_t b, uint8_t a,
+                                                         int32_t widthTwips, int32_t heightTwips);
+
+// A full DefineShape/DefineShape2/DefineShape3 tag body: CharacterId,
+// Bounds (RECT), then a solid-filled rectangle ShapeWithStyle.
+std::vector<uint8_t> buildDefineShapeBytes(int shapeVersion, uint16_t characterId,
+                                            int32_t widthTwips, int32_t heightTwips, uint8_t r,
+                                            uint8_t g, uint8_t b, uint8_t a);
+
+// A DefineSprite (tag 39) body: CharacterId, FrameCount, then each of
+// `nestedTags` written as TagRecords (an End tag is appended automatically
+// if the last entry isn't already code 0) — exactly the nested-tag-stream
+// shape CharacterDictionary::build() expects to scan.
+std::vector<uint8_t> buildDefineSpriteBytes(uint16_t characterId, uint16_t frameCount,
+                                             const std::vector<FixtureTag>& nestedTags);
+
 }  // namespace flash3ds::test::fixtures

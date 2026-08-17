@@ -32,6 +32,14 @@ struct Matrix {
     static Matrix identity() { return Matrix{}; }
 };
 
+// Composes a child's local transform with its parent's, producing the
+// child's world transform: concatMatrix(parent, child) applies `child`
+// first, then `parent` (standard nested-display-object convention — a
+// nested sprite's placement matrix is relative to its parent's coordinate
+// space). Equivalent to the usual 2x3 affine "parent * child" matrix
+// multiply.
+Matrix concatMatrix(const Matrix& parent, const Matrix& child);
+
 // RGBA color transform: output = input * mult + add, applied per channel.
 // Mult terms are stored as 8.8 fixed point in the SWF; here already
 // converted to double (default 1.0). Add terms are plain signed integers in

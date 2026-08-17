@@ -24,10 +24,16 @@ add_library(flash3ds_core
     src/swf/TagCode.cpp
     src/swf/TagDispatcher.cpp
     src/swf/PlaceObjectTag.cpp
+    src/swf/ShapeRecords.cpp
+    src/swf/DefineShapeTag.cpp
     src/swf/SwfLoader.cpp
     src/runtime/Movie.cpp
     src/runtime/DisplayList.cpp
     src/runtime/Timeline.cpp
+    src/runtime/CharacterDictionary.cpp
+    src/renderer/ShapeTessellator.cpp
+    src/renderer/SoftwareRenderer.cpp
+    src/renderer/SceneRenderer.cpp
 )
 
 target_include_directories(flash3ds_core PUBLIC

@@ -242,4 +242,138 @@ std::vector<uint8_t> buildFrameLabelBytes(const std::string& name) {
     return out;
 }
 
+// --- Phase 3: shape / sprite body builders ----------------------------
+
+std::vector<uint8_t> buildSolidFillStyleArrayBytes(uint8_t r, uint8_t g, uint8_t b, uint8_t a,
+                                                     int shapeVersion) {
+    std::vector<uint8_t> out;
+    writeU8(out, 1);     // count = 1
+    writeU8(out, 0x00);  // FillStyleType::kSolid
+    writeU8(out, r);
+    writeU8(out, g);
+    writeU8(out, b);
+    if (shapeVersion >= 3) {
+        writeU8(out, a);
+    }
+    return out;
+}
+
+std::vector<uint8_t> buildEmptyLineStyleArrayBytes() {
+    std::vector<uint8_t> out;
+    writeU8(out, 0);
+    return out;
+}
+
+std::vector<uint8_t> buildSolidLineStyleArrayBytes(uint16_t widthTwips, uint8_t r, uint8_t g,
+                                                     uint8_t b, uint8_t a, int shapeVersion) {
+    std::vector<uint8_t> out;
+    writeU8(out, 1);  // count = 1
+    writeU16(out, widthTwips);
+    writeU8(out, r);
+    writeU8(out, g);
+    writeU8(out, b);
+    if (shapeVersion >= 3) {
+        writeU8(out, a);
+    }
+    return out;
+}
+
+std::vector<uint8_t> buildRectShapeRecordsBytes(int32_t widthTwips, int32_t heightTwips,
+                                                 bool withLine) {
+    std::vector<uint8_t> out;
+    BitWriter bw(out);
+
+    int numFillBits = 1;  // fillStyle index 1 fits in 1 bit
+    int numLineBits = withLine ? 1 : 0;
+    bw.writeBits(static_cast<uint32_t>(numFillBits), 4);
+    bw.writeBits(static_cast<uint32_t>(numLineBits), 4);
+
+    // StyleChangeRecord: MoveTo(0,0), FillStyle1=1[, LineStyle=1]. Field
+    // order matches ShapeRecords.cpp's read order: NewStyles, LineStyle,
+    // FillStyle1, FillStyle0, MoveTo flag bits, then (if set) MoveTo data,
+    // FillStyle0 index, FillStyle1 index, LineStyle index.
+    bw.writeBits(0, 1);                  // TypeFlag = 0 (style-change, not edge)
+    bw.writeBits(0, 1);                  // NewStyles
+    bw.writeBits(withLine ? 1 : 0, 1);   // LineStyle
+    bw.writeBits(1, 1);                  // FillStyle1
+    bw.writeBits(0, 1);                  // FillStyle0
+    bw.writeBits(1, 1);                  // MoveTo
+    bw.writeBits(1, 5);                  // MoveBits = 1 (enough to encode 0)
+    bw.writeBits(0, 1);                  // MoveToX = 0
+    bw.writeBits(0, 1);                  // MoveToY = 0
+    bw.writeBits(1u & ((1u << numFillBits) - 1u), numFillBits);  // FillStyle1 index = 1
+    if (withLine) {
+        bw.writeBits(1u & ((1u << numLineBits) - 1u), numLineBits);  // LineStyle index = 1
+    }
+
+    auto writeStraightEdge = [&](int32_t dx, int32_t dy, bool vertical) {
+        int32_t magnitude = vertical ? dy : dx;
+        int bits = std::max(2, bitsNeededSigned(magnitude));
+        bw.writeBits(1, 1);                                 // TypeFlag = 1 (edge)
+        bw.writeBits(1, 1);                                 // StraightFlag = 1
+        bw.writeBits(static_cast<uint32_t>(bits - 2), 4);   // NumBits - 2
+        bw.writeBits(0, 1);                                 // GeneralLineFlag = 0
+        bw.writeBits(vertical ? 1 : 0, 1);                  // VertLineFlag
+        bw.writeBits(static_cast<uint32_t>(magnitude) & ((1u << bits) - 1u), bits);
+    };
+
+    // Three explicit edges (right, down, left); the closing edge back to
+    // the MoveTo origin is left implicit, same as ShapeTessellator's
+    // implicit-closure convention.
+    writeStraightEdge(widthTwips, 0, false);
+    writeStraightEdge(0, heightTwips, true);
+    writeStraightEdge(-widthTwips, 0, false);
+
+    // EndShapeRecord: TypeFlag=0 followed by five zero flag bits.
+    bw.writeBits(0, 1);
+    bw.writeBits(0, 5);
+    bw.byteAlign();
+
+    return out;
+}
+
+std::vector<uint8_t> buildSolidRectShapeWithStyleBytes(int shapeVersion, uint8_t r, uint8_t g,
+                                                         uint8_t b, uint8_t a,
+                                                         int32_t widthTwips,
+                                                         int32_t heightTwips) {
+    std::vector<uint8_t> out = buildSolidFillStyleArrayBytes(r, g, b, a, shapeVersion);
+    auto lineStyles = buildEmptyLineStyleArrayBytes();
+    out.insert(out.end(), lineStyles.begin(), lineStyles.end());
+    auto records = buildRectShapeRecordsBytes(widthTwips, heightTwips, false);
+    out.insert(out.end(), records.begin(), records.end());
+    return out;
+}
+
+std::vector<uint8_t> buildDefineShapeBytes(int shapeVersion, uint16_t characterId,
+                                            int32_t widthTwips, int32_t heightTwips, uint8_t r,
+                                            uint8_t g, uint8_t b, uint8_t a) {
+    std::vector<uint8_t> out;
+    writeU16(out, characterId);
+    writeRect(out, 0, widthTwips, 0, heightTwips);
+    auto shapeBytes =
+        buildSolidRectShapeWithStyleBytes(shapeVersion, r, g, b, a, widthTwips, heightTwips);
+    out.insert(out.end(), shapeBytes.begin(), shapeBytes.end());
+    return out;
+}
+
+std::vector<uint8_t> buildDefineSpriteBytes(uint16_t characterId, uint16_t frameCount,
+                                             const std::vector<FixtureTag>& nestedTags) {
+    std::vector<uint8_t> out;
+    writeU16(out, characterId);
+    writeU16(out, frameCount);
+
+    bool sawEnd = false;
+    for (const auto& tag : nestedTags) {
+        writeTagHeader(out, tag.code, static_cast<uint32_t>(tag.body.size()));
+        out.insert(out.end(), tag.body.begin(), tag.body.end());
+        if (tag.code == 0) {
+            sawEnd = true;
+        }
+    }
+    if (!sawEnd) {
+        writeTagHeader(out, 0 /* End */, 0);
+    }
+    return out;
+}
+
 }  // namespace flash3ds::test::fixtures

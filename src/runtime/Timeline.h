@@ -1,11 +1,13 @@
 // Timeline.h
 //
-// Phase 2 timeline/playhead model for a Movie's top-level (main) timeline.
-// Nested timelines (DefineSprite/MovieClip bodies) are Phase 3+ — this only
-// walks the Movie's own tag list.
+// A timeline/playhead model for any SWF-style tag stream that contains
+// ShowFrame boundaries: a Movie's own top-level tags, OR a DefineSprite
+// character's nested control-tag stream (see CharacterDictionary.h) — both
+// are just "a list of TagRecords with ShowFrame markers" as far as Timeline
+// is concerned.
 //
-// Groups the flat Movie::tags list into per-frame buckets at ShowFrame
-// boundaries, then lets a caller drive a playhead over those frames
+// Groups the given tag list into per-frame buckets at ShowFrame boundaries,
+// then lets a caller drive a playhead over those frames
 // (gotoAndStop/gotoAndPlay/nextFrame/prevFrame/play/stop), maintaining a
 // DisplayList that reflects PlaceObject/PlaceObject2/RemoveObject/
 // RemoveObject2 tags cumulatively up to the current frame — exactly like a
@@ -28,10 +30,18 @@ namespace flash3ds::runtime {
 
 class Timeline {
 public:
-    // Builds a Timeline from `movie`'s top-level tags. `movie` must outlive
-    // the returned Timeline (it is not copied — Timeline reads tag bodies
-    // out of movie.data on demand while replaying frames). Returns nullptr
-    // if `movie` isn't valid.
+    // Builds a Timeline from an explicit tag list (e.g. a DefineSprite
+    // character's nested control tags — see CharacterDictionary.h). `tags`
+    // is copied (it's typically small); tag *bodies* are still read from
+    // `movie.data` on demand via Movie::tagBodyReader, so bodyOffset values
+    // in `tags` must be valid absolute offsets into `movie.data`. `movie`
+    // must outlive the returned Timeline. Returns nullptr if `movie` isn't
+    // valid.
+    static std::unique_ptr<Timeline> build(const Movie& movie,
+                                            const std::vector<swf::TagRecord>& tags);
+
+    // Convenience overload: builds a Timeline from `movie`'s own top-level
+    // tags (movie.tags).
     static std::unique_ptr<Timeline> build(const Movie& movie);
 
     // Total number of frames, i.e. the number of ShowFrame tags actually
@@ -81,7 +91,7 @@ public:
 
 private:
     struct FrameOps {
-        std::vector<size_t> tagIndices;  // indices into movie_->tags
+        std::vector<size_t> tagIndices;  // indices into tags_
     };
 
     explicit Timeline(const Movie& movie) : movie_(&movie) {}
@@ -92,6 +102,7 @@ private:
     void applyFrame(uint32_t frameIndex);
 
     const Movie* movie_;
+    std::vector<swf::TagRecord> tags_;
     std::vector<FrameOps> frames_;
     std::vector<std::pair<std::string, uint32_t>> labels_;  // name -> 1-based frame index
 

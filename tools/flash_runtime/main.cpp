@@ -2,22 +2,34 @@
 //
 // Usage:
 //   flash_runtime <file.swf> [--debug] [--quiet] [--timeline]
+//                            [--render <frame> <out.ppm>]
 //
 // Prints SWF version, compression, stage size, frame rate, frame count, the
 // full tag list, and whether ActionScript bytecode is present — per the
 // project spec (section 21). --timeline additionally builds a Phase 2
-// Timeline and prints a per-frame display-list summary.
+// Timeline and prints a per-frame display-list summary. --render (Phase 3)
+// resolves characters, walks the given frame's display list through
+// SceneRenderer/SoftwareRenderer, and writes a binary PPM snapshot.
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
 #include "platform/Log.h"
+#include "renderer/SceneRenderer.h"
+#include "renderer/SoftwareRenderer.h"
+#include "runtime/CharacterDictionary.h"
 #include "runtime/Timeline.h"
 #include "swf/SwfLoader.h"
 
 using flash3ds::Log;
 using flash3ds::LogLevel;
+using flash3ds::renderer::SceneRenderer;
+using flash3ds::renderer::SoftwareRenderer;
+using flash3ds::runtime::CharacterDictionary;
 using flash3ds::runtime::Timeline;
 using flash3ds::swf::SwfLoader;
 
@@ -26,11 +38,54 @@ namespace {
 void printUsage(const char* argv0) {
     std::fprintf(stderr,
                   "Usage: %s <file.swf> [--debug] [--quiet] [--timeline]\n"
+                  "                     [--render <frame> <out.ppm>]\n"
                   "\n"
-                  "  --debug     enable verbose [SWF] tag-by-tag logging\n"
-                  "  --quiet     suppress logging, print only the summary report\n"
-                  "  --timeline  print a per-frame display-list summary (Phase 2)\n",
+                  "  --debug             enable verbose [SWF] tag-by-tag logging\n"
+                  "  --quiet             suppress logging, print only the summary report\n"
+                  "  --timeline          print a per-frame display-list summary (Phase 2)\n"
+                  "  --render F OUT.ppm  render frame F to a binary PPM file (Phase 3)\n",
                   argv0);
+}
+
+// Renders `frameIndex` (1-based) of `movie`'s top-level timeline to a PPM
+// file at `outPath`, sized to the movie's stage dimensions in pixels
+// (minimum 1x1 so a degenerate/zero-size stage still produces a file).
+// Returns false (and prints an error) on any failure.
+bool renderFrameToPpm(const flash3ds::runtime::Movie& movie, uint32_t frameIndex,
+                       const std::string& outPath) {
+    auto timeline = Timeline::build(movie);
+    if (!timeline) {
+        std::fprintf(stderr, "--render: could not build timeline (movie invalid)\n");
+        return false;
+    }
+    if (timeline->frameCount() == 0) {
+        std::fprintf(stderr, "--render: movie has no frames\n");
+        return false;
+    }
+    if (frameIndex < 1 || frameIndex > timeline->frameCount()) {
+        std::fprintf(stderr, "--render: frame %u out of range [1, %u]\n", frameIndex,
+                      timeline->frameCount());
+        return false;
+    }
+    timeline->gotoAndStop(frameIndex);
+
+    CharacterDictionary characters = CharacterDictionary::build(movie);
+
+    int width = std::max(1, static_cast<int>(std::lround(movie.frameSize.widthPixels())));
+    int height = std::max(1, static_cast<int>(std::lround(movie.frameSize.heightPixels())));
+
+    SoftwareRenderer renderer(width, height);
+    SceneRenderer scene(movie, characters);
+    scene.render(*timeline, renderer, width, height);
+
+    if (!renderer.writePpm(outPath)) {
+        std::fprintf(stderr, "--render: failed to write '%s'\n", outPath.c_str());
+        return false;
+    }
+
+    std::printf("\n-- Render -- wrote frame %u (%dx%d px) to %s\n", frameIndex, width, height,
+                 outPath.c_str());
+    return true;
 }
 
 void printTimeline(const flash3ds::runtime::Movie& movie) {
@@ -79,6 +134,9 @@ int main(int argc, char** argv) {
     std::string path;
     LogLevel level = LogLevel::kInfo;
     bool showTimeline = false;
+    bool doRender = false;
+    uint32_t renderFrame = 0;
+    std::string renderOutPath;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -88,6 +146,16 @@ int main(int argc, char** argv) {
             level = LogLevel::kNone;
         } else if (arg == "--timeline") {
             showTimeline = true;
+        } else if (arg == "--render") {
+            if (i + 2 >= argc) {
+                std::fprintf(stderr, "--render requires two arguments: <frame> <out.ppm>\n");
+                printUsage(argv[0]);
+                return 1;
+            }
+            renderFrame = static_cast<uint32_t>(std::strtoul(argv[i + 1], nullptr, 10));
+            renderOutPath = argv[i + 2];
+            doRender = true;
+            i += 2;
         } else if (!arg.empty() && arg[0] == '-') {
             std::fprintf(stderr, "Unknown option: %s\n", arg.c_str());
             printUsage(argv[0]);
@@ -135,6 +203,12 @@ int main(int argc, char** argv) {
 
     if (showTimeline) {
         printTimeline(*movie);
+    }
+
+    if (doRender) {
+        if (!renderFrameToPpm(*movie, renderFrame, renderOutPath)) {
+            return 3;
+        }
     }
 
     return 0;

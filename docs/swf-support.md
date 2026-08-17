@@ -86,11 +86,71 @@ This is intentionally simple (and covered by the backward-jump test in
 `tests/test_timeline.cpp`) rather than incremental; revisit if profiling
 ever shows it matters for a real target movie's frame count.
 
+## Phase 3 (current)
+
+Adds shape parsing, a character dictionary (shapes + nested-sprite
+timelines), matrix composition, tessellation, and a basic software
+renderer on top of Phase 2's Timeline/DisplayList. See `docs/renderer.md`
+for the renderer architecture and known limitations.
+
+### Records
+
+| Record | Status |
+|---|---|
+| `concatMatrix(parent, child)` (world-transform composition) | ✅ |
+
+### Shape sub-format (`src/swf/ShapeRecords.h/.cpp`)
+
+| Feature | Status |
+|---|---|
+| `FILLSTYLEARRAY` — solid fills | ✅ |
+| `FILLSTYLEARRAY` — linear/radial/focal-radial gradient fills | ✅ parsed (matrix + gradient stops); rendered as a single averaged flat color (no real gradient rendering yet) |
+| `FILLSTYLEARRAY` — bitmap fills (repeating/clipped, smoothed/non-smoothed) | ✅ parsed (character ID + matrix); rendered as a flat gray placeholder (bitmap decoding not implemented) |
+| `LINESTYLEARRAY` (LineStyle1) | ✅ |
+| `LineStyle2` (DefineShape4) | ❌ not implemented |
+| `SHAPERECORD` stream: StyleChangeRecord (MoveTo, style indices, new-styles sub-array) | ✅ |
+| `SHAPERECORD` stream: StraightEdgeRecord | ✅ |
+| `SHAPERECORD` stream: CurvedEdgeRecord (quadratic bezier) | ✅ parsed; flattened to line segments at render time (`ShapeTessellator`) |
+
+### Tag body parsing
+
+| Tag | Status |
+|---|---|
+| `DefineShape` (2) | ✅ |
+| `DefineShape2` (22) | ✅ |
+| `DefineShape3` (32) | ✅ (RGBA solid/gradient/line colors) |
+| `DefineShape4` (83) | ❌ not implemented — `parseDefineShape` returns `std::nullopt` for this tag code |
+| `DefineSprite` (39) | ✅ header (CharacterId/FrameCount) + nested control-tag stream scan (absolute offsets into `Movie::data` — see `CharacterDictionary.h`) |
+| `DefineBits*` / `DefineText*` / `DefineFont*` / `DefineButton*` | ❌ still name/offset/length only (Phase 8+) |
+| `SetBackgroundColor` | ❌ not parsed — renderer always clears to white |
+| All other unlisted tags | ❌ still name/offset/length only |
+
+### Character resolution
+
+| Feature | Status |
+|---|---|
+| `CharacterDictionary::build()` — resolves `DefineShape`/`2`/`3` and `DefineSprite` character IDs | ✅ |
+| Nested `DefineSprite` tag streams reusable by `Timeline` (shared code path with top-level movie tags, no duplication) | ✅ |
+| Bitmap/Text/Button character resolution | ❌ Phase 8+ |
+
+### Rendering
+
+| Feature | Status |
+|---|---|
+| `IRenderer` abstraction (`beginFrame`/`endFrame`/`fillPolygon`/`strokePolyline`) | ✅ |
+| `SoftwareRenderer` (RGBA8 framebuffer, even-odd scanline fill with alpha blending, naive stroke rasterizer, PPM output) | ✅ desktop/testing implementation |
+| `ShapeTessellator` (SHAPERECORD stream → flat polygons/polylines) | ✅ **simplified**: one closed polygon per MoveTo run, no edge-boundary merging — see `docs/renderer.md` for exactly what this does and doesn't render correctly |
+| `SceneRenderer` (DisplayList walk, character resolution, `concatMatrix` world-transform composition, recursive sprite rendering) | ✅ |
+| Independent per-instance sprite playhead | ❌ Phase 4/5 (AVM1 + MovieClip API) — see `docs/renderer.md` |
+| `ColorTransform` / clip-depth application at render time | ❌ later phase — parsed and stored, not yet applied |
+| Nintendo 3DS backend (`Nintendo3DSRenderer`) | ❌ Phase 10 |
+| CLI `--render <frame> <out.ppm>` | ✅ |
+
 ### Not yet implemented (by design — later phases)
 
-- Shape / Sprite / Bitmap / Text rendering, nested MovieClip timelines (Phase 3, 8)
+- Bitmap / Text / Button rendering, `LineStyle2`/`DefineShape4`, real gradient rendering, `ColorTransform` application (Phase 8, or earlier if a target title needs it)
 - AVM1 VM (Phase 4)
-- MovieClip API / `_root` / properties / `onClipEvent` (Phase 5)
+- MovieClip API / `_root` / properties / `onClipEvent` / independent sprite playheads (Phase 5)
 - Sound / Input (Phase 6)
 - ExternalInterface (Phase 7)
 - Nintendo 3DS backend (Phase 10)

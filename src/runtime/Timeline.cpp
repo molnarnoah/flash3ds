@@ -8,7 +8,8 @@
 
 namespace flash3ds::runtime {
 
-std::unique_ptr<Timeline> Timeline::build(const Movie& movie) {
+std::unique_ptr<Timeline> Timeline::build(const Movie& movie,
+                                           const std::vector<swf::TagRecord>& tags) {
     if (!movie.valid) {
         return nullptr;
     }
@@ -16,10 +17,11 @@ std::unique_ptr<Timeline> Timeline::build(const Movie& movie) {
     // Use a raw `new` since the constructor is private and make_unique
     // can't reach it from outside the class.
     std::unique_ptr<Timeline> timeline(new Timeline(movie));
+    timeline->tags_ = tags;
 
     Timeline::FrameOps current;
-    for (size_t i = 0; i < movie.tags.size(); ++i) {
-        const swf::TagRecord& tag = movie.tags[i];
+    for (size_t i = 0; i < timeline->tags_.size(); ++i) {
+        const swf::TagRecord& tag = timeline->tags_[i];
         current.tagIndices.push_back(i);
 
         if (static_cast<swf::TagCode>(tag.code) == swf::TagCode::FrameLabel) {
@@ -49,18 +51,21 @@ std::unique_ptr<Timeline> Timeline::build(const Movie& movie) {
                   current.tagIndices.size());
     }
 
-    if (movie.frameCount != timeline->frameCount()) {
-        LOG_WARN("TIMELINE",
-                  "Header FrameCount=%u does not match actual ShowFrame count=%u",
-                  movie.frameCount, timeline->frameCount());
-    }
-
     if (timeline->frameCount() > 0) {
         timeline->applyFrame(1);
         timeline->currentFrame_ = 1;
         timeline->playing_ = true;
     }
 
+    return timeline;
+}
+
+std::unique_ptr<Timeline> Timeline::build(const Movie& movie) {
+    auto timeline = build(movie, movie.tags);
+    if (timeline && movie.frameCount != timeline->frameCount()) {
+        LOG_WARN("TIMELINE", "Header FrameCount=%u does not match actual ShowFrame count=%u",
+                  movie.frameCount, timeline->frameCount());
+    }
     return timeline;
 }
 
@@ -71,7 +76,7 @@ void Timeline::applyFrame(uint32_t frameIndex) {
     }
     for (uint32_t f = 1; f <= frameIndex; ++f) {
         for (size_t tagIndex : frames_[f - 1].tagIndices) {
-            const swf::TagRecord& tag = movie_->tags[tagIndex];
+            const swf::TagRecord& tag = tags_[tagIndex];
             auto code = static_cast<swf::TagCode>(tag.code);
 
             if (code == swf::TagCode::PlaceObject || code == swf::TagCode::PlaceObject2) {
@@ -97,7 +102,7 @@ void Timeline::applyFrame(uint32_t frameIndex) {
             // Other tags (ShowFrame, FrameLabel, DoAction, character
             // definitions, ...) don't affect the display list directly at
             // this phase — DoAction execution is Phase 4, character
-            // definitions are consumed by Phase 3's shape/sprite layer.
+            // definitions are consumed by CharacterDictionary/SceneRenderer.
         }
     }
 }

@@ -26,20 +26,28 @@ that inspired it.
 
 ## Current status
 
-**Phase 1 and Phase 2 complete and committed** (see `git log`). Phase 1: SWF
-loading (FWS/CWS), header parsing, generic tag scan with logging, CLI
-inspector. Phase 2: MATRIX/CXFORM record readers, PlaceObject/PlaceObject2/
-RemoveObject/RemoveObject2/FrameLabel tag-body parsing, depth-indexed
-`DisplayList` (add/replace/update-in-place/remove), and `Timeline` with full
-playhead control (`gotoAndStop`/`gotoAndPlay` by frame or label,
-`nextFrame`/`prevFrame`/`play`/`stop`/`advanceOneFrame`). 42 passing unit
-tests, zero compiler warnings (`-Wall -Wextra`).
+**Phase 1, Phase 2, and Phase 3 complete and committed** (see `git log`).
+Phase 1: SWF loading (FWS/CWS), header parsing, generic tag scan with
+logging, CLI inspector. Phase 2: MATRIX/CXFORM record readers,
+PlaceObject/PlaceObject2/RemoveObject/RemoveObject2/FrameLabel tag-body
+parsing, depth-indexed `DisplayList` (add/replace/update-in-place/remove),
+and `Timeline` with full playhead control (`gotoAndStop`/`gotoAndPlay` by
+frame or label, `nextFrame`/`prevFrame`/`play`/`stop`/`advanceOneFrame`).
+Phase 3: `DefineShape`/`2`/`3` parsing (fill/line styles + SHAPERECORD
+stream), `CharacterDictionary` (characterId -> Shape/Sprite, including
+nested `DefineSprite` tag streams reusing `Timeline`), `concatMatrix`
+world-transform composition, a deliberately simplified `ShapeTessellator`,
+an `IRenderer`/`SoftwareRenderer` (scanline fill, PPM output), and a
+`SceneRenderer` that walks the display list and recurses into sprites, plus
+a CLI `--render <frame> <out.ppm>` flag. 70 passing unit tests, zero
+compiler warnings (`-Wall -Wextra`) on a full clean rebuild.
 
-Read `docs/architecture.md` for the full 10-phase plan and
-`docs/swf-support.md` for the current feature matrix before starting new
-work. **Do not jump ahead of the current phase** — the project spec is
-explicit about working phase-by-phase, building + testing + documenting at
-the end of each one.
+Read `docs/architecture.md` for the full 10-phase plan, `docs/swf-support.md`
+for the current feature matrix, and `docs/renderer.md` for the renderer's
+specific (documented, deliberate) limitations before starting new work.
+**Do not jump ahead of the current phase** — the project spec is explicit
+about working phase-by-phase, building + testing + documenting at the end
+of each one.
 
 ## Workflow for every phase
 
@@ -51,20 +59,23 @@ the end of each one.
 5. `git add -A && git commit` with a clear summary of what shipped in that
    phase.
 
-## Next phase (Phase 3)
+## Next phase (Phase 4)
 
-Shape / Sprite / transformations / basic renderer. This is the first phase
-that needs an actual pixel output path (`IRenderer` abstraction, per
-`docs/renderer.md`) and real character definitions (`DefineShape`/`2`/`3`,
-`DefineSprite` parsing — `DefineSprite` bodies are themselves nested tag
-streams with their own frame/ShowFrame structure, so expect to generalize
-`Timeline` to work on *any* tag range, not just a `Movie`'s top-level tags,
-rather than duplicating the frame-grouping logic for nested MovieClips).
-Builds on `Movie`/`DisplayList`/`Timeline` already in `src/runtime/` —
-extend, don't replace. `DisplayListEntry::characterId` currently has
-nothing to resolve to; Phase 3 is where a character table
-(id -> Shape/Sprite definition) needs to be added to `Movie` or a new
-`CharacterDictionary` type.
+AVM1 VM — basic opcode set. This is the first phase that needs an actual
+bytecode interpreter: `Value`/`Stack`/`Scope`/`GlobalObject`/
+`ExecutionContext` types, and an opcode dispatch loop over `DoAction`
+tag bodies (currently parsed as raw bytes and skipped — see
+`docs/avm1-support.md`, still a stub). Do NOT implement AVM2/ActionScript 3
+— out of scope per the project spec.
+
+Builds on Phase 3's `CharacterDictionary`/`Timeline`/`SceneRenderer` — AVM1
+will eventually need to call back into `Timeline` (`gotoAndStop`, etc.) and
+`DisplayList` (property access on `MovieClip` instances), but Phase 4 itself
+should focus on getting the interpreter loop and a basic opcode set correct
+in isolation first (per the project spec's "small test SWFs, regression test
+for every bug" TDD approach) before wiring it into the scene graph — that
+wiring, plus the MovieClip API surface (`_root`, per-instance playheads,
+`onClipEvent`), is Phase 5.
 
 ## Build
 
