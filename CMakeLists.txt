@@ -34,6 +34,12 @@ add_library(flash3ds_core
     src/renderer/ShapeTessellator.cpp
     src/renderer/SoftwareRenderer.cpp
     src/renderer/SceneRenderer.cpp
+    src/avm1/Value.cpp
+    src/avm1/ActionCode.cpp
+    src/avm1/Scope.cpp
+    src/avm1/GlobalObject.cpp
+    src/avm1/ExecutionContext.cpp
+    src/avm1/Interpreter.cpp
 )
 
 target_include_directories(flash3ds_core PUBLIC

@@ -21,7 +21,7 @@ SWF Parser         (src/swf/SwfReader.*, TagDispatcher.*, TagCode.*)
    +-------------------+
    |                    |
    v                    v
-Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 not started
+Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 done (not yet wired in)
    |                    |
    +---------+----------+
              |
@@ -47,22 +47,35 @@ The runtime is deliberately modular so the renderer, audio, input, and
 platform layers can be swapped for Nintendo 3DS-specific implementations
 later without touching the SWF/AVM1 core.
 
-## Current status: Phase 3
+## Current status: Phase 4
 
 Phase 1 built **SWF Loader → SWF Parser** (flat tag list). Phase 2 added
 **Timeline → Display List**: `PlaceObject`/`PlaceObject2`/`RemoveObject`/
 `RemoveObject2`/`FrameLabel` tag-body parsing, a depth-indexed
 `DisplayList`, and a `Timeline` with playhead control
 (`gotoAndStop`/`gotoAndPlay`/`nextFrame`/`prevFrame`/`play`/`stop`). Phase 3
-adds **Shape/Sprite → Renderer**: `DefineShape`/`2`/`3` parsing (fill/line
+added **Shape/Sprite → Renderer**: `DefineShape`/`2`/`3` parsing (fill/line
 styles + SHAPERECORD stream), a `CharacterDictionary` resolving character
 IDs to shapes and nested `DefineSprite` timelines, `concatMatrix` world-
 transform composition, a (deliberately simplified) `ShapeTessellator`, and
 a `SoftwareRenderer`/`SceneRenderer` pair that walks the display list and
-recurses into sprites, plus a CLI `--render` flag. AVM1, text/bitmap/button
-rendering, and per-instance sprite playheads still don't exist — see
-[swf-support.md](swf-support.md) for the exact feature matrix and
-[renderer.md](renderer.md) for the renderer's specific limitations.
+recurses into sprites, plus a CLI `--render` flag. Phase 4 adds the **AVM1
+VM**: a `Value`/`Object` dynamic-type model with prototype-chain member
+lookup and Array semantics, `Stack`/`Scope`/`GlobalObject`/
+`ExecutionContext`, and a tree-walking `Interpreter` covering the full
+AVM1 opcode set — arithmetic/comparison/bitwise/string ops, variables,
+objects/arrays, function definition and calling (including
+`DefineFunction2` register parameters/preload flags, closures, and
+recursion with a bounded call depth), and control flow (`Jump`/`If`). The
+VM is deliberately tested **in isolation** against raw bytecode buffers; it
+is not yet wired into `DoAction` tag dispatch, `Timeline`, or
+`DisplayList` — `HostBindings` exists as the seam but every MovieClip-
+affecting action (`GotoFrame`, `Play`, `SetProperty`, ...) is currently a
+no-op stub. Text/bitmap/button rendering and per-instance sprite playheads
+also still don't exist — see [swf-support.md](swf-support.md) for the exact
+feature matrix, [renderer.md](renderer.md) for the renderer's specific
+limitations, and [avm1-support.md](avm1-support.md) for the AVM1 opcode
+support matrix and documented confidence levels.
 
 ## Module layout
 
@@ -94,6 +107,19 @@ src/
               ShapeTessellator.h/.cpp     — Shape -> flat polygons/polylines
               SceneRenderer.h/.cpp        — DisplayList walk -> IRenderer,
                                              recursive sprite rendering
+  avm1/       Value.h/.cpp                — dynamic Value/Object type model,
+                                             prototype chain, Array semantics
+              Stack.h                     — AVM1 operand stack
+              Scope.h/.cpp                — scope chain (variable lookup)
+              GlobalObject.h/.cpp         — global object construction
+              ActionCode.h/.cpp           — AVM1 opcode enum + name table
+              HostBindings.h              — abstract seam to MovieClip/
+                                             Timeline actions (no-op stubs;
+                                             wired up in Phase 5)
+              ExecutionContext.h/.cpp     — stack+scope+registers+constant
+                                             pool+globals for one call frame
+              Interpreter.h/.cpp          — tree-walking bytecode dispatch
+                                             loop over DoAction bodies
 tools/
   flash_runtime/main.cpp                  — CLI SWF inspector (+ --timeline, --render)
 tests/

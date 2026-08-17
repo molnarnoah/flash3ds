@@ -26,9 +26,9 @@ that inspired it.
 
 ## Current status
 
-**Phase 1, Phase 2, and Phase 3 complete and committed** (see `git log`).
-Phase 1: SWF loading (FWS/CWS), header parsing, generic tag scan with
-logging, CLI inspector. Phase 2: MATRIX/CXFORM record readers,
+**Phase 1, Phase 2, Phase 3, and Phase 4 complete and committed** (see
+`git log`). Phase 1: SWF loading (FWS/CWS), header parsing, generic tag
+scan with logging, CLI inspector. Phase 2: MATRIX/CXFORM record readers,
 PlaceObject/PlaceObject2/RemoveObject/RemoveObject2/FrameLabel tag-body
 parsing, depth-indexed `DisplayList` (add/replace/update-in-place/remove),
 and `Timeline` with full playhead control (`gotoAndStop`/`gotoAndPlay` by
@@ -39,15 +39,26 @@ nested `DefineSprite` tag streams reusing `Timeline`), `concatMatrix`
 world-transform composition, a deliberately simplified `ShapeTessellator`,
 an `IRenderer`/`SoftwareRenderer` (scanline fill, PPM output), and a
 `SceneRenderer` that walks the display list and recurses into sprites, plus
-a CLI `--render <frame> <out.ppm>` flag. 70 passing unit tests, zero
-compiler warnings (`-Wall -Wextra`) on a full clean rebuild.
+a CLI `--render <frame> <out.ppm>` flag. Phase 4: the AVM1 VM — a
+`Value`/`Object` dynamic-type model (prototype chain, Array semantics),
+`Stack`/`Scope`/`GlobalObject`/`ExecutionContext`, and a tree-walking
+`Interpreter` covering the full AVM1 opcode set (arithmetic/comparison/
+bitwise/string ops, variables, objects/arrays, function definition/calling
+including `DefineFunction2` register params + preload flags, closures,
+bounded-depth recursion, and `Jump`/`If` control flow). `HostBindings`
+exists as the seam to MovieClip/Timeline actions but is all no-op stubs —
+the VM is tested purely in isolation against raw bytecode buffers and is
+**not yet wired into `DoAction` tag dispatch or the scene graph**. 114
+passing unit tests, zero compiler warnings (`-Wall -Wextra`) on a full
+clean rebuild.
 
 Read `docs/architecture.md` for the full 10-phase plan, `docs/swf-support.md`
-for the current feature matrix, and `docs/renderer.md` for the renderer's
-specific (documented, deliberate) limitations before starting new work.
-**Do not jump ahead of the current phase** — the project spec is explicit
-about working phase-by-phase, building + testing + documenting at the end
-of each one.
+for the current SWF feature matrix, `docs/renderer.md` for the renderer's
+specific (documented, deliberate) limitations, and `docs/avm1-support.md`
+for the AVM1 opcode support matrix and documented confidence levels before
+starting new work. **Do not jump ahead of the current phase** — the
+project spec is explicit about working phase-by-phase, building + testing
++ documenting at the end of each one.
 
 ## Workflow for every phase
 
@@ -59,23 +70,31 @@ of each one.
 5. `git add -A && git commit` with a clear summary of what shipped in that
    phase.
 
-## Next phase (Phase 4)
+## Next phase (Phase 5)
 
-AVM1 VM — basic opcode set. This is the first phase that needs an actual
-bytecode interpreter: `Value`/`Stack`/`Scope`/`GlobalObject`/
-`ExecutionContext` types, and an opcode dispatch loop over `DoAction`
-tag bodies (currently parsed as raw bytes and skipped — see
-`docs/avm1-support.md`, still a stub). Do NOT implement AVM2/ActionScript 3
-— out of scope per the project spec.
+MovieClip API / scene-graph wiring. Phase 4 built and thoroughly tested the
+AVM1 interpreter in isolation; Phase 5 connects it to the rest of the
+runtime:
 
-Builds on Phase 3's `CharacterDictionary`/`Timeline`/`SceneRenderer` — AVM1
-will eventually need to call back into `Timeline` (`gotoAndStop`, etc.) and
-`DisplayList` (property access on `MovieClip` instances), but Phase 4 itself
-should focus on getting the interpreter loop and a basic opcode set correct
-in isolation first (per the project spec's "small test SWFs, regression test
-for every bug" TDD approach) before wiring it into the scene graph — that
-wiring, plus the MovieClip API surface (`_root`, per-instance playheads,
-`onClipEvent`), is Phase 5.
+- Dispatch `DoAction` (and `DoInitAction`) tag bodies through
+  `Interpreter::execute` during `Timeline` frame advance, instead of the
+  current parse-and-skip.
+- Implement `HostBindings` for real against `Timeline`/`DisplayList`:
+  `GotoFrame`/`GotoLabel`/`Play`/`Stop`/`NextFrame`/`PreviousFrame`,
+  `GetProperty`/`SetProperty` (`_x`/`_y`/`_alpha`/`_visible`/`_rotation`/
+  etc.), `CloneSprite`/`RemoveSprite`, `StartDrag`/`EndDrag`, `SetTarget`.
+- Give each `MovieClip` (sprite) **instance** its own independent playhead
+  — `SceneRenderer` currently caches one shared `Timeline` per *character*,
+  documented as a Phase 3 limitation; Phase 5 needs one per *instance*.
+- Expose the display-list tree as AVM1 objects: `_root`, `_parent`,
+  named child references (`this.childName`), so `GetVariable`/`SetVariable`
+  and `GetMember` can resolve MovieClip properties and nested clips.
+- `onClipEvent`/button `on()` handler wiring (event-driven AVM1 code, not
+  just frame-script `DoAction`).
+
+Do NOT implement AVM2/ActionScript 3 — out of scope per the project spec.
+Keep following the TDD pattern: small test SWFs / programmatic fixtures,
+regression test for every bug, build phase-by-phase.
 
 ## Build
 

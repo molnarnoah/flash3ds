@@ -1,0 +1,111 @@
+#include "avm1/ActionCode.h"
+
+namespace flash3ds::avm1 {
+
+const char* actionCodeName(uint8_t code) {
+    switch (static_cast<ActionCode>(code)) {
+        case ActionCode::End: return "End";
+        case ActionCode::NextFrame: return "NextFrame";
+        case ActionCode::PreviousFrame: return "PreviousFrame";
+        case ActionCode::Play: return "Play";
+        case ActionCode::Stop: return "Stop";
+        case ActionCode::ToggleQuality: return "ToggleQuality";
+        case ActionCode::StopSounds: return "StopSounds";
+        case ActionCode::Add: return "Add";
+        case ActionCode::Subtract: return "Subtract";
+        case ActionCode::Multiply: return "Multiply";
+        case ActionCode::Divide: return "Divide";
+        case ActionCode::Equals: return "Equals";
+        case ActionCode::Less: return "Less";
+        case ActionCode::And: return "And";
+        case ActionCode::Or: return "Or";
+        case ActionCode::Not: return "Not";
+        case ActionCode::StringEquals: return "StringEquals";
+        case ActionCode::StringLength: return "StringLength";
+        case ActionCode::StringExtract: return "StringExtract";
+        case ActionCode::Pop: return "Pop";
+        case ActionCode::ToInteger: return "ToInteger";
+        case ActionCode::GetVariable: return "GetVariable";
+        case ActionCode::SetVariable: return "SetVariable";
+        case ActionCode::SetTarget2: return "SetTarget2";
+        case ActionCode::StringAdd: return "StringAdd";
+        case ActionCode::GetProperty: return "GetProperty";
+        case ActionCode::SetProperty: return "SetProperty";
+        case ActionCode::CloneSprite: return "CloneSprite";
+        case ActionCode::RemoveSprite: return "RemoveSprite";
+        case ActionCode::Trace: return "Trace";
+        case ActionCode::StartDrag: return "StartDrag";
+        case ActionCode::EndDrag: return "EndDrag";
+        case ActionCode::StringLess: return "StringLess";
+        case ActionCode::Throw: return "Throw";
+        case ActionCode::CastOp: return "CastOp";
+        case ActionCode::ImplementsOp: return "ImplementsOp";
+        case ActionCode::RandomNumber: return "RandomNumber";
+        case ActionCode::MBStringLength: return "MBStringLength";
+        case ActionCode::CharToAscii: return "CharToAscii";
+        case ActionCode::AsciiToChar: return "AsciiToChar";
+        case ActionCode::GetTime: return "GetTime";
+        case ActionCode::MBStringExtract: return "MBStringExtract";
+        case ActionCode::MBCharToAscii: return "MBCharToAscii";
+        case ActionCode::MBAsciiToChar: return "MBAsciiToChar";
+        case ActionCode::Delete: return "Delete";
+        case ActionCode::Delete2: return "Delete2";
+        case ActionCode::DefineLocal: return "DefineLocal";
+        case ActionCode::CallFunction: return "CallFunction";
+        case ActionCode::Return: return "Return";
+        case ActionCode::Modulo: return "Modulo";
+        case ActionCode::NewObject: return "NewObject";
+        case ActionCode::DefineLocal2: return "DefineLocal2";
+        case ActionCode::InitArray: return "InitArray";
+        case ActionCode::InitObject: return "InitObject";
+        case ActionCode::TypeOf: return "TypeOf";
+        case ActionCode::TargetPath: return "TargetPath";
+        case ActionCode::Enumerate: return "Enumerate";
+        case ActionCode::Add2: return "Add2";
+        case ActionCode::Less2: return "Less2";
+        case ActionCode::Equals2: return "Equals2";
+        case ActionCode::ToNumber: return "ToNumber";
+        case ActionCode::ToString: return "ToString";
+        case ActionCode::PushDuplicate: return "PushDuplicate";
+        case ActionCode::StackSwap: return "StackSwap";
+        case ActionCode::GetMember: return "GetMember";
+        case ActionCode::SetMember: return "SetMember";
+        case ActionCode::Increment: return "Increment";
+        case ActionCode::Decrement: return "Decrement";
+        case ActionCode::CallMethod: return "CallMethod";
+        case ActionCode::NewMethod: return "NewMethod";
+        case ActionCode::InstanceOf: return "InstanceOf";
+        case ActionCode::Enumerate2: return "Enumerate2";
+        case ActionCode::BitAnd: return "BitAnd";
+        case ActionCode::BitOr: return "BitOr";
+        case ActionCode::BitXor: return "BitXor";
+        case ActionCode::BitLShift: return "BitLShift";
+        case ActionCode::BitRShift: return "BitRShift";
+        case ActionCode::BitURShift: return "BitURShift";
+        case ActionCode::StrictEquals: return "StrictEquals";
+        case ActionCode::Greater: return "Greater";
+        case ActionCode::StringGreater: return "StringGreater";
+        case ActionCode::Extends: return "Extends";
+        case ActionCode::GotoFrame: return "GotoFrame";
+        case ActionCode::GetURL: return "GetURL";
+        case ActionCode::StoreRegister: return "StoreRegister";
+        case ActionCode::ConstantPool: return "ConstantPool";
+        case ActionCode::WaitForFrame: return "WaitForFrame";
+        case ActionCode::SetTarget: return "SetTarget";
+        case ActionCode::GotoLabel: return "GotoLabel";
+        case ActionCode::WaitForFrame2: return "WaitForFrame2";
+        case ActionCode::DefineFunction2: return "DefineFunction2";
+        case ActionCode::Try: return "Try";
+        case ActionCode::With: return "With";
+        case ActionCode::Push: return "Push";
+        case ActionCode::Jump: return "Jump";
+        case ActionCode::GetURL2: return "GetURL2";
+        case ActionCode::DefineFunction: return "DefineFunction";
+        case ActionCode::If: return "If";
+        case ActionCode::Call: return "Call";
+        case ActionCode::GotoFrame2: return "GotoFrame2";
+        default: return "Unknown";
+    }
+}
+
+}  // namespace flash3ds::avm1
