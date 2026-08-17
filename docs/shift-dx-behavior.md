@@ -56,6 +56,23 @@ should register per-tag-code handlers into `TagDispatcher` (or a
 successor), mirroring this table-driven approach rather than a giant
 `switch`.
 
+### Display-list add vs. replace — confirms Phase 2's DisplayList semantics
+
+Our first Ghidra RE pass found two distinct, separately-logged code paths in
+the Shift-DX runtime: `"sprite::add_display_object(): unknown cid = %d"`
+and `"sprite::replace_display_object(): unknown cid = %d"`. That a shipped
+runtime treats "place a new object at a depth" and "replace the object
+already at a depth" as two different operations (rather than one
+unconditional "set depth N to character C") is exactly the distinction
+`PlaceObject2`'s `Move`+`HasCharacter` flags encode in the public SWF spec,
+and exactly what `DisplayList::applyPlaceObject()` implements: Move=0 (or
+legacy v1 `PlaceObject`) is the "add" path, Move=1+HasCharacter=1 is the
+"replace" path, and Move=1+HasCharacter=0 is a third, update-only path with
+no Shift-DX string evidence either way (its existence comes straight from
+the SWF spec, not from RE). No code or naming was copied — this is cited
+only as confirmation that a real shipped runtime actually distinguishes
+these cases rather than the spec describing dead/unused functionality.
+
 ### ExternalInterface — confirmed native-binding shape (informs Phase 7)
 
 Shift-DX builds `flash.external.ExternalInterface` as an AS object with

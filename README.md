@@ -12,10 +12,13 @@ used here — Ghidra RE results are referenced only as a behavioral spec; see
 
 ## Status
 
-**Phase 1 complete**: SWF loading (FWS/CWS), header parsing, and a generic
-tag scan with logging. See [`docs/architecture.md`](docs/architecture.md)
-for the full phase plan and [`docs/swf-support.md`](docs/swf-support.md)
-for exactly what's implemented so far.
+**Phase 1 and Phase 2 complete**: SWF loading (FWS/CWS), header parsing, a
+generic tag scan with logging, and a Timeline/DisplayList layer
+(`PlaceObject`/`PlaceObject2`/`RemoveObject`/`RemoveObject2`/`FrameLabel`
+parsing, depth-indexed display list, full playhead control). See
+[`docs/architecture.md`](docs/architecture.md) for the full phase plan and
+[`docs/swf-support.md`](docs/swf-support.md) for exactly what's implemented
+so far.
 
 ## Build & test
 
@@ -48,6 +51,22 @@ Tag count:       3
   [  14] id=12   DoAction                     len=1
   [  17] id=1    ShowFrame                    len=0
   [  19] id=0    End                          len=0
+```
+
+Add `--timeline` to also print the per-frame display list (Phase 2):
+
+```sh
+./build/flash_runtime tests/fixtures/test_timeline.swf --quiet --timeline
+```
+
+```
+-- Timeline -- (3 frames)
+  Frame  1: 1 object(s) on display list  [depth=1 char=100 name="hero" x=0.0 y=0.0]
+  Frame  2: 1 object(s) on display list  [depth=1 char=100 name="hero" x=2.5 y=0.0]
+  Frame  3: 0 object(s) on display list
+
+-- Frame labels --
+  "start" -> frame 1
 ```
 
 ## Layout

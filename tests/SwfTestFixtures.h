@@ -9,6 +9,8 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace flash3ds::test::fixtures {
@@ -41,5 +43,32 @@ std::vector<uint8_t> minimalCwsMovie();
 // A movie containing a DoAction tag (single ActionEnd byte, 0x00) so
 // hasActionScript should be detected.
 std::vector<uint8_t> movieWithActionScript();
+
+// ---------------------------------------------------------------------
+// Phase 2: record/tag body builders (MATRIX, PlaceObject/2,
+// RemoveObject/2, FrameLabel), independently encoded from the same public
+// SWF spec the production parsers (SwfRecords/PlaceObjectTag) implement —
+// used to test those parsers round-trip correctly.
+// ---------------------------------------------------------------------
+
+// A translate-only MATRIX (no scale/rotate): HasScale=0, HasRotate=0.
+std::vector<uint8_t> buildMatrixBytes(int32_t translateXTwips, int32_t translateYTwips);
+
+// PlaceObject (tag 4) body: CharacterId, Depth, Matrix (no color transform).
+std::vector<uint8_t> buildPlaceObjectV1Bytes(uint16_t characterId, uint16_t depth,
+                                              const std::vector<uint8_t>& matrixBytes);
+
+// PlaceObject2 (tag 26) body. Pass std::nullopt for characterId/matrixBytes/name
+// to omit those optional fields (HasCharacter/HasMatrix/HasName left unset).
+std::vector<uint8_t> buildPlaceObject2Bytes(uint16_t depth, bool move,
+                                             std::optional<uint16_t> characterId,
+                                             std::optional<std::vector<uint8_t>> matrixBytes,
+                                             std::optional<std::string> name = std::nullopt);
+
+// RemoveObject2 (tag 28) body: Depth only.
+std::vector<uint8_t> buildRemoveObject2Bytes(uint16_t depth);
+
+// FrameLabel (tag 43) body: NUL-terminated name.
+std::vector<uint8_t> buildFrameLabelBytes(const std::string& name);
 
 }  // namespace flash3ds::test::fixtures

@@ -118,25 +118,24 @@ std::unique_ptr<runtime::Movie> SwfLoader::loadSwf(const uint8_t* data, size_t s
     }
 
     // Everything after the 8-byte header (RECT, frame rate, frame count,
-    // tags) is optionally zlib-compressed.
-    std::vector<uint8_t> restStorage;
-    const uint8_t* restData = nullptr;
-    size_t restSize = 0;
-
+    // tags) is optionally zlib-compressed. Movie::data owns these bytes for
+    // the lifetime of the Movie, so TagRecord offsets recorded below stay
+    // valid for later tag-body parsing (Timeline construction, shape/sprite
+    // parsing, ...) instead of pointing into a buffer that's about to go
+    // out of scope.
     if (compression == runtime::SwfCompression::kZlib) {
-        if (!inflateZlib(data + 8, size - 8, restStorage)) {
+        std::vector<uint8_t> inflated;
+        if (!inflateZlib(data + 8, size - 8, inflated)) {
             fillError(*movie, "Failed to zlib-decompress CWS body");
             return movie;
         }
-        restData = restStorage.data();
-        restSize = restStorage.size();
-        LOG_INFO("SWF", "Decompressed CWS body: %zu bytes", restSize);
+        movie->data = std::move(inflated);
+        LOG_INFO("SWF", "Decompressed CWS body: %zu bytes", movie->data.size());
     } else {
-        restData = data + 8;
-        restSize = size - 8;
+        movie->data.assign(data + 8, data + size);
     }
 
-    SwfReader reader(restData, restSize);
+    SwfReader reader(movie->data.data(), movie->data.size());
 
     movie->frameSize = reader.readRect();
     movie->frameRateFixed8 = reader.readFixed8();

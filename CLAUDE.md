@@ -26,9 +26,14 @@ that inspired it.
 
 ## Current status
 
-**Phase 1 complete and committed** (see `git log`). SWF loading (FWS/CWS),
-header parsing, generic tag scan with logging, CLI inspector, 17 passing
-unit tests, zero compiler warnings (`-Wall -Wextra`).
+**Phase 1 and Phase 2 complete and committed** (see `git log`). Phase 1: SWF
+loading (FWS/CWS), header parsing, generic tag scan with logging, CLI
+inspector. Phase 2: MATRIX/CXFORM record readers, PlaceObject/PlaceObject2/
+RemoveObject/RemoveObject2/FrameLabel tag-body parsing, depth-indexed
+`DisplayList` (add/replace/update-in-place/remove), and `Timeline` with full
+playhead control (`gotoAndStop`/`gotoAndPlay` by frame or label,
+`nextFrame`/`prevFrame`/`play`/`stop`/`advanceOneFrame`). 42 passing unit
+tests, zero compiler warnings (`-Wall -Wextra`).
 
 Read `docs/architecture.md` for the full 10-phase plan and
 `docs/swf-support.md` for the current feature matrix before starting new
@@ -46,13 +51,20 @@ the end of each one.
 5. `git add -A && git commit` with a clear summary of what shipped in that
    phase.
 
-## Next phase (Phase 2)
+## Next phase (Phase 3)
 
-Movie / Timeline / DisplayList: `ShowFrame`, `PlaceObject`, `PlaceObject2`,
-`RemoveObject2` handling, plus `gotoAndStop()` / `gotoAndPlay()` /
-`nextFrame()` / `prevFrame()` / `play()` / `stop()` on a per-timeline basis.
-This builds on the `Movie`/`TagRecord` types already in `src/runtime/` and
-`src/swf/` — extend, don't replace.
+Shape / Sprite / transformations / basic renderer. This is the first phase
+that needs an actual pixel output path (`IRenderer` abstraction, per
+`docs/renderer.md`) and real character definitions (`DefineShape`/`2`/`3`,
+`DefineSprite` parsing — `DefineSprite` bodies are themselves nested tag
+streams with their own frame/ShowFrame structure, so expect to generalize
+`Timeline` to work on *any* tag range, not just a `Movie`'s top-level tags,
+rather than duplicating the frame-grouping logic for nested MovieClips).
+Builds on `Movie`/`DisplayList`/`Timeline` already in `src/runtime/` —
+extend, don't replace. `DisplayListEntry::characterId` currently has
+nothing to resolve to; Phase 3 is where a character table
+(id -> Shape/Sprite definition) needs to be added to `Movie` or a new
+`CharacterDictionary` type.
 
 ## Build
 

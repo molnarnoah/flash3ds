@@ -178,4 +178,68 @@ std::vector<uint8_t> movieWithActionScript() {
     return wrapFws(6, body);
 }
 
+// --- Phase 2 record/tag body builders --------------------------------
+
+std::vector<uint8_t> buildMatrixBytes(int32_t translateXTwips, int32_t translateYTwips) {
+    std::vector<uint8_t> out;
+    BitWriter bw(out);
+    bw.writeBits(0, 1);  // HasScale = 0
+    bw.writeBits(0, 1);  // HasRotate = 0
+
+    int nbits = std::max(bitsNeededSigned(translateXTwips), bitsNeededSigned(translateYTwips));
+    bw.writeBits(static_cast<uint32_t>(nbits), 5);
+    bw.writeBits(static_cast<uint32_t>(translateXTwips) & ((1u << nbits) - 1u), nbits);
+    bw.writeBits(static_cast<uint32_t>(translateYTwips) & ((1u << nbits) - 1u), nbits);
+    bw.byteAlign();
+    return out;
+}
+
+std::vector<uint8_t> buildPlaceObjectV1Bytes(uint16_t characterId, uint16_t depth,
+                                              const std::vector<uint8_t>& matrixBytes) {
+    std::vector<uint8_t> out;
+    writeU16(out, characterId);
+    writeU16(out, depth);
+    out.insert(out.end(), matrixBytes.begin(), matrixBytes.end());
+    return out;
+}
+
+std::vector<uint8_t> buildPlaceObject2Bytes(uint16_t depth, bool move,
+                                             std::optional<uint16_t> characterId,
+                                             std::optional<std::vector<uint8_t>> matrixBytes,
+                                             std::optional<std::string> name) {
+    bool hasCharacter = characterId.has_value();
+    bool hasMatrix = matrixBytes.has_value();
+    bool hasName = name.has_value();
+
+    uint8_t flags = static_cast<uint8_t>((hasName ? 0x20 : 0) | (hasMatrix ? 0x04 : 0) |
+                                          (hasCharacter ? 0x02 : 0) | (move ? 0x01 : 0));
+
+    std::vector<uint8_t> out;
+    writeU8(out, flags);
+    writeU16(out, depth);
+    if (hasCharacter) {
+        writeU16(out, *characterId);
+    }
+    if (hasMatrix) {
+        out.insert(out.end(), matrixBytes->begin(), matrixBytes->end());
+    }
+    if (hasName) {
+        out.insert(out.end(), name->begin(), name->end());
+        out.push_back(0);
+    }
+    return out;
+}
+
+std::vector<uint8_t> buildRemoveObject2Bytes(uint16_t depth) {
+    std::vector<uint8_t> out;
+    writeU16(out, depth);
+    return out;
+}
+
+std::vector<uint8_t> buildFrameLabelBytes(const std::string& name) {
+    std::vector<uint8_t> out(name.begin(), name.end());
+    out.push_back(0);
+    return out;
+}
+
 }  // namespace flash3ds::test::fixtures

@@ -20,10 +20,14 @@ find_package(ZLIB REQUIRED)
 add_library(flash3ds_core
     src/platform/Log.cpp
     src/swf/SwfReader.cpp
+    src/swf/SwfRecords.cpp
     src/swf/TagCode.cpp
     src/swf/TagDispatcher.cpp
+    src/swf/PlaceObjectTag.cpp
     src/swf/SwfLoader.cpp
     src/runtime/Movie.cpp
+    src/runtime/DisplayList.cpp
+    src/runtime/Timeline.cpp
 )
 
 target_include_directories(flash3ds_core PUBLIC

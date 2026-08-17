@@ -21,12 +21,12 @@ SWF Parser         (src/swf/SwfReader.*, TagDispatcher.*, TagCode.*)
    +-------------------+
    |                    |
    v                    v
-Timeline             AVM1 VM         <-- not yet implemented (Phase 2 / Phase 4)
+Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 not started
    |                    |
    +---------+----------+
              |
              v
-      Display List                    <-- not yet implemented (Phase 2)
+      Display List                    <-- Phase 2 done (depth-indexed, no rendering yet)
              |
     +--------+--------+
     |        |         |
@@ -47,12 +47,15 @@ The runtime is deliberately modular so the renderer, audio, input, and
 platform layers can be swapped for Nintendo 3DS-specific implementations
 later without touching the SWF/AVM1 core.
 
-## Current status: Phase 1
+## Current status: Phase 2
 
-Phase 1 implements the bottom of the pipeline only: **SWF Loader → SWF
-Parser**, stopping at a flat list of tags (no Timeline/DisplayList/AVM1
-yet — those begin in Phase 2+). See [swf-support.md](swf-support.md) for
-exactly what is and isn't implemented.
+Phase 1 built **SWF Loader → SWF Parser** (flat tag list). Phase 2 adds
+**Timeline → Display List**: `PlaceObject`/`PlaceObject2`/`RemoveObject`/
+`RemoveObject2`/`FrameLabel` tag-body parsing, a depth-indexed
+`DisplayList`, and a `Timeline` with playhead control
+(`gotoAndStop`/`gotoAndPlay`/`nextFrame`/`prevFrame`/`play`/`stop`). AVM1 and
+per-character rendering (Shape/Sprite/Text) still don't exist — see
+[swf-support.md](swf-support.md) for the exact feature matrix.
 
 ## Module layout
 
@@ -60,13 +63,19 @@ exactly what is and isn't implemented.
 src/
   platform/   Log.h/.cpp                  — logging (no platform deps yet)
   swf/        SwfReader.h/.cpp            — byte/bit stream reader, RECT
+              SwfRecords.h/.cpp           — MATRIX, CXFORM(WITHALPHA) readers
               TagCode.h/.cpp              — SWF tag ID <-> name table
               TagDispatcher.h/.cpp        — generic tag-header reader
+              PlaceObjectTag.h/.cpp       — PlaceObject/2, RemoveObject/2,
+                                             FrameLabel body parsers
               SwfLoader.h/.cpp            — FWS/CWS signature, zlib inflate,
                                              header parse, tag scan
-  runtime/    Movie.h/.cpp                — Phase 1 result model
+  runtime/    Movie.h/.cpp                — loaded-movie model; owns the
+                                             decompressed tag-stream bytes
+              DisplayList.h/.cpp          — depth-indexed display list
+              Timeline.h/.cpp             — per-frame tag grouping + playhead
 tools/
-  flash_runtime/main.cpp                  — CLI SWF inspector
+  flash_runtime/main.cpp                  — CLI SWF inspector (+ --timeline)
 tests/
   TestFramework.h, TestMain.cpp           — tiny dependency-free test harness
   SwfTestFixtures.h/.cpp                  — programmatic SWF fixture builder
