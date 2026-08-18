@@ -77,6 +77,21 @@ struct ColorTransform {
 // SceneRenderer.cpp for where this is now actually used.
 ColorTransform concatColorTransform(const ColorTransform& parent, const ColorTransform& child);
 
+// Transforms a local-space Rect's four corners by `m` and returns the
+// resulting AXIS-ALIGNED bounding box in the transformed space — NOT a
+// naive per-field remap of xMin/xMax/yMin/yMax (a rotation/skew can make
+// the transformed AABB strictly larger than transforming the two opposite
+// corners alone would suggest, since the other two corners can stick out
+// further). Used for `_width`/`_height` bounding-box computation — see
+// runtime/MovieClipInstance.cpp's computeBoundsInOwnSpace()/width()/
+// height() — and intended to be reused as-is by a future hit-testing pass
+// (see docs/hit-testing.md).
+//
+// Added 2026-08-18 (interactivity phase, priority fix): `_width`/`_height`
+// were previously hardcoded to always return 0 (see
+// docs/known-limitations.md).
+Rect transformRect(const Matrix& m, const Rect& r);
+
 // Reads a MATRIX record. Must be called at a byte-aligned position (or
 // right after another bit-packed record); leaves the reader byte-aligned.
 Matrix readMatrix(SwfReader& reader);

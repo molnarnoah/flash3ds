@@ -27,16 +27,21 @@
 //     position mid-timeline while also independently script-driving it) for
 //     a much more common one it avoids (script-set _x/_y being silently
 //     stomped back to the placement transform every single tick).
-//   - _width/_height are not computed (would require full recursive
-//     subtree bounding-box computation); they always return 0.
+//   - _width/_height (interactivity-audit phase, 2026-08-18): NOW computed
+//     — see width()/height()/computeBoundsInOwnSpace() below. Previously
+//     hardcoded to 0 always; see docs/known-limitations.md priority #2 for
+//     the audit finding and docs/hit-testing.md for how this bounding-box
+//     machinery is meant to be reused by hit-testing (not yet implemented
+//     — bounds computation is a prerequisite, not the same thing).
 //   - onClipEvent handlers (Phase 6): Load/Unload/EnterFrame are wired
 //     (see runClipEvent()/initializeNewlyCreated()/removeFromParent()/
 //     advanceFrame()). Mouse*/Press/Release/RollOver*/DragOver*/KeyDown/
-//     KeyUp are parsed (ClipActionRecord — swf/PlaceObjectTag.h) but NOT
-//     dispatched yet: those need hit-testing/bounds computation (which
-//     needs _width/_height, above) that doesn't exist yet. Button `on()`
-//     handlers need DefineButton/2 parsing, which doesn't exist either
-//     (Phase 8+). DoAction/DoInitAction frame scripts ARE fully wired.
+//     KeyUp are parsed (ClipActionRecord — swf/PlaceObjectTag.h) but still
+//     NOT dispatched: hit-testing itself (which now HAS bounds to work
+//     with, above) still doesn't exist yet — see docs/hit-testing.md for
+//     the planned design. Button `on()` handlers are parsed
+//     (DefineButton/2, Phase 8) but not dispatched for the same reason.
+//     DoAction/DoInitAction frame scripts ARE fully wired.
 //   - StartDrag/EndDrag (Phase 6) are real: ScriptEnvironment tracks at
 //     most one dragged clip and repositions it from InputState's mouse
 //     position once per tick (see ScriptEnvironment::updateDrag()).
@@ -295,6 +300,20 @@ public:
     double alpha() const { return colorTransform_.alphaMult * 100.0; }
     void setAlpha(double percent) { colorTransform_.alphaMult = percent / 100.0; }
 
+    // Real `_width`/`_height`: the axis-aligned bounding box of this clip's
+    // ENTIRE current display list (recursively, through nested MovieClip
+    // children), transformed through this clip's own placement matrix
+    // (matching real AS2 — rotating/scaling a clip changes its reported
+    // _width/_height, since both are measured in the PARENT's coordinate
+    // space), in pixels. Added during the interactivity-audit phase (see
+    // docs/known-limitations.md) — previously both were hardcoded to 0.
+    // See computeBoundsInOwnSpace()'s doc comment (MovieClipInstance.cpp)
+    // for exactly what's included/excluded (notably: bitmap/DefineMorphShape
+    // characters, still unimplemented per docs/compatibility-matrix.md,
+    // contribute nothing, matching how they already render as nothing).
+    double width() const;
+    double height() const;
+
     // --- AVM1 lifecycle actions (CloneSprite/RemoveSprite), applied
     // eagerly/synchronously — used by the internal HostBindings
     // implementation, exposed here so tests can drive them directly too.
@@ -314,6 +333,14 @@ private:
     void runCurrentFrameScripts();
     void runCurrentFrameSounds();
     void syncChildren();
+
+    // The union of every currently-placed character/child's bounds, in
+    // THIS instance's own local space (i.e. BEFORE this instance's own
+    // matrix_ is applied) — see MovieClipInstance.cpp for the full doc
+    // comment and exactly what's included. Backs width()/height() and is
+    // intended to be reused as-is by a future hit-testing pass (see
+    // docs/hit-testing.md) rather than duplicated.
+    swf::Rect computeBoundsInOwnSpace() const;
 
     // Runs every ClipActionRecord in clipActions_ whose eventFlags include
     // `flag` (Phase 6 — see the class header's onClipEvent limitations

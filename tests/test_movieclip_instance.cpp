@@ -98,6 +98,52 @@ std::vector<uint8_t> buildMovieWithNamedChild(uint16_t rootFrames, uint16_t spri
     return swf_fixtures::wrapFws(6, body);
 }
 
+// A 100x100px, 1-frame movie placing a named sprite "mc" (id=20) at local
+// (0,0) on the root; the sprite's own nested tag stream places one or more
+// shapes (id 10, 11, 12, ... in `shapes` order) at the given per-shape
+// offsets — used for the interactivity-audit phase's _width/_height
+// bounds-computation regression tests. `rootActionBytes` (if non-empty)
+// becomes root frame 1's DoAction body.
+struct ShapePlacement {
+    int32_t widthTwips;
+    int32_t heightTwips;
+    int32_t offsetXTwips;
+    int32_t offsetYTwips;
+};
+
+std::vector<uint8_t> buildMovieWithNamedChildContainingShapes(
+    const std::vector<ShapePlacement>& shapes, const std::vector<uint8_t>& rootActionBytes = {}) {
+    std::vector<swf_fixtures::FixtureTag> nestedTags;
+    uint16_t nextCharacterId = 10;
+    int32_t depth = 1;
+    for (const auto& shape : shapes) {
+        uint16_t characterId = nextCharacterId++;
+        auto shapeBody = swf_fixtures::buildDefineShapeBytes(2, characterId, shape.widthTwips,
+                                                                shape.heightTwips, 0xFF, 0x00, 0x00,
+                                                                0xFF);
+        nestedTags.push_back({static_cast<uint16_t>(TagCode::DefineShape2), shapeBody});
+        nestedTags.push_back(
+            {26 /* PlaceObject2 */,
+             swf_fixtures::buildPlaceObject2Bytes(
+                 static_cast<uint16_t>(depth++), false, characterId,
+                 swf_fixtures::buildMatrixBytes(shape.offsetXTwips, shape.offsetYTwips))});
+    }
+    nestedTags.push_back({1 /* ShowFrame */, {}});
+    auto spriteBody = swf_fixtures::buildDefineSpriteBytes(/*characterId=*/20, 1, nestedTags);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSprite), spriteBody},
+        {26 /* PlaceObject2 */,
+         swf_fixtures::buildPlaceObject2Bytes(1, false, 20, std::nullopt, std::string("mc"))},
+    };
+    if (!rootActionBytes.empty()) {
+        tags.push_back({static_cast<uint16_t>(TagCode::DoAction), rootActionBytes});
+    }
+    tags.push_back({1 /* ShowFrame */, {}});
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    return swf_fixtures::wrapFws(6, body);
+}
+
 // A spy IAudioBackend recording every call it receives — Phase 6 tests use
 // this to verify StartSound tag dispatch and AVM1 Sound.start()/stop()
 // actually reach the backend seam with the right arguments, without
@@ -361,6 +407,139 @@ TEST_CASE(MovieClipInstance_XScaleRotation_ApproximateDecompositionRoundTrips) {
     // preserves the other axis).
     CHECK(std::abs(root->xScale() - 50.0) < 0.001);
     CHECK(std::abs(root->yScale() - 200.0) < 0.001);
+}
+
+// ===========================================================================
+// Interactivity-audit phase (2026-08-18): _width/_height bounds computation
+// — previously hardcoded to always return 0 (see docs/known-limitations.md
+// priority #2). This is the prerequisite bounds machinery hit-testing will
+// build on next; hit-testing itself is NOT implemented yet (see
+// docs/hit-testing.md).
+// ===========================================================================
+
+TEST_CASE(MovieClipInstance_WidthHeight_MatchesSinglePlacedShapeBounds) {
+    // A 40x40px shape at local (0,0) inside "mc" — mc's own placement
+    // matrix is identity (translate-only, at (0,0)), so mc._width/_height
+    // should exactly match the shape's own size.
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}});
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto childIt = root->children().find(1);
+    CHECK(childIt != root->children().end());
+    CHECK_EQ(childIt->second->width(), 40.0);
+    CHECK_EQ(childIt->second->height(), 40.0);
+}
+
+TEST_CASE(MovieClipInstance_WidthHeight_GetPropertyAndBareMemberAccess_AgreeWithCppApi) {
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}});
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    Asm a;
+    // capturedWidthGetProperty = GetProperty("mc", 8 /*_width*/)
+    a.pushString("capturedWidthGetProperty");
+    a.pushString("mc");
+    a.pushInt(8);
+    a.op(0x22);  // ActionGetProperty
+    a.op(0x1D);  // ActionSetVariable
+    // capturedHeightGetProperty = GetProperty("mc", 9 /*_height*/)
+    a.pushString("capturedHeightGetProperty");
+    a.pushString("mc");
+    a.pushInt(9);
+    a.op(0x22);
+    a.op(0x1D);
+    // capturedWidthMember = mc._width (bare .member access, NOT GetProperty)
+    a.pushString("capturedWidthMember");
+    a.pushString("mc");
+    a.op(0x1C);  // ActionGetVariable
+    a.pushString("_width");
+    a.op(0x4E);  // ActionGetMember
+    a.op(0x1D);
+    // Run directly against root's existing ScriptEnvironment/tree (rather
+    // than baking this into the movie's own frame-1 DoAction) so the same
+    // already-placed "mc" instance backs both the C++ width()/height() call
+    // below and the AVM1-side reads.
+    auto script = a.build();
+    env.run(*root, script.data(), script.size());
+
+    auto childIt = root->children().find(1);
+    CHECK(childIt != root->children().end());
+    double expected = childIt->second->width();
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedWidthGetProperty").toNumber(), expected);
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedHeightGetProperty").toNumber(),
+             childIt->second->height());
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedWidthMember").toNumber(), expected);
+    CHECK_EQ(expected, 40.0);
+}
+
+TEST_CASE(MovieClipInstance_Width_ScalesWithXScale) {
+    // Real AS2 _width/_height are measured in the PARENT's coordinate space
+    // — scaling a clip must change its reported _width, not just its
+    // visual size (see MovieClipInstance::width()'s doc comment).
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}});
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto childIt = root->children().find(1);
+    CHECK(childIt != root->children().end());
+    CHECK_EQ(childIt->second->width(), 40.0);
+
+    childIt->second->setXScale(200.0);  // 200% -> double width
+    CHECK(std::abs(childIt->second->width() - 80.0) < 0.01);
+    // Height must be unaffected by an X-only scale.
+    CHECK(std::abs(childIt->second->height() - 40.0) < 0.01);
+}
+
+TEST_CASE(MovieClipInstance_Width_UnionsAllPlacedShapes_NotJustFirst) {
+    // Two 20x20px shapes: one at local (0,0)-(20,20)px, one at local
+    // (60,60)-(80,80)px. The union's bounding box must span the full
+    // (0,0)-(80,80)px extent — proving this is a real recursive union
+    // across the whole display list, not just the first/last entry.
+    auto bytes = buildMovieWithNamedChildContainingShapes({
+        {20 * 20, 20 * 20, 0, 0},
+        {20 * 20, 20 * 20, 60 * 20, 60 * 20},
+    });
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto childIt = root->children().find(1);
+    CHECK(childIt != root->children().end());
+    CHECK_EQ(childIt->second->width(), 80.0);
+    CHECK_EQ(childIt->second->height(), 80.0);
+}
+
+TEST_CASE(MovieClipInstance_WidthHeight_EmptyClip_ReturnsZero) {
+    // No shapes placed at all inside "mc" — must return 0, not garbage
+    // from an uninitialized/degenerate bounds accumulator.
+    auto bytes = buildMovieWithNamedChildContainingShapes({});
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto childIt = root->children().find(1);
+    CHECK(childIt != root->children().end());
+    CHECK_EQ(childIt->second->width(), 0.0);
+    CHECK_EQ(childIt->second->height(), 0.0);
 }
 
 // ===========================================================================

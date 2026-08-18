@@ -132,13 +132,16 @@ populates `_global` with `Key`, `Mouse`, `Sound`, `ExternalInterface` (see
 | Feature | Status | Evidence |
 |---|---|---|
 | `_x`/`_y`/`_xscale`/`_yscale`/`_rotation`/`_alpha`/`_visible`/`_currentframe`/`_totalframes`/`_name`/`_target`/`_framesloaded` | WORKING | `MovieClipInstance.cpp:495-522` |
-| `_width`/`_height` | **NOT IMPLEMENTED** | hardcoded to return `0` in both `handleNativeGet` (line 510) and `GetProperty` opcode path (lines 349-350) |
+| `_width`/`_height` | **WORKING (fixed in interactivity phase, 2026-08-18)** | recursive bounding-box union (`MovieClipInstance::computeBoundsInOwnSpace()`/`width()`/`height()`, `swf::transformRect()`) — see `docs/known-limitations.md`'s STEP 1-10 writeup. Previously hardcoded to `0` |
 | `_droptarget`/`_url` | NOT IMPLEMENTED | both hardcoded `""` |
 | OOP methods `stop()`/`play()`/`nextFrame()`/`prevFrame()`/`gotoAndStop()`/`gotoAndPlay()`/`getBytesLoaded()`/`getBytesTotal()` | WORKING | `MovieClipInstance.cpp:536-586` (Phase 9 addition) |
 | `swapDepths()`/`hitTest()`/`duplicateMovieClip()`/`attachMovie()`/`loadMovie()`/`getURL()` (as method) | NOT IMPLEMENTED | not present in `handleNativeGet()` at all |
 | `onClipEvent(Load)`/`(Unload)`/`(EnterFrame)` | WORKING | `runClipEvent()`, 3 call sites, `MovieClipInstance.cpp:626,678,736,929` |
 | `onClipEvent(MouseMove/MouseDown/MouseUp/KeyDown/KeyUp/Data/Initialize/Press/Release/ReleaseOutside/RollOver/RollOut/DragOver/DragOut/KeyPress/Construct)` | **NOT IMPLEMENTED** | all 16 remaining flags are parsed into `clipActions_` but never passed to `runClipEvent()` anywhere — confirmed by exhaustive call-site grep |
 | Button `on()` handler dispatch (`actionsV1`/`condActionsV2`) | **NOT IMPLEMENTED** | confirmed by codebase-wide grep — these fields are read only by the `swf/` parser and `SceneRenderer`'s render-only `ButtonDef` consumer; nothing ever runs their bytecode |
+| Hit testing (any point-in-object test) | **NOT IMPLEMENTED** | confirmed zero code anywhere in `src/` before/after this turn — design recorded in `docs/hit-testing.md`, blocked on a still-missing device-px -> stage-twips coordinate conversion (see `docs/input.md`'s new finding) |
+| Generic input-event dispatch (mouse press/release/rollOver/rollOut -> AVM1) | **NOT IMPLEMENTED** | design recorded in `docs/events.md`; no `InputEvent`/dispatcher type exists anywhere |
+| Per-placement Button "instance" (state, AS2-settable `onRelease`/etc.) | **NOT IMPLEMENTED** | confirmed: buttons have no runtime object of their own at all — a placed button is just a `characterId` resolved to a `ButtonDef` at render time, with no Phase-5-style instance wrapper the way sprites have (`MovieClipInstance`) — see `docs/interactivity-audit.md` §3 |
 | Nested MovieClips | WORKING | recursive `Timeline::build`, independent playheads (Phase 5) |
 | Frame scripts (`DoAction` per frame) | WORKING | run every intermediate frame during replay, confirmed against real `hobo.swf` (Phase 9) |
 | Timeline/AVM1 execution order vs real Flash | UNKNOWN | not independently cross-checked against a real Flash Player's frame/script/render ordering this phase |
@@ -159,7 +162,7 @@ manual walk of `hobo.swf` never got past the title screen. See
 | `Key.getAscii()` | **NOT IMPLEMENTED** | confirmed absent by grep — only a comment mentions it exists conceptually |
 | Named `Key.*` constants | WORKING | 18 constants wired, `MovieClipInstance.cpp:53-70` |
 | `Mouse.show()`/`hide()` | WORKING (as a no-op) | no cursor rendering model exists — deliberate |
-| `_xmouse`/`_ymouse` | WORKING | via `GetProperty`(20/21) and bare member access |
+| `_xmouse`/`_ymouse` | **PARTIALLY WORKING — new finding, interactivity phase** | via `GetProperty`(20/21) and bare member access, but reads `InputState`'s raw device/screen-pixel coordinates with **no conversion to stage pixel space** — wrong whenever a movie's stage size doesn't match the render target's pixel size (e.g. `hobo.swf`'s 600x450 stage vs. either 3DS screen's smaller pixel dimensions); see `docs/input.md`'s new section |
 | 3DS touch -> `InputState` mouse position/down | WORKING, but flagged | `Nintendo3DSInput.cpp:19-38` — gated on `KEY_TOUCH`, which libctru's own header documents as "not actually provided by HID"; **not independently confirmed against real hardware or Azahar this phase** |
 | 3DS D-Pad/Circle Pad -> `Key.LEFT/RIGHT/UP/DOWN` | WORKING (compiles/links; not hardware-confirmed for AS2-side effect) | `Nintendo3DSInput.cpp:41-44` |
 | 3DS A/START -> `Key.ENTER`, B/SELECT -> `Key.ESCAPE`, X/Y -> ASCII | WORKING (same caveat) | `Nintendo3DSInput.cpp:53-58` |

@@ -23,6 +23,84 @@ void setKeyConstant(avm1::Object& keyObj, const char* name, int code) {
     keyObj.setOwnProperty(name, avm1::Value::number(code));
 }
 
+// --- _width/_height bounds computation (interactivity-audit phase) --------
+//
+// A small "empty rect" sentinel/union algebra, analogous to swf::
+// ColorTransform::identity() being the neutral element for
+// concatColorTransform: emptyBoundsRect() is the neutral element for
+// unionBoundsRect() (unioning with it returns the other operand unchanged),
+// detected via the classic "inverted" empty-rect convention (xMin > xMax)
+// rather than a separate bool flag.
+swf::Rect emptyBoundsRect() {
+    return swf::Rect{INT32_MAX, INT32_MIN, INT32_MAX, INT32_MIN};
+}
+
+bool isEmptyBoundsRect(const swf::Rect& r) { return r.xMin > r.xMax || r.yMin > r.yMax; }
+
+swf::Rect unionBoundsRect(const swf::Rect& a, const swf::Rect& b) {
+    if (isEmptyBoundsRect(a)) return b;
+    if (isEmptyBoundsRect(b)) return a;
+    return swf::Rect{std::min(a.xMin, b.xMin), std::max(a.xMax, b.xMax), std::min(a.yMin, b.yMin),
+                      std::max(a.yMax, b.yMax)};
+}
+
+// Resolves a LEAF character's own (untransformed) bounds — the same
+// "which CharacterDef alternative is this" dispatch renderer::SceneRenderer
+// uses, but returning a bounding Rect instead of drawing. Deliberately
+// scoped (matches this codebase's "trace real gaps, don't guess" habit):
+//   - ShapeDef/TextDef/EditTextDef: use the tag's own already-parsed
+//     ShapeBounds/TextBounds/bounds RECT directly — no computation needed.
+//   - ButtonDef: unions the HitTest-state records' underlying character
+//     bounds (falling back to Up-state records if the button defines no
+//     explicit HitTest state at all — matches real Flash, which requires
+//     an author-supplied hit area but tolerates its absence by using
+//     Up-state geometry). Only resolves ONE level deep (a button record
+//     referencing a Shape/Text/EditText) — a button record referencing a
+//     nested Sprite for its hit area is rare/unusual authoring and is
+//     skipped rather than recursed into, to keep this a bounded, simple
+//     first pass (see docs/hit-testing.md).
+//   - SpriteDef/SoundDef/FontDef: empty — sprites are never leaf display-
+//     list entries at runtime (they resolve to a MovieClipInstance child
+//     instead, handled separately by computeBoundsInOwnSpace() below), and
+//     Sound/Font are never placeable characters at all.
+//   - Bitmap characters (DefineBits*) and DefineMorphShape/2 don't resolve
+//     into CharacterDictionary at all yet (see docs/compatibility-matrix.md)
+//     so `def` itself would be null for those — never reaches this function.
+swf::Rect characterOwnBoundsRect(const CharacterDef& def, const CharacterDictionary& characters) {
+    if (const auto* shape = std::get_if<swf::ShapeDef>(&def)) return shape->bounds;
+    if (const auto* text = std::get_if<swf::TextDef>(&def)) return text->bounds;
+    if (const auto* editText = std::get_if<swf::EditTextDef>(&def)) return editText->bounds;
+    if (const auto* button = std::get_if<swf::ButtonDef>(&def)) {
+        bool anyHitTest = false;
+        for (const auto& rec : button->records) {
+            if (rec.stateHitTest) {
+                anyHitTest = true;
+                break;
+            }
+        }
+        swf::Rect result = emptyBoundsRect();
+        for (const auto& rec : button->records) {
+            bool use = anyHitTest ? rec.stateHitTest : rec.stateUp;
+            if (!use) continue;
+            const CharacterDef* nested = characters.find(rec.characterId);
+            if (!nested) continue;
+            swf::Rect nestedBounds;
+            if (const auto* nShape = std::get_if<swf::ShapeDef>(nested)) {
+                nestedBounds = nShape->bounds;
+            } else if (const auto* nText = std::get_if<swf::TextDef>(nested)) {
+                nestedBounds = nText->bounds;
+            } else if (const auto* nEdit = std::get_if<swf::EditTextDef>(nested)) {
+                nestedBounds = nEdit->bounds;
+            } else {
+                continue;
+            }
+            result = unionBoundsRect(result, swf::transformRect(rec.matrix, nestedBounds));
+        }
+        return result;
+    }
+    return emptyBoundsRect();
+}
+
 }  // namespace
 
 // ===========================================================================
@@ -346,8 +424,8 @@ avm1::Value ScriptEnvironment::run(MovieClipInstance& target, const uint8_t* cod
                 case 5: return avm1::Value::number(mc->timeline().frameCount());
                 case 6: return avm1::Value::number(mc->alpha());
                 case 7: return avm1::Value::boolean(mc->visible());
-                case 8: return avm1::Value::number(0);  // _width — not computed, see header
-                case 9: return avm1::Value::number(0);  // _height — not computed, see header
+                case 8: return avm1::Value::number(mc->width());   // _width
+                case 9: return avm1::Value::number(mc->height());  // _height
                 case 10: return avm1::Value::number(mc->rotation());
                 case 11: return avm1::Value::string(mc->targetPath());
                 case 12: return avm1::Value::number(mc->timeline().frameCount());  // _framesloaded
@@ -470,6 +548,65 @@ std::shared_ptr<MovieClipInstance> MovieClipInstance::createRoot(
     return root;
 }
 
+// Recursion safety: this walks EXACTLY the same children_/displayList()
+// structure SceneRenderer::renderClip() walks, and that structure is
+// guaranteed acyclic by construction — every MovieClipInstance in the tree
+// is a genuinely distinct object created once by syncChildren() (itself
+// depth-guarded at creation time via childrenSyncDepth_/kMaxDepth, see the
+// class header), never a shared/aliased pointer back to an ancestor. So,
+// like SceneRenderer's own tree walk, this recursion is bounded by the
+// tree's already-enforced maximum depth (64) and needs no separate guard
+// here.
+swf::Rect MovieClipInstance::computeBoundsInOwnSpace() const {
+    swf::Rect result = emptyBoundsRect();
+    for (const auto& [depthValue, entry] : timeline_->displayList().entries()) {
+        auto childIt = children_.find(depthValue);
+        if (childIt != children_.end() && childIt->second) {
+            // A MovieClip child — recurse for ITS own bounds (in its own
+            // local space), then transform by ITS OWN (possibly script-
+            // mutated) matrix, exactly mirroring how SceneRenderer composes
+            // world transforms for rendering (concatMatrix using the
+            // child's localMatrix(), not the placement entry's matrix).
+            swf::Rect childOwn = childIt->second->computeBoundsInOwnSpace();
+            if (!isEmptyBoundsRect(childOwn)) {
+                result = unionBoundsRect(
+                    result, swf::transformRect(childIt->second->localMatrix(), childOwn));
+            }
+            continue;
+        }
+        // A leaf character (or an unresolved/still-unsupported one, e.g.
+        // bitmap/DefineMorphShape — characters_->find() returns nullptr for
+        // those, contributing nothing, matching how they already render as
+        // nothing — see docs/compatibility-matrix.md).
+        if (!characters_) continue;
+        const CharacterDef* def = characters_->find(entry.characterId);
+        if (!def) continue;
+        swf::Rect leafOwn = characterOwnBoundsRect(*def, *characters_);
+        if (!isEmptyBoundsRect(leafOwn)) {
+            result = unionBoundsRect(result, swf::transformRect(entry.matrix, leafOwn));
+        }
+    }
+    return result;
+}
+
+double MovieClipInstance::width() const {
+    swf::Rect own = computeBoundsInOwnSpace();
+    if (isEmptyBoundsRect(own)) return 0.0;
+    // Real AS2 _width/_height are measured in the PARENT's coordinate
+    // space — i.e. AFTER this clip's own matrix_ (including any script-set
+    // _xscale/_yscale/_rotation) is applied, so rotating/scaling a clip
+    // changes its reported _width/_height, matching real Flash Player
+    // behavior (not independently verified against a real Flash-authored
+    // file this phase — see docs/known-limitations.md's confidence note).
+    return swf::transformRect(matrix_, own).widthPixels();
+}
+
+double MovieClipInstance::height() const {
+    swf::Rect own = computeBoundsInOwnSpace();
+    if (isEmptyBoundsRect(own)) return 0.0;
+    return swf::transformRect(matrix_, own).heightPixels();
+}
+
 void MovieClipInstance::wireScriptObject() {
     scriptObject_ = std::make_shared<avm1::Object>();
     std::weak_ptr<MovieClipInstance> weak = shared_from_this();
@@ -507,7 +644,8 @@ bool MovieClipInstance::handleNativeGet(const std::string& name, avm1::Value& ou
     if (name == "_name") { out = avm1::Value::string(name_); return true; }
     if (name == "_target") { out = avm1::Value::string(targetPath()); return true; }
     if (name == "_droptarget" || name == "_url") { out = avm1::Value::string(""); return true; }
-    if (name == "_width" || name == "_height") { out = avm1::Value::number(0); return true; }
+    if (name == "_width") { out = avm1::Value::number(width()); return true; }
+    if (name == "_height") { out = avm1::Value::number(height()); return true; }
     if (name == "_xmouse") { out = avm1::Value::number(env_->inputState().mouseX()); return true; }
     if (name == "_ymouse") { out = avm1::Value::number(env_->inputState().mouseY()); return true; }
     if (name == "_parent") {

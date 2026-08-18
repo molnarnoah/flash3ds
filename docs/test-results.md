@@ -80,6 +80,24 @@ been independently reproduced end-to-end from a real `.swf` yet — tracked
 as `tests/swf/025_externalinterface_hobo_pattern.swf` (PLANNED, not yet
 created — see `tests/swf/README.md`).
 
+## Interactivity phase (2026-08-18) — `_width`/`_height` fix
+
+- **194/194 tests passing** (up from 189) — 5 new regression tests in
+  `tests/test_movieclip_instance.cpp` (`MovieClipInstance_WidthHeight_*`,
+  `MovieClipInstance_Width_*`), all passing, zero regressions elsewhere.
+- `hobo.swf` frame 1 rendered before/after this fix, byte-for-byte
+  identical (`md5sum` match) — confirms zero rendering-side regression, as
+  expected for a pure property-computation addition.
+- 3DS build (`build_3ds`) rebuilds clean; new `.3dsx` (387556 bytes) not
+  yet tested on Azahar/hardware.
+- Full audit trace (input pipeline, coordinate system, Button2, hit-testing,
+  event representation, `onClipEvent`) recorded in
+  `docs/interactivity-audit.md`; a real, previously-undocumented gap was
+  found in the process (`_xmouse`/`_ymouse` reads device-pixel coordinates
+  with no stage-pixel conversion — see `docs/input.md`), flagged but not
+  yet fixed (next in the dependency chain, per
+  `docs/known-limitations.md`).
+
 ## Not yet tested (carried over from `docs/compatibility.md`, still open)
 
 - `hobo 2 - prison brawl.swf` through `hobo 7 - heaven.swf` (sequels).

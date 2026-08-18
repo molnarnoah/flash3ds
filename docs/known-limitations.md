@@ -114,6 +114,100 @@ AVM1 "unverified assumption" list in `docs/avm1-compatibility.md`).
 
 ## Priority #2 — No mouse/button interactivity (blocks all real gameplay progression)
 
+**Interactivity phase (2026-08-18): this priority is now the SOLE focus**
+per explicit user instruction — Priorities #3-5 below are deliberately on
+hold until this one reaches a stable state (see `CLAUDE.md`). Full audit:
+`docs/interactivity-audit.md`. First sub-fix, done this turn (STEP 1-10
+below); remaining sub-items tracked in `docs/interactivity-audit.md` §8 and
+NOT yet started.
+
+### Sub-fix 1/N — `_width`/`_height` hardcoded to 0 — **FIXED THIS TURN**
+
+**Classification: DISPLAY LIST (bounding-box geometry).**
+
+**STEP 1 — Audit.** Confirmed (again, independently, this turn) that both
+`MovieClipInstance::handleNativeGet()`'s `_width`/`_height` branch and
+`MovieClipHostBindings::getProperty()`'s index 8/9 cases returned a
+hardcoded `0`, unconditionally. Everything else in the interactivity
+dependency chain (hit-testing, button state, event dispatch) needs real
+bounding-box geometry to exist first — see `docs/interactivity-audit.md`
+§8's dependency ordering — making this the correct, and only correct,
+first move ("smallest root-cause fix that unlocks the largest amount of
+interactivity").
+
+**STEP 2-3 — Reproduction/isolation.** Minimal repro: place any shape
+inside a named MovieClip, read `mc._width`/`mc._height` from AS2 — always
+`0` regardless of the shape's actual size. Isolated entirely to
+`runtime::MovieClipInstance` — no dependency on hit-testing, input, or
+rendering.
+
+**STEP 4-5 — Fix.** Added `swf::transformRect(const Matrix&, const Rect&)
+-> Rect` (`src/swf/SwfRecords.h/.cpp`) — transforms a Rect's 4 corners by a
+matrix and returns the true axis-aligned bounding box of the result (not a
+naive per-field remap — correctly grows the box under rotation/skew). Added
+`MovieClipInstance::computeBoundsInOwnSpace()` (private, recursive) —
+unions every currently-placed leaf character's bounds (`ShapeDef::bounds`/
+`TextDef::bounds`/`EditTextDef::bounds`, all pre-existing/untouched; for
+`ButtonDef`, a new `characterOwnBoundsRect()` helper unions `stateHitTest`-
+flagged records' referenced-character bounds, falling back to `stateUp`
+records if no explicit hit-test state exists) and every nested
+`MovieClipInstance` child's own recursively-computed bounds, each
+transformed through the relevant placement/local matrix. `width()`/
+`height()` (public) then transform that own-space union through the
+clip's own `matrix_` and convert to pixels — matching real AS2 semantics
+where `_width`/`_height` are measured in the PARENT's coordinate space
+(rotating/scaling a clip changes its reported size).
+
+**STEP 6 — Desktop tests.** Five new regression tests
+(`tests/test_movieclip_instance.cpp`): a single placed shape's bounds match
+exactly; `GetProperty`(8/9) and bare `.member` access both agree with the
+direct C++ `width()`/`height()` call; `_xscale=200` doubles `_width` while
+leaving `_height` unchanged; two shapes at different offsets union into the
+full combined bounding box (proving real recursion/union, not a first-
+entry-only shortcut); an empty clip returns exactly `0`, not garbage from
+an uninitialized accumulator. **194/194 tests passing** (up from 189),
+zero regressions.
+
+**Independent real-content check:** rendered `hobo.swf` frame 1 before and
+after this fix and diffed byte-for-byte — **100% identical** (expected:
+this is a pure property-computation addition with no rendering code
+touched). Confirms no rendering regression.
+
+**STEP 7-8 — 3DS build.** `cmake --build build_3ds` succeeds cleanly (only
+the same pre-existing, unrelated newlib warnings as every prior 3DS build
+in this project). New `.3dsx` built (387556 bytes, up from 385528 —
+confirms the new code linked in). **Not yet tested on Azahar/hardware.**
+
+**STEP 9 — Regression tests.** Done — see STEP 6, all 5 permanent.
+
+**STEP 10 — What now works / what remains.** `_width`/`_height` now return
+real, correct-per-the-implemented-algorithm values for shapes, text,
+edit-text, buttons (bounding-box approximation for the button hit-area
+case), and recursively-nested MovieClips, matching real AS2 measurement
+semantics (parent-space, transform-inclusive). **Remains, and is now
+unblocked to start:** hit-testing itself, the device-px -> stage-twips
+coordinate conversion (a separate, now-surfaced gap — see
+`docs/input.md`), edge-detected input state, the per-placement Button
+instance object, the generic event dispatcher, and all `onClipEvent`/
+button-`on()` dispatch — see `docs/interactivity-audit.md` §8 for the full
+remaining dependency chain, in order. Not independently verified against a
+real Flash-authored file's exact `_width`/`_height` output this phase (no
+such reference was available) — the algorithm is implemented per the
+publicly-understood AS2 semantics, same confidence tier as this project's
+other "believed correct, not independently cross-checked" items (see
+`docs/avm1-compatibility.md`'s unverified-assumption inventory).
+
+### Remaining sub-fixes for this priority (not started, in dependency order)
+
+See `docs/interactivity-audit.md` §8 for the complete list and reasoning:
+device-px -> stage-twips coordinate mapping (next pick — small, isolated,
+hard-blocks hit-testing), edge-detected input state, bounding-box hit-
+testing (design: `docs/hit-testing.md`), a per-placement Button instance
+object, a generic event dispatcher (design: `docs/events.md`), then finally
+`onClipEvent`'s remaining 15 mouse/key flags (status:
+`docs/onclipevent-compatibility.md`) and button `on()` handler dispatch.
+
+
 **Classification: AVM1 + DISPLAY LIST (hit-testing needs `_width`/`_height`, itself blocked on bounding-box computation) + OBJECT MODEL.**
 
 Confirmed, not hypothesized: `_width`/`_height` are hardcoded to `0`

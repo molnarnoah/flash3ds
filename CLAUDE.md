@@ -349,20 +349,31 @@ docs" section — don't just assume this is resolved.
 `docs/known-limitations.md` for full detail, ranked):**
 
 1. ~~ColorTransform/`_alpha` rendering~~ — **done**.
-2. No mouse/button interactivity at all (`_width`/`_height` hardcoded 0,
-   no hit-testing, `onClipEvent`'s 16 mouse/key flags parsed-never-fired,
-   button `on()` handlers parsed-never-run) — **very likely why Hobo never
-   progresses past its title screen**. Large scope; recommend splitting
-   into bounding-box -> hit-test -> dispatch sub-phases rather than one
-   atomic change.
+2. No mouse/button interactivity at all — **CURRENT, SOLE FOCUS per
+   explicit user instruction (2026-08-18); priorities #3-5 below are on
+   hold until this one reaches a stable state.** Sub-fix 1/N
+   (`_width`/`_height`, previously hardcoded to 0) is **done** — see
+   `docs/known-limitations.md`'s STEP 1-10 writeup, `docs/
+   interactivity-audit.md` (full 8-part trace: input pipeline, coordinate
+   system, Button2, hit-testing, event representation, `onClipEvent`),
+   `docs/hit-testing.md`/`docs/events.md` (design docs for the next two
+   sub-fixes, not yet implemented), `docs/onclipevent-compatibility.md`
+   (all 19 flags individually tabulated). **Next sub-fix, not yet started:**
+   the device-px -> stage-twips coordinate conversion (`_xmouse`/`_ymouse`
+   currently read raw DEVICE-pixel coordinates with no stage-pixel scaling
+   — a real, newly-found bug, see `docs/input.md`) — small, isolated, and
+   hard-blocks hit-testing, so it's the natural next pick. After that:
+   edge-detected input state, bounding-box hit-testing itself, a
+   per-placement Button "instance" object (buttons currently have NO
+   runtime object of their own at all — a bigger gap than expected, see
+   `docs/interactivity-audit.md` §3), a generic event dispatcher, then
+   `onClipEvent`'s remaining 15 mouse/key flags + button `on()` dispatch.
 3. `GlobalObject` has zero named built-ins — no `Math`/`Date`/`Number()`/
-   `String()`/`Boolean()` at all. Newly discovered this phase, not
-   previously documented anywhere. `Math.*` alone (random/floor/abs/etc.,
-   same `nativeImpl` mechanism `Key`/`Mouse`/`Sound` already use) is a
-   well-scoped, likely-high-value next candidate if #2 is deferred.
+   `String()`/`Boolean()` at all. **ON HOLD** per user instruction until
+   priority #2 is stable.
 4. `DefineMorphShape`/`2` not resolved (confirmed 19x in real `hobo.swf`).
-5. Audio codec decode — zero SWF sound is audible anywhere, on any
-   platform, regardless of the real `ndsp` plumbing Phase 10 built.
+   **ON HOLD.**
+5. Audio codec decode. **ON HOLD.**
 
 ## Build
 

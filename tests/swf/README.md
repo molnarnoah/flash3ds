@@ -52,6 +52,8 @@ coverage, not necessarily in the project's overall test coverage).
 | 019 | avm1_functions_closures | COVERED BY C++ SUITE | `Interpreter_Closures_*`, `DefineFunction2` param tests |
 | 020 | avm1_arithmetic_comparison | COVERED BY C++ SUITE | most of `test_avm1_interpreter.cpp` |
 | 021 | avm1_arrays_objects | COVERED BY C++ SUITE | `NewObject`/`InitArray`/`GetMember`/`SetMember` cases |
+| — | width_height | COVERED BY C++ SUITE | `MovieClipInstance_WidthHeight_*`/`MovieClipInstance_Width_*` (5 cases, interactivity phase 2026-08-18) — see `docs/known-limitations.md` |
+| — | mouse_position, button_press, button_release, button_rollover, button_rollout, movieclip_enterframe, movieclip_mousedown, movieclip_mouseup, hit_test_shape, nested_movieclip_hit_test, transformed_hit_test | **PLANNED, blocked** | these all require hit-testing/event-dispatch to exist to demonstrate anything meaningful — creating them now would be premature (nothing in the runtime could pass or meaningfully fail them yet); see `docs/hit-testing.md`/`docs/events.md` for the design these tests will validate once built |
 | 022 | dynamic_property_names | **PLANNED** | `_root["color" + x]`-style computed property access — flagged NOT TESTED in `docs/compatibility-matrix.md` §4; no dedicated case anywhere yet |
 | 023 | math_global_object | **PLANNED** | exercises `docs/known-limitations.md` priority #3 (`Math.*` doesn't exist) — deliberately left as a PLANNED failing case until that limitation is picked up |
 | 024 | definemorphshape | **PLANNED** | exercises `docs/known-limitations.md` priority #4 |

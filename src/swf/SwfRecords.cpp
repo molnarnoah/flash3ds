@@ -1,5 +1,6 @@
 #include "swf/SwfRecords.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace flash3ds::swf {
@@ -43,6 +44,28 @@ ColorTransform concatColorTransform(const ColorTransform& parent, const ColorTra
     out.alphaAdd =
         static_cast<int32_t>(std::lround(parent.alphaMult * child.alphaAdd)) + parent.alphaAdd;
     return out;
+}
+
+Rect transformRect(const Matrix& m, const Rect& r) {
+    auto transformPoint = [&](int32_t x, int32_t y) -> std::pair<double, double> {
+        double nx = m.scaleX * x + m.rotateSkew1 * y + m.translateXTwips;
+        double ny = m.rotateSkew0 * x + m.scaleY * y + m.translateYTwips;
+        return {nx, ny};
+    };
+    auto [x0, y0] = transformPoint(r.xMin, r.yMin);
+    auto [x1, y1] = transformPoint(r.xMax, r.yMin);
+    auto [x2, y2] = transformPoint(r.xMin, r.yMax);
+    auto [x3, y3] = transformPoint(r.xMax, r.yMax);
+    double xMin = std::min({x0, x1, x2, x3});
+    double xMax = std::max({x0, x1, x2, x3});
+    double yMin = std::min({y0, y1, y2, y3});
+    double yMax = std::max({y0, y1, y2, y3});
+    return Rect{
+        static_cast<int32_t>(std::lround(xMin)),
+        static_cast<int32_t>(std::lround(xMax)),
+        static_cast<int32_t>(std::lround(yMin)),
+        static_cast<int32_t>(std::lround(yMax)),
+    };
 }
 
 namespace {

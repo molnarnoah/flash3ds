@@ -74,3 +74,24 @@ input on a physical console in this session (no hardware was available,
 only Azahar) — it's real code that compiles and links against libctru (see
 [3ds-toolchain.md](3ds-toolchain.md)), with a documented, reasonable-effort
 mapping a target title can override if its own control needs differ.
+
+## Interactivity phase (2026-08-18) — coordinate-space finding
+
+Tracing the full input pipeline for the interactivity phase
+(`docs/interactivity-audit.md` §1-2 has the complete trace) surfaced a
+real, previously-undocumented, **not yet exercised** gap:
+`Nintendo3DSInput`'s `screenWidth_`/`screenHeight_` (the space
+`InputState::mouseX()`/`mouseY()` end up in) is the DEVICE/SCREEN's own
+pixel dimensions (e.g. 400x240 top / 320x240 bottom, per
+`nintendo3ds_main.cpp`'s construction), **not** the loaded movie's own
+stage pixel dimensions (`Movie::frameSize`, e.g. 600x450 for `hobo.swf`).
+`_xmouse`/`_ymouse` (`MovieClipInstance.cpp:357-358,511-512`) read
+`InputState` directly with **no stage-scaling applied at all**. Whenever a
+movie's stage size doesn't exactly match the rendering screen's pixel
+size, `_xmouse`/`_ymouse` — and any future hit-testing built directly on
+`InputState`'s raw values — would be wrong by exactly that scale factor.
+Not caught by any existing test (no test in this project has ever set
+`InputState`'s mouse position while also rendering a non-1:1-scaled
+stage). Flagged, not fixed this turn — the fix belongs in a new
+device-px -> stage-twips conversion layer, tracked as the next item in
+`docs/interactivity-audit.md` §8 and designed for in `docs/hit-testing.md`.
