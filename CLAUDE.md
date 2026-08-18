@@ -26,18 +26,18 @@ that inspired it.
 
 ## Current status
 
-**Phase 1, Phase 2, Phase 3, and Phase 4 complete and committed** (see
-`git log`). Phase 1: SWF loading (FWS/CWS), header parsing, generic tag
-scan with logging, CLI inspector. Phase 2: MATRIX/CXFORM record readers,
-PlaceObject/PlaceObject2/RemoveObject/RemoveObject2/FrameLabel tag-body
-parsing, depth-indexed `DisplayList` (add/replace/update-in-place/remove),
-and `Timeline` with full playhead control (`gotoAndStop`/`gotoAndPlay` by
-frame or label, `nextFrame`/`prevFrame`/`play`/`stop`/`advanceOneFrame`).
-Phase 3: `DefineShape`/`2`/`3` parsing (fill/line styles + SHAPERECORD
-stream), `CharacterDictionary` (characterId -> Shape/Sprite, including
-nested `DefineSprite` tag streams reusing `Timeline`), `concatMatrix`
-world-transform composition, a deliberately simplified `ShapeTessellator`,
-an `IRenderer`/`SoftwareRenderer` (scanline fill, PPM output), and a
+**Phase 1 through Phase 5 complete and committed** (see `git log`). Phase 1:
+SWF loading (FWS/CWS), header parsing, generic tag scan with logging, CLI
+inspector. Phase 2: MATRIX/CXFORM record readers, PlaceObject/PlaceObject2/
+RemoveObject/RemoveObject2/FrameLabel tag-body parsing, depth-indexed
+`DisplayList` (add/replace/update-in-place/remove), and `Timeline` with
+full playhead control (`gotoAndStop`/`gotoAndPlay` by frame or label,
+`nextFrame`/`prevFrame`/`play`/`stop`/`advanceOneFrame`). Phase 3:
+`DefineShape`/`2`/`3` parsing (fill/line styles + SHAPERECORD stream),
+`CharacterDictionary` (characterId -> Shape/Sprite, including nested
+`DefineSprite` tag streams reusing `Timeline`), `concatMatrix` world-
+transform composition, a deliberately simplified `ShapeTessellator`, an
+`IRenderer`/`SoftwareRenderer` (scanline fill, PPM output), and a
 `SceneRenderer` that walks the display list and recurses into sprites, plus
 a CLI `--render <frame> <out.ppm>` flag. Phase 4: the AVM1 VM — a
 `Value`/`Object` dynamic-type model (prototype chain, Array semantics),
@@ -45,20 +45,36 @@ a CLI `--render <frame> <out.ppm>` flag. Phase 4: the AVM1 VM — a
 `Interpreter` covering the full AVM1 opcode set (arithmetic/comparison/
 bitwise/string ops, variables, objects/arrays, function definition/calling
 including `DefineFunction2` register params + preload flags, closures,
-bounded-depth recursion, and `Jump`/`If` control flow). `HostBindings`
-exists as the seam to MovieClip/Timeline actions but is all no-op stubs —
-the VM is tested purely in isolation against raw bytecode buffers and is
-**not yet wired into `DoAction` tag dispatch or the scene graph**. 114
-passing unit tests, zero compiler warnings (`-Wall -Wextra`) on a full
-clean rebuild.
+bounded-depth recursion, and `Jump`/`If` control flow) — tested purely in
+isolation against raw bytecode buffers, not yet wired into anything. Phase
+5: `MovieClipInstance` (`src/runtime/MovieClipInstance.h/.cpp`) — the AVM1/
+scene-graph integration point. Every placed sprite gets its own `Timeline`
+(a real independent playhead, replacing Phase 3's shared per-character
+cache), runs `DoAction`/`DoInitAction` through the Phase 4 interpreter with
+a real `HostBindings` wired to that `Timeline`/`DisplayList`
+(`GotoFrame`/`Play`/`Stop`/`GetProperty`/`SetProperty`/`CloneSprite`/
+`RemoveSprite`/`SetTarget`, all working), and exposes `_x`/`_y`/
+`_currentframe`/`_root`/`_parent`/named-child-clip access through
+`avm1::Object`'s new native-property hooks (`nativeGet`/`nativeSet`/
+`nativeEnumerate`). `SceneRenderer` now walks the `MovieClipInstance` tree,
+so script-driven changes actually render; the CLI's `--render` ticks the
+tree frame-by-frame (running scripts along the way) instead of jumping
+straight to the target frame. Phase 5 also fixed a real Phase 3 bug found
+while building its manual smoke test: `CharacterDictionary` only scanned
+top-level tags, so a character defined nested inside a `DefineSprite`'s own
+tag stream (legal per spec) silently never resolved — it's now a recursive
+scan. `onClipEvent`/button `on()` handlers, `_width`/`_height`, and
+color-transform application at render time are explicitly NOT done (see
+`docs/avm1-support.md`'s "Known Phase 5 limitations"). 126 passing unit
+tests, zero compiler warnings (`-Wall -Wextra`) on a full clean rebuild.
 
 Read `docs/architecture.md` for the full 10-phase plan, `docs/swf-support.md`
 for the current SWF feature matrix, `docs/renderer.md` for the renderer's
 specific (documented, deliberate) limitations, and `docs/avm1-support.md`
-for the AVM1 opcode support matrix and documented confidence levels before
-starting new work. **Do not jump ahead of the current phase** — the
-project spec is explicit about working phase-by-phase, building + testing
-+ documenting at the end of each one.
+for the AVM1 opcode support matrix, documented confidence levels, and known
+Phase 5 limitations before starting new work. **Do not jump ahead of the
+current phase** — the project spec is explicit about working phase-by-
+phase, building + testing + documenting at the end of each one.
 
 ## Workflow for every phase
 
@@ -70,27 +86,32 @@ project spec is explicit about working phase-by-phase, building + testing
 5. `git add -A && git commit` with a clear summary of what shipped in that
    phase.
 
-## Next phase (Phase 5)
+## Next phase (Phase 6)
 
-MovieClip API / scene-graph wiring. Phase 4 built and thoroughly tested the
-AVM1 interpreter in isolation; Phase 5 connects it to the rest of the
-runtime:
+Sound / Input. Phase 5 wired AVM1 into a real scene graph with per-instance
+playheads; Phase 6 gives that scene graph two things it's currently
+missing entirely:
 
-- Dispatch `DoAction` (and `DoInitAction`) tag bodies through
-  `Interpreter::execute` during `Timeline` frame advance, instead of the
-  current parse-and-skip.
-- Implement `HostBindings` for real against `Timeline`/`DisplayList`:
-  `GotoFrame`/`GotoLabel`/`Play`/`Stop`/`NextFrame`/`PreviousFrame`,
-  `GetProperty`/`SetProperty` (`_x`/`_y`/`_alpha`/`_visible`/`_rotation`/
-  etc.), `CloneSprite`/`RemoveSprite`, `StartDrag`/`EndDrag`, `SetTarget`.
-- Give each `MovieClip` (sprite) **instance** its own independent playhead
-  — `SceneRenderer` currently caches one shared `Timeline` per *character*,
-  documented as a Phase 3 limitation; Phase 5 needs one per *instance*.
-- Expose the display-list tree as AVM1 objects: `_root`, `_parent`,
-  named child references (`this.childName`), so `GetVariable`/`SetVariable`
-  and `GetMember` can resolve MovieClip properties and nested clips.
-- `onClipEvent`/button `on()` handler wiring (event-driven AVM1 code, not
-  just frame-script `DoAction`).
+- **Sound.** `DefineSound` (14) / `SoundStreamHead`/`2` (18/45) /
+  `SoundStreamBlock` (19) / `StartSound` (15) / `DefineButtonSound` (17) tag
+  parsing (currently name/offset/length only). An `AudioManager` abstract
+  interface (mirroring `IRenderer`'s design: `flash3ds_core` stays
+  platform-independent, a desktop backend for testing, a Nintendo 3DS/ndsp
+  backend later — Phase 10). AVM1's `Sound` object (`attachSound`, `start`,
+  `stop`, `setVolume`, `getVolume`) wired against it.
+- **Input.** A `Key`/`Mouse` model AVM1 can query (`Key.isDown()`,
+  `Key.getCode()`, `_xmouse`/`_ymouse` — currently stubbed in
+  `MovieClipHostBindings::getProperty`, see `docs/avm1-support.md`) and that
+  drives `StartDrag`/`EndDrag` for real (currently recognized/forwarded
+  no-ops — see `MovieClipInstance.h`'s documented limitations). Desktop
+  input source now (keyboard/mouse via whatever the test harness needs),
+  3DS touch/button input later (Phase 10).
+- **`onClipEvent`/button `on()` handlers.** Needs `PlaceObject2`'s optional
+  `ClipActionRecord` section parsed (currently skipped entirely — see
+  `docs/swf-support.md`) AND the input model above for most useful
+  triggers (`mouseDown`, `press`, `keyDown`, ...); `enterFrame`/`load`/
+  `unload` don't need input and could be done as soon as `ClipActionRecord`
+  parsing exists.
 
 Do NOT implement AVM2/ActionScript 3 — out of scope per the project spec.
 Keep following the TDD pattern: small test SWFs / programmatic fixtures,

@@ -1,35 +1,61 @@
 # AVM1 (ActionScript 2) Support Status
 
-**Status: Phase 4 VM core implemented.** Phase 5 (MovieClip API / scene-graph
-wiring) is not started.
+**Status: Phase 4 VM core implemented; Phase 5 wired it into the scene
+graph.** `DoAction`/`DoInitAction` now actually execute against a real
+`MovieClip` tree, with per-instance playheads and a real `HostBindings`.
 
 Phase 4 built a complete, standalone AVM1 bytecode interpreter
 (`src/avm1/`) that runs against a raw bytecode buffer and an
-`ExecutionContext` — it is **not yet wired into `Movie`/`Timeline`**:
-`DoAction`/`DoInitAction` tag bodies are still only parsed as raw bytes at
-the tag level (see `docs/swf-support.md`) and are not executed. That
-wiring — plumbing a `Timeline`/`DisplayList`-backed `HostBindings`
-implementation into the interpreter, and calling it from `DoAction`/frame
-processing — is Phase 5's job, per the project's phase-by-phase plan (see
-`docs/architecture.md`).
+`ExecutionContext`. `src/avm1/` itself remains host-agnostic on purpose —
+it still has zero dependency on `runtime/` or `swf/` (besides `SwfReader`
+for byte parsing) — but Phase 5 added the integration layer,
+`src/runtime/MovieClipInstance.h/.cpp` (in `runtime/`, deliberately the
+one place in the codebase allowed to depend on BOTH `runtime/` and
+`avm1/`), which:
+
+- Runs a `DoAction`/`DoInitAction` tag's bytecode via `avm1::Interpreter::
+  execute()` against a real `ExecutionContext`, scoped to a specific
+  `MovieClipInstance` as `this`/the innermost scope object.
+- Implements a real `HostBindings` (`MovieClipHostBindings`, private to
+  `MovieClipInstance.cpp`) backed by an actual `Timeline`/`DisplayList`.
+- Gives every placed sprite/MovieClip its own `Timeline` — a genuinely
+  independent playhead, not a shared per-character cache (see
+  `docs/renderer.md`).
+- Exposes `_x`/`_y`/`_currentframe`/`_root`/`_parent`/named-child-clip
+  access etc. through `avm1::Object`'s new `nativeGet`/`nativeSet`/
+  `nativeEnumerate` hooks (see "Value model" below) — so both `GetProperty`/
+  `SetProperty` bytecode AND plain `.member`/bare-variable bytecode resolve
+  the same intrinsic properties consistently.
 
 ## Module layout
 
 ```
-src/avm1/
+src/avm1/                      (host-agnostic — no runtime/ or swf/ dependency
+                                 besides SwfReader for byte parsing)
   Value.h/.cpp            — the dynamic Value type + Object (property bag,
-                             Array, Function)
+                             Array, Function, + Phase 5's native property
+                             hooks)
   Stack.h                 — operand stack (safe on underflow)
   Scope.h/.cpp             — variable scope chain (GetVariable/SetVariable/
                              DefineLocal/Delete2 semantics)
   GlobalObject.h/.cpp      — constructs the top-level/`_global` object
   ActionCode.h/.cpp        — AVM1 opcode enum + name table
-  HostBindings.h           — the seam to MovieClip-affecting actions (all
-                             no-op stubs in Phase 4 — see below)
+  HostBindings.h           — the abstract seam to MovieClip-affecting
+                             actions (see below for who implements it)
   ExecutionContext.h/.cpp  — stack + scope + registers + constant pool +
                              `this` + host + trace/random/clock sources +
                              shared call-depth counter
   Interpreter.h/.cpp       — the dispatch loop
+
+src/runtime/MovieClipInstance.h/.cpp   (Phase 5 — depends on BOTH avm1/ and
+                                         runtime/; the scene-graph/AVM1
+                                         integration point)
+  ScriptEnvironment    — owns the shared `_global` object + DoInitAction
+                         bookkeeping for one loaded movie's whole clip tree
+  MovieClipInstance    — one placed MovieClip (root or a sprite instance):
+                         owns its own Timeline, a scripting Object, and
+                         (privately) the real MovieClipHostBindings
+                         implementation
 ```
 
 ## Value model
@@ -53,6 +79,20 @@ walk to survive a cyclic prototype), Array semantics (`length` and numeric
 index properties map to a real `std::vector<Value> elements`, capped at 10M
 elements against a malformed/malicious length assignment), and Function
 objects (captured closure scope + bytecode body — see below).
+
+**Native property hooks (Phase 5):** `Object` optionally carries
+`nativeGet`/`nativeSet`/`nativeEnumerate` `std::function` hooks a host
+embedder can install to intercept specific property names — checked BEFORE
+the normal own-property map on every read/write path
+(`hasOwnProperty`/`getOwnProperty`/`setOwnProperty`, which `Scope` uses for
+plain-variable access, AND `getMember`/`setMember`, which `.member`
+bytecode uses), so `_x = 10;` (bare variable) and `this._x = 10;` (explicit
+member access) both resolve identically. This keeps `avm1/` itself
+completely unaware of what a "MovieClip" is — `runtime::MovieClipInstance`
+is the only thing that ever installs these hooks (see
+`MovieClipInstance::wireScriptObject()`), same seam philosophy as
+`HostBindings`. A native property always shadows a same-named plain
+property, matching real AS2 (you cannot override `_x` by assignment).
 
 ## Opcode status
 
@@ -174,17 +214,45 @@ revisit if a target title needs it.
 `Throw`: logs the thrown value and continues (no exception propagation —
 consistent with `Try` not being implemented).
 
-### MovieClip / timeline actions — stubbed (HostBindings, Phase 5)
+### MovieClip / timeline actions — executed (Phase 5, via `MovieClipHostBindings`)
 
 `GotoFrame`, `GotoFrame2`, `GotoLabel`, `Play`, `Stop`, `NextFrame`,
 `PreviousFrame`, `GetProperty`, `SetProperty`, `CloneSprite`,
-`RemoveSprite`, `StartDrag`, `EndDrag`, `SetTarget`, `SetTarget2`. All are
-correctly parsed (including popping the right number/shape of stack
-operands, so the interpreter's stack stays balanced) and forwarded to
-`ExecutionContext::host` (a `HostBindings*`, `nullptr` in Phase 4) — with
-no host bound, they log at `LOG_DEBUG` and are otherwise no-ops. See
-`src/avm1/HostBindings.h` for the exact interface Phase 5 needs to
-implement against a real `Timeline`/`DisplayList`.
+`RemoveSprite`, `SetTarget`, `SetTarget2` all have real behavior when
+`ExecutionContext::host` points at a `runtime::MovieClipHostBindings`
+(which `runtime::ScriptEnvironment::run()` always wires up — see
+`src/runtime/MovieClipInstance.cpp`). Without a host bound (e.g. the
+isolated `test_avm1_interpreter.cpp` tests), they still log at `LOG_DEBUG`
+and are no-ops, exactly like Phase 4 — `avm1/` itself hasn't changed.
+
+- `GotoFrame`/`GotoFrame2`/`GotoLabel`/`Play`/`Stop`/`NextFrame`/
+  `PreviousFrame` act on the "current target" (whatever `SetTarget` last
+  pointed at, defaulting to the clip whose script is running) —
+  `GotoFrame`'s 0-based frame number is converted to `Timeline`'s 1-based
+  convention.
+- `GetProperty`/`SetProperty` resolve their explicit Target operand via
+  `MovieClipInstance::resolvePath()` (an empty target string means "current
+  target") and dispatch on the spec's fixed 0-21 property-index table to
+  `MovieClipInstance` getters/setters (`_x`/`_y`/`_xscale`/`_yscale`/
+  `_currentframe`/`_totalframes`/`_alpha`/`_visible`/`_rotation`/`_target`/
+  `_framesloaded`/`_name`; `_width`/`_height`/`_droptarget`/`_url` are
+  recognized but not computed/modeled — see `docs/swf-support.md`).
+- `CloneSprite`/`RemoveSprite` mutate the target's PARENT display list
+  synchronously (via `Timeline::mutableDisplayListForScripting()`, a
+  deliberately narrow escape hatch — see its doc comment in `Timeline.h` —
+  for exactly this AVM1 use case, kept separate from `Timeline`'s normal
+  tag-driven `DisplayList` updates) and create/destroy the corresponding
+  `MovieClipInstance` child immediately, matching real synchronous clone/
+  remove semantics.
+- `SetTarget`/`SetTarget2` resolve an AS2 target path (slash-syntax
+  `"/a/b"`/`".."`, or dot-syntax `"_root.a.b"`/`"a.b"`, both accepted by
+  `MovieClipInstance::resolvePath()`) and change which clip subsequent
+  target-less actions in the SAME script run affect.
+
+`StartDrag`/`EndDrag` are still recognized/forwarded but remain no-ops (no
+input/pointer model yet — Phase 6). See `src/avm1/HostBindings.h` for the
+exact interface and `docs/swf-support.md`/`docs/renderer.md` for what
+`MovieClipInstance` does and doesn't model.
 
 `WaitForFrame`/`WaitForFrame2`: simplified to "always considered loaded"
 (never takes the skip branch) — correct once a real `Timeline` always has
@@ -241,13 +309,58 @@ real SWF output.
   (with label-based `Jump`/`If` offset resolution) used to build every test
   fixture above, written from the same public spec the interpreter itself
   is implemented against (not sharing code with it).
+- `tests/test_movieclip_instance.cpp` (Phase 5) — the interpreter actually
+  driving a `MovieClipInstance` tree, as opposed to the isolated
+  `test_avm1_*.cpp` tests above: `DoAction` on a clip's frame setting a
+  variable on its scripting object; `GetProperty`/`SetProperty` AND
+  `GetMember`/`SetMember` both round-tripping `_x` through the SAME
+  underlying state; two clips with different frame counts advancing
+  independently under repeated `advanceFrame()` ticks; `Stop`/`SetTarget`
+  affecting only the intended clip, not the whole tree; `CloneSprite`
+  creating a real new child at a new depth; `RemoveSprite` tearing one
+  down; `_root`/`_parent` identity from a child's perspective; and
+  `resolvePath()`'s relative/absolute/`_root.`/`..` path forms.
+- `tests/test_character_dictionary.cpp` also gained a Phase 5 regression
+  test: a character defined NESTED inside a `DefineSprite`'s own tag stream
+  (legal per spec — the character dictionary is global across the file, not
+  scoped per-sprite) now resolves correctly; this was a real bug caught
+  while building the Phase 5 manual/CLI smoke test, not a hypothetical.
 
-## Next (Phase 5)
+## Known Phase 5 limitations
 
-Wire this interpreter into the scene graph: implement a real
-`HostBindings` backed by `Timeline`/`DisplayList`, execute `DoAction`/
-`DoInitAction` tag bodies during frame processing, add the `MovieClip` API
-surface (`_root`, `_parent`, per-instance properties via `GetProperty`/
-`SetProperty`'s fixed property-index table, `onClipEvent` handlers,
-independent per-sprite-instance playheads — see the limitation already
-flagged in `docs/renderer.md`).
+- **A child's authored placement transform is applied only once, at
+  creation.** A later frame's `PlaceObject2` "update in place" tag
+  targeting an already-existing sprite instance's depth is NOT re-applied —
+  only a genuine character replacement (or a brand-new placement) picks up
+  a fresh transform. This deliberately trades a rarer fidelity gap (an
+  author re-authoring a clip's position mid-timeline while it's ALSO
+  independently script-driven) for a much more common one it avoids
+  (script-set `_x`/`_y` being silently stomped back to the placement
+  transform on every single tick). See `MovieClipInstance.h`'s file header
+  for the full reasoning.
+- **`_width`/`_height` are not computed** — always return 0 (would need a
+  full recursive subtree bounding-box computation).
+- **`onClipEvent`/button `on()` handlers are not implemented** — most
+  useful triggers (`mouseDown`, `press`, ...) need an input model that
+  doesn't exist yet (Phase 6), and `onClipEvent` itself requires parsing
+  `PlaceObject2`'s optional `ClipActionRecord` section, which isn't parsed
+  yet either. `DoAction`/`DoInitAction` frame scripts ARE fully wired.
+- **A clip removed via `RemoveSprite`/`removeMovieClip` mid-script leaves
+  any `MovieClipHostBindings::current_`/raw pointers referencing it
+  dangling** if the SAME script keeps running target-less actions
+  afterward. Real content overwhelmingly follows `removeMovieClip(this);
+  return;` (or simply doesn't reference the clip again), so this is a
+  documented edge-case risk, not something actively guarded against.
+- **`_xscale`/`_yscale`/`_rotation`** decompose the placement `MATRIX`
+  assuming no independent (non-rotational) skew — exact for any transform
+  actually produced by `_xscale`/`_yscale`/`_rotation` themselves, an
+  approximation for a hand-authored skewed matrix (rare in practice).
+
+## Next (Phase 6)
+
+Sound / Input, per the project's phase-by-phase plan (see
+`docs/architecture.md`). Relevant carry-overs into that phase from the
+AVM1/MovieClip side: `StartDrag`/`EndDrag` need a real pointer/input model
+before they can do anything; `onClipEvent`/button `on()` handlers need both
+an input model AND `PlaceObject2`'s `ClipActionRecord` parsing (currently
+skipped entirely).

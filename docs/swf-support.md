@@ -129,7 +129,7 @@ for the renderer architecture and known limitations.
 
 | Feature | Status |
 |---|---|
-| `CharacterDictionary::build()` — resolves `DefineShape`/`2`/`3` and `DefineSprite` character IDs | ✅ |
+| `CharacterDictionary::build()` — resolves `DefineShape`/`2`/`3` and `DefineSprite` character IDs | ✅ recursively — a character-defining tag nested inside a `DefineSprite`'s own tag stream (legal per spec; the character ID dictionary is global across the file, not scoped per-sprite) resolves correctly too, not just top-level tags (fixed during Phase 5 — see `tests/test_character_dictionary.cpp`'s `..._ResolvesShapeNestedInsideSprite`) |
 | Nested `DefineSprite` tag streams reusable by `Timeline` (shared code path with top-level movie tags, no duplication) | ✅ |
 | Bitmap/Text/Button character resolution | ❌ Phase 8+ |
 
@@ -140,17 +140,29 @@ for the renderer architecture and known limitations.
 | `IRenderer` abstraction (`beginFrame`/`endFrame`/`fillPolygon`/`strokePolyline`) | ✅ |
 | `SoftwareRenderer` (RGBA8 framebuffer, even-odd scanline fill with alpha blending, naive stroke rasterizer, PPM output) | ✅ desktop/testing implementation |
 | `ShapeTessellator` (SHAPERECORD stream → flat polygons/polylines) | ✅ **simplified**: one closed polygon per MoveTo run, no edge-boundary merging — see `docs/renderer.md` for exactly what this does and doesn't render correctly |
-| `SceneRenderer` (DisplayList walk, character resolution, `concatMatrix` world-transform composition, recursive sprite rendering) | ✅ |
-| Independent per-instance sprite playhead | ❌ Phase 4/5 (AVM1 + MovieClip API) — see `docs/renderer.md` |
-| `ColorTransform` / clip-depth application at render time | ❌ later phase — parsed and stored, not yet applied |
+| `SceneRenderer` (MovieClipInstance-tree walk, character resolution, `concatMatrix` world-transform composition, recursive sprite rendering) | ✅ |
+| Independent per-instance sprite playhead | ✅ Phase 5 — each `MovieClipInstance` owns its own `Timeline`; `SceneRenderer` recurses into instances, not a shared per-character cache — see `docs/renderer.md` |
+| `ColorTransform` / clip-depth application at render time | ❌ later phase — parsed and stored (as of Phase 5, per-`MovieClipInstance`, script-mutable via `_alpha`), not yet applied to rendered pixels |
 | Nintendo 3DS backend (`Nintendo3DSRenderer`) | ❌ Phase 10 |
-| CLI `--render <frame> <out.ppm>` | ✅ |
+| CLI `--render <frame> <out.ppm>` | ✅ ticks a real `MovieClipInstance` tree frame-by-frame (running DoAction scripts along the way) rather than jumping straight to the target frame — see `docs/renderer.md` |
+
+### AVM1 / MovieClip API (Phase 4/5 — see `docs/avm1-support.md` for the full opcode matrix)
+
+| Feature | Status |
+|---|---|
+| AVM1 bytecode interpreter (`src/avm1/Interpreter.cpp`) | ✅ Phase 4 — full opcode set, tested in isolation |
+| `DoAction`/`DoInitAction` tag dispatch into a running clip | ✅ Phase 5 — `MovieClipInstance` runs a clip's current-frame `DoAction` bodies and (once, per character) `DoInitAction` |
+| `HostBindings` wired to a real `Timeline`/`DisplayList` (GotoFrame/Play/Stop/GetProperty/SetProperty/CloneSprite/RemoveSprite/SetTarget) | ✅ Phase 5 — see `runtime::MovieClipInstance`'s internal `MovieClipHostBindings` |
+| `_root` / `_parent` / named child clip access (`this.childName`) | ✅ Phase 5 — via `avm1::Object`'s native property hooks (`src/avm1/Value.h`) |
+| `_x`/`_y`/`_xscale`/`_yscale`/`_rotation`/`_alpha`/`_visible`/`_currentframe`/`_totalframes`/`_name`/`_target` | ✅ Phase 5, both via `GetProperty`/`SetProperty` and via `.member` access |
+| `_width`/`_height` | ❌ not computed — always returns 0 (would need full recursive subtree bounding-box computation) |
+| `StartDrag`/`EndDrag` | ❌ recognized/forwarded, no-op — needs an input model (Phase 6) |
+| `onClipEvent`/button `on()` handlers | ❌ Phase 6+ — needs `PlaceObject2`'s optional `ClipActionRecord` section parsed (not done) and, for most useful triggers, an input model |
 
 ### Not yet implemented (by design — later phases)
 
 - Bitmap / Text / Button rendering, `LineStyle2`/`DefineShape4`, real gradient rendering, `ColorTransform` application (Phase 8, or earlier if a target title needs it)
-- AVM1 VM (Phase 4)
-- MovieClip API / `_root` / properties / `onClipEvent` / independent sprite playheads (Phase 5)
+- `_width`/`_height`, `onClipEvent`/button `on()` handlers (see the AVM1/MovieClip API table above)
 - Sound / Input (Phase 6)
 - ExternalInterface (Phase 7)
 - Nintendo 3DS backend (Phase 10)

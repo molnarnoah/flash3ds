@@ -22,6 +22,7 @@
 #include "renderer/SceneRenderer.h"
 #include "renderer/SoftwareRenderer.h"
 #include "runtime/CharacterDictionary.h"
+#include "runtime/MovieClipInstance.h"
 #include "runtime/Timeline.h"
 #include "swf/SwfLoader.h"
 
@@ -30,6 +31,8 @@ using flash3ds::LogLevel;
 using flash3ds::renderer::SceneRenderer;
 using flash3ds::renderer::SoftwareRenderer;
 using flash3ds::runtime::CharacterDictionary;
+using flash3ds::runtime::MovieClipInstance;
+using flash3ds::runtime::ScriptEnvironment;
 using flash3ds::runtime::Timeline;
 using flash3ds::swf::SwfLoader;
 
@@ -47,44 +50,54 @@ void printUsage(const char* argv0) {
                   argv0);
 }
 
-// Renders `frameIndex` (1-based) of `movie`'s top-level timeline to a PPM
-// file at `outPath`, sized to the movie's stage dimensions in pixels
-// (minimum 1x1 so a degenerate/zero-size stage still produces a file).
+// Renders `frameIndex` (1-based) of `movie`'s root timeline to a PPM file
+// at `outPath`, sized to the movie's stage dimensions in pixels (minimum
+// 1x1 so a degenerate/zero-size stage still produces a file).
+//
+// Builds a full MovieClipInstance tree (Phase 5) and TICKS it forward to
+// `frameIndex` (running frame 1's scripts at construction, then advancing
+// one frame + running that frame's scripts, `frameIndex - 1` more times) —
+// rather than jumping straight there like Phase 3's timeline->gotoAndStop()
+// did — so DoAction scripts on every frame in between actually run, exactly
+// like a real player stepping through the movie. If a script calls stop()
+// along the way, later frames simply won't be reached, which is correct
+// behavior, not a bug.
+//
 // Returns false (and prints an error) on any failure.
 bool renderFrameToPpm(const flash3ds::runtime::Movie& movie, uint32_t frameIndex,
                        const std::string& outPath) {
-    auto timeline = Timeline::build(movie);
-    if (!timeline) {
-        std::fprintf(stderr, "--render: could not build timeline (movie invalid)\n");
-        return false;
-    }
-    if (timeline->frameCount() == 0) {
-        std::fprintf(stderr, "--render: movie has no frames\n");
-        return false;
-    }
-    if (frameIndex < 1 || frameIndex > timeline->frameCount()) {
-        std::fprintf(stderr, "--render: frame %u out of range [1, %u]\n", frameIndex,
-                      timeline->frameCount());
-        return false;
-    }
-    timeline->gotoAndStop(frameIndex);
-
     CharacterDictionary characters = CharacterDictionary::build(movie);
+    ScriptEnvironment env;
+
+    auto root = MovieClipInstance::createRoot(movie, characters, env);
+    if (!root) {
+        std::fprintf(stderr, "--render: could not build the MovieClip tree (movie invalid or has no frames)\n");
+        return false;
+    }
+    uint32_t totalFrames = root->timeline().frameCount();
+    if (frameIndex < 1 || frameIndex > totalFrames) {
+        std::fprintf(stderr, "--render: frame %u out of range [1, %u]\n", frameIndex, totalFrames);
+        return false;
+    }
+
+    for (uint32_t f = 1; f < frameIndex && f < totalFrames; ++f) {
+        root->advanceFrame();
+    }
 
     int width = std::max(1, static_cast<int>(std::lround(movie.frameSize.widthPixels())));
     int height = std::max(1, static_cast<int>(std::lround(movie.frameSize.heightPixels())));
 
     SoftwareRenderer renderer(width, height);
     SceneRenderer scene(movie, characters);
-    scene.render(*timeline, renderer, width, height);
+    scene.render(*root, renderer, width, height);
 
     if (!renderer.writePpm(outPath)) {
         std::fprintf(stderr, "--render: failed to write '%s'\n", outPath.c_str());
         return false;
     }
 
-    std::printf("\n-- Render -- wrote frame %u (%dx%d px) to %s\n", frameIndex, width, height,
-                 outPath.c_str());
+    std::printf("\n-- Render -- wrote frame %u of %u (%dx%d px) to %s\n", root->timeline().currentFrame(),
+                 totalFrames, width, height, outPath.c_str());
     return true;
 }
 

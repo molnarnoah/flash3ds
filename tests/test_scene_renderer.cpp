@@ -3,7 +3,7 @@
 #include "renderer/SceneRenderer.h"
 #include "renderer/SoftwareRenderer.h"
 #include "runtime/CharacterDictionary.h"
-#include "runtime/Timeline.h"
+#include "runtime/MovieClipInstance.h"
 #include "swf/SwfLoader.h"
 #include "swf/TagCode.h"
 
@@ -11,7 +11,8 @@ namespace fixtures = flash3ds::test::fixtures;
 using flash3ds::renderer::SceneRenderer;
 using flash3ds::renderer::SoftwareRenderer;
 using flash3ds::runtime::CharacterDictionary;
-using flash3ds::runtime::Timeline;
+using flash3ds::runtime::MovieClipInstance;
+using flash3ds::runtime::ScriptEnvironment;
 using flash3ds::swf::SwfLoader;
 using flash3ds::swf::TagCode;
 
@@ -69,9 +70,10 @@ TEST_CASE(SceneRenderer_SingleShape_FillsExpectedRegionOnly) {
     auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
     CHECK(movie->valid);
 
-    auto timeline = Timeline::build(*movie);
-    CHECK(timeline != nullptr);
     auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
 
     int width = static_cast<int>(movie->frameSize.widthPixels());
     int height = static_cast<int>(movie->frameSize.heightPixels());
@@ -80,7 +82,7 @@ TEST_CASE(SceneRenderer_SingleShape_FillsExpectedRegionOnly) {
 
     SoftwareRenderer renderer(width, height);
     SceneRenderer scene(*movie, characters);
-    scene.render(*timeline, renderer, width, height);
+    scene.render(*root, renderer, width, height);
 
     // Well inside the rectangle [10,50)x[10,50).
     auto inside = renderer.pixelAt(30, 30);
@@ -100,15 +102,17 @@ TEST_CASE(SceneRenderer_NestedSprite_ComposesWorldTransform) {
     auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
     CHECK(movie->valid);
 
-    auto timeline = Timeline::build(*movie);
     auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
 
     int width = static_cast<int>(movie->frameSize.widthPixels());
     int height = static_cast<int>(movie->frameSize.heightPixels());
 
     SoftwareRenderer renderer(width, height);
     SceneRenderer scene(*movie, characters);
-    scene.render(*timeline, renderer, width, height);
+    scene.render(*root, renderer, width, height);
 
     // Composed offset: sprite placed at (30,30) + inner shape local offset
     // (5,5) = (35,35) world px, rectangle spans [35,55)x[35,55).

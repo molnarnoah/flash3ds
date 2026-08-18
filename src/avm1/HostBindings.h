@@ -42,12 +42,17 @@ public:
     // _yscale, _currentframe, _totalframes, _alpha, _visible, _width,
     // _height, _rotation, _target, _framesloaded, _name, _droptarget,
     // _url, _highquality, _focusrect, _soundbuftime, _quality, _xmouse,
-    // _ymouse).
-    virtual Value getProperty(int propertyIndex) {
+    // _ymouse). `target` is the action's Target operand (an AS2 target
+    // path, e.g. "/mc1/mc2" or ""); an empty string means "the current
+    // target" (whatever SetTarget last pointed at, or the clip whose
+    // script is running if SetTarget was never called).
+    virtual Value getProperty(const std::string& target, int propertyIndex) {
+        (void)target;
         (void)propertyIndex;
         return Value::undefined();
     }
-    virtual void setProperty(int propertyIndex, const Value& value) {
+    virtual void setProperty(const std::string& target, int propertyIndex, const Value& value) {
+        (void)target;
         (void)propertyIndex;
         (void)value;
     }

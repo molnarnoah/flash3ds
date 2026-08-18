@@ -36,12 +36,19 @@ SpriteDef parseSpriteNestedTags(const Movie& movie, const swf::TagRecord& sprite
     return def;
 }
 
-}  // namespace
-
-CharacterDictionary CharacterDictionary::build(const Movie& movie) {
-    CharacterDictionary dict;
-
-    for (const auto& tag : movie.tags) {
+// Scans one tag list (either the movie's own top-level tags, or a
+// DefineSprite's nested control-tag stream) for character-defining tags and
+// registers them into `dict`, recursing into any nested DefineSprite it
+// finds. SWF's character ID dictionary is GLOBAL across the whole file —
+// per the public spec, a character-defining tag may legally appear nested
+// inside a DefineSprite's own tag stream rather than only at the top level
+// (uncommon from the standard Flash IDE publish pipeline, which puts nearly
+// everything at the top level, but legal and seen from some authoring
+// tools/obfuscators) — so this must be recursive, not just a single pass
+// over movie.tags, or such a character's ID would silently never resolve.
+void scanTagsForCharacters(const Movie& movie, const std::vector<swf::TagRecord>& tags,
+                            std::unordered_map<uint16_t, CharacterDef>& characters) {
+    for (const auto& tag : tags) {
         auto code = static_cast<swf::TagCode>(tag.code);
 
         if (code == swf::TagCode::DefineShape || code == swf::TagCode::DefineShape2 ||
@@ -49,7 +56,7 @@ CharacterDictionary CharacterDictionary::build(const Movie& movie) {
             swf::SwfReader reader = movie.tagBodyReader(tag);
             auto shapeDef = swf::parseDefineShape(reader, tag.code);
             if (shapeDef) {
-                dict.characters_[shapeDef->characterId] = *shapeDef;
+                characters[shapeDef->characterId] = *shapeDef;
             } else {
                 LOG_WARN("CHARDICT", "Failed to parse %s at offset=%zu", tag.name.c_str(),
                           tag.bodyOffset);
@@ -68,14 +75,21 @@ CharacterDictionary CharacterDictionary::build(const Movie& movie) {
                           tag.bodyOffset);
                 continue;
             }
-            dict.characters_[characterId] =
-                parseSpriteNestedTags(movie, tag, characterId, frameCount);
+            SpriteDef spriteDef = parseSpriteNestedTags(movie, tag, characterId, frameCount);
+            scanTagsForCharacters(movie, spriteDef.tags, characters);
+            characters[characterId] = std::move(spriteDef);
         }
         // Other character-defining tags (DefineBits*, DefineText*,
         // DefineFont*, DefineButton*) are recognized by TagCode elsewhere
         // but not resolved into the dictionary yet — Phase 8+.
     }
+}
 
+}  // namespace
+
+CharacterDictionary CharacterDictionary::build(const Movie& movie) {
+    CharacterDictionary dict;
+    scanTagsForCharacters(movie, movie.tags, dict.characters_);
     return dict;
 }
 

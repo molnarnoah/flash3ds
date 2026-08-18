@@ -1,14 +1,15 @@
 # Renderer
 
-**Status: Phase 3 basic renderer implemented.** Phase 10 (Nintendo 3DS
-backend, dual-screen) is still not started.
+**Status: Phase 3 basic renderer implemented; Phase 5 wired it to a real
+MovieClipInstance tree (independent per-instance playheads).** Phase 10
+(Nintendo 3DS backend, dual-screen) is still not started.
 
 ## Architecture
 
 ```
-Timeline::displayList()  ──┐
-CharacterDictionary       ─┼──▶  SceneRenderer  ──▶  IRenderer
-Movie::frameSize (stage)  ─┘                          │
+MovieClipInstance tree    ──┐
+CharacterDictionary        ─┼──▶  SceneRenderer  ──▶  IRenderer
+Movie::frameSize (stage)   ─┘                          │
                                                         ├── SoftwareRenderer (desktop/testing, this phase)
                                                         └── Nintendo3DSRenderer (Phase 10, not started)
 ```
@@ -34,33 +35,32 @@ Movie::frameSize (stage)  ─┘                          │
   colors; bitmap fills are reduced to a flat gray placeholder (bitmap
   decoding is unimplemented). Revisit with real edge-merging if/when target
   content (see `docs/compatibility.md`) needs it.
-- **`SceneRenderer`** (`src/renderer/SceneRenderer.h/.cpp`) — walks a
-  `Timeline`'s current `DisplayList` in depth order (back-to-front, per the
-  SWF display model), resolves each entry's `characterId` via
-  `CharacterDictionary`, composes world transforms with `concatMatrix`
-  (parent-then-child), tessellates shape characters on the fly, and
-  recurses into `DefineSprite` characters at their placement transform.
+- **`SceneRenderer`** (`src/renderer/SceneRenderer.h/.cpp`) — takes a
+  `runtime::MovieClipInstance&` root (Phase 5) and walks its `Timeline`'s
+  current `DisplayList` in depth order (back-to-front, per the SWF display
+  model). For an entry that resolves to a Shape character, resolves it via
+  `CharacterDictionary`, tessellates it on the fly, and composes its world
+  transform with `concatMatrix` (parent-then-child). For an entry that
+  resolves to a sprite/MovieClip character, recurses into that depth's own
+  `MovieClipInstance` CHILD instead — using its own (possibly AVM1-script-
+  mutated) `localMatrix()`/`visible()` and its own independently-advancing
+  `Timeline`, rather than Phase 3's shared per-*character* Timeline cache.
   Converts local shape points → world twips (via the composed matrix) →
   device pixels (via a stage-size-to-viewport pixel scale) before handing
   geometry to `IRenderer`.
 
-## Known Phase 3 limitations
+## Known limitations
 
-- **No independent sprite playhead.** Every placed instance of a given
-  `DefineSprite` character currently shares one lazily-built `Timeline` and
-  therefore renders at whatever frame that Timeline is on (frame 1
-  initially) — there's no AVM1/frame-advance model per *instance* yet.
-  Proper per-instance `MovieClip` state (independent play position, its own
-  `gotoAndStop`/`nextFrame`) arrives with the AVM1 VM and MovieClip API
-  (Phase 4/5).
 - **No color transform application.** `PlaceObject`/`PlaceObject2`'s
-  `ColorTransform` (tint/alpha) is parsed and stored on `DisplayListEntry`
-  but not yet applied when rendering — shapes render at their raw fill
-  color regardless of any color transform on their placement.
-  `DisplayListEntry::clipDepth` (clip layers) is similarly parsed but not
-  yet honored by the renderer. Kept out of scope to keep Phase 3's
-  rendering surface small and testable; both are natural Phase 8+ (or
-  earlier, if a target title needs it) follow-ups.
+  `ColorTransform` (tint/alpha) is parsed and — as of Phase 5 — tracked
+  per-instance on `MovieClipInstance::colorTransform()` (and AVM1's `_alpha`
+  reads/writes it), but it is still not actually APPLIED when rendering —
+  shapes render at their raw fill color regardless of any color transform
+  on their placement or any script-set `_alpha`. `DisplayListEntry::
+  clipDepth` (clip layers) is similarly parsed but not yet honored by the
+  renderer. Kept out of scope to keep the rendering surface small and
+  testable; both are natural Phase 8+ (or earlier, if a target title needs
+  it) follow-ups.
 - **No background color tag support.** `SetBackgroundColor` isn't parsed
   yet, so `SceneRenderer::render` always clears to white.
 - **Bitmap and text characters are not resolved at all.**
@@ -77,9 +77,17 @@ Movie::frameSize (stage)  ─┘                          │
 flash_runtime movie.swf --render <frame> out.ppm
 ```
 
-Renders the given 1-based frame of the movie's top-level timeline to a
-binary PPM file sized to the movie's stage dimensions in pixels (`viewer`,
-`convert`, or any PPM-capable image tool can open it).
+Renders the given 1-based frame of the movie's root timeline to a binary PPM
+file sized to the movie's stage dimensions in pixels (`viewer`, `convert`,
+or any PPM-capable image tool can open it).
+
+As of Phase 5, this builds a full `MovieClipInstance` tree and TICKS it
+forward frame-by-frame (running every intermediate frame's `DoAction`
+scripts, per-instance) to reach the requested frame, rather than jumping
+straight there — matching how a real player gets to that frame. If a script
+calls `stop()` along the way, later frames simply aren't reached (the tool
+reports the frame it actually landed on), which is correct behavior, not a
+bug.
 
 ## Testing
 
@@ -97,4 +105,14 @@ binary PPM file sized to the movie's stage dimensions in pixels (`viewer`,
   expected device pixels are filled/unfilled; a second test nests a shape
   inside a `DefineSprite` placed at an offset and checks the *composed*
   world position is correct (proving `concatMatrix` parent/child ordering
-  is right, not just identity-transform rendering).
+  is right, not just identity-transform rendering). Both now build a
+  `MovieClipInstance` tree via `ScriptEnvironment`/`createRoot()` rather
+  than a bare `Timeline`.
+- `tests/test_movieclip_instance.cpp` (Phase 5) — AVM1 bytecode actually
+  driving a `MovieClipInstance` tree (as opposed to `test_avm1_*.cpp`, which
+  tests the interpreter in isolation): `GetProperty`/`SetProperty` and
+  `GetMember`/`SetMember` round-tripping `_x`, independent per-instance
+  playheads under repeated `advanceFrame()` ticks, `Stop`/`SetTarget`
+  affecting only the intended clip, `CloneSprite`/`RemoveSprite`,
+  `_root`/`_parent` identity, and `resolvePath()`'s relative/absolute/`..`
+  path resolution.

@@ -89,6 +89,22 @@ public:
     // tags, in the order they appear in the tag stream.
     const std::vector<std::pair<std::string, uint32_t>>& labels() const { return labels_; }
 
+    // Byte bodies of every DoAction tag (tag 12) belonging to the CURRENT
+    // frame (currentFrame()), in tag-stream order. Read fresh on each call
+    // (a scoped-reader read over already-resident Movie::data, not a
+    // reparse of anything expensive) — not cached, since it's expected to
+    // be called at most once per frame change. Timeline itself has no
+    // AVM1 dependency and never executes these bytes; this just exposes
+    // them for a caller (runtime::MovieClipInstance, Phase 5) that does.
+    std::vector<std::vector<uint8_t>> currentFrameDoActionBodies() const;
+
+    // Escape hatch for AVM1's CloneSprite/RemoveSprite actions (Phase 5):
+    // lets a script insert or remove a display-list entry OUTSIDE of the
+    // normal tag-driven applyFrame() flow, exactly like a real player's
+    // runtime-only display objects. NOT used by anything else — every
+    // other DisplayList mutation in this class stays purely tag-driven.
+    DisplayList& mutableDisplayListForScripting() { return displayList_; }
+
 private:
     struct FrameOps {
         std::vector<size_t> tagIndices;  // indices into tags_

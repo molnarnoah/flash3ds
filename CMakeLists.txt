@@ -31,6 +31,7 @@ add_library(flash3ds_core
     src/runtime/DisplayList.cpp
     src/runtime/Timeline.cpp
     src/runtime/CharacterDictionary.cpp
+    src/runtime/MovieClipInstance.cpp
     src/renderer/ShapeTessellator.cpp
     src/renderer/SoftwareRenderer.cpp
     src/renderer/SceneRenderer.cpp

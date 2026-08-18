@@ -21,20 +21,21 @@ SWF Parser         (src/swf/SwfReader.*, TagDispatcher.*, TagCode.*)
    +-------------------+
    |                    |
    v                    v
-Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 done (not yet wired in)
+Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 done, Phase 5 wired in
    |                    |
    +---------+----------+
              |
              v
-      Display List                    <-- Phase 2 done (depth-indexed)
-             |
+    MovieClipInstance tree            <-- Phase 5 done (per-instance Timeline + scripting Object;
+             |                            wraps Display List, runs DoAction/DoInitAction)
     +--------+--------+
     |        |         |
     v        v         v
-  Shape    Sprite    Text             <-- Shape/Sprite: Phase 3 done; Text: Phase 8 not started
+  Shape    Sprite    Text             <-- Shape/Sprite: Phase 3+5 done; Text: Phase 8 not started
     |
     v
- Renderer                             <-- Phase 3 done (SoftwareRenderer, desktop/testing)
+ Renderer                             <-- Phase 3 done (SoftwareRenderer, desktop/testing);
+                                          Phase 5 rewired to walk MovieClipInstance
     |
     v
 Top / Bottom Screen                   <-- not yet implemented (Phase 10)
@@ -47,7 +48,7 @@ The runtime is deliberately modular so the renderer, audio, input, and
 platform layers can be swapped for Nintendo 3DS-specific implementations
 later without touching the SWF/AVM1 core.
 
-## Current status: Phase 4
+## Current status: Phase 5
 
 Phase 1 built **SWF Loader → SWF Parser** (flat tag list). Phase 2 added
 **Timeline → Display List**: `PlaceObject`/`PlaceObject2`/`RemoveObject`/
@@ -59,23 +60,35 @@ styles + SHAPERECORD stream), a `CharacterDictionary` resolving character
 IDs to shapes and nested `DefineSprite` timelines, `concatMatrix` world-
 transform composition, a (deliberately simplified) `ShapeTessellator`, and
 a `SoftwareRenderer`/`SceneRenderer` pair that walks the display list and
-recurses into sprites, plus a CLI `--render` flag. Phase 4 adds the **AVM1
+recurses into sprites, plus a CLI `--render` flag. Phase 4 built the **AVM1
 VM**: a `Value`/`Object` dynamic-type model with prototype-chain member
 lookup and Array semantics, `Stack`/`Scope`/`GlobalObject`/
 `ExecutionContext`, and a tree-walking `Interpreter` covering the full
 AVM1 opcode set — arithmetic/comparison/bitwise/string ops, variables,
 objects/arrays, function definition and calling (including
 `DefineFunction2` register parameters/preload flags, closures, and
-recursion with a bounded call depth), and control flow (`Jump`/`If`). The
-VM is deliberately tested **in isolation** against raw bytecode buffers; it
-is not yet wired into `DoAction` tag dispatch, `Timeline`, or
-`DisplayList` — `HostBindings` exists as the seam but every MovieClip-
-affecting action (`GotoFrame`, `Play`, `SetProperty`, ...) is currently a
-no-op stub. Text/bitmap/button rendering and per-instance sprite playheads
-also still don't exist — see [swf-support.md](swf-support.md) for the exact
-feature matrix, [renderer.md](renderer.md) for the renderer's specific
-limitations, and [avm1-support.md](avm1-support.md) for the AVM1 opcode
-support matrix and documented confidence levels.
+recursion with a bounded call depth), and control flow (`Jump`/`If`) —
+tested entirely **in isolation** against raw bytecode buffers, not yet
+wired into anything. Phase 5 did the wiring: **`MovieClipInstance`**
+(`src/runtime/MovieClipInstance.h/.cpp`) is the new integration point
+between `runtime/` and `avm1/` — every placed sprite gets its own
+`Timeline` (a genuinely independent playhead, replacing Phase 3's shared
+per-character cache), runs its `DoAction`/`DoInitAction` scripts through
+the Phase 4 interpreter with a real `HostBindings` implementation wired to
+that `Timeline`/`DisplayList`, and exposes `_x`/`_y`/`_currentframe`/
+`_root`/`_parent`/named-child-clip access etc. through `avm1::Object`'s new
+native-property hooks. `SceneRenderer` now walks the `MovieClipInstance`
+tree instead of a raw `Timeline`, so script-driven transform/visibility
+changes actually render. Along the way, Phase 5 also fixed a real Phase 3
+bug: `CharacterDictionary` only scanned the movie's top-level tags, so a
+character defined nested inside a `DefineSprite`'s own tag stream (legal
+per spec) silently never resolved — it's now a recursive scan. Text/bitmap/
+button rendering, `_width`/`_height`, `onClipEvent`/button `on()` handlers,
+and color-transform application at render time still don't exist — see
+[swf-support.md](swf-support.md) for the exact feature matrix,
+[renderer.md](renderer.md) for the renderer's specific limitations, and
+[avm1-support.md](avm1-support.md) for the AVM1 opcode support matrix,
+documented confidence levels, and known Phase 5 limitations.
 
 ## Module layout
 
@@ -101,21 +114,32 @@ src/
                                              (generalized: main movie OR any
                                              nested DefineSprite tag stream)
               CharacterDictionary.h/.cpp  — characterId -> Shape/Sprite lookup
+                                             (recursive: scans nested
+                                             DefineSprite streams too)
+              MovieClipInstance.h/.cpp    — Phase 5: ScriptEnvironment +
+                                             MovieClipInstance — the AVM1/
+                                             scene-graph integration point;
+                                             the only module allowed to
+                                             depend on both runtime/ and avm1/
   renderer/   IRenderer.h                 — abstract pixel-output interface
               SoftwareRenderer.h/.cpp     — RGBA8 framebuffer, scanline fill,
                                              PPM output (desktop/testing)
               ShapeTessellator.h/.cpp     — Shape -> flat polygons/polylines
-              SceneRenderer.h/.cpp        — DisplayList walk -> IRenderer,
-                                             recursive sprite rendering
+              SceneRenderer.h/.cpp        — MovieClipInstance-tree walk ->
+                                             IRenderer, recursive sprite
+                                             rendering with per-instance
+                                             transform/visibility (Phase 5)
   avm1/       Value.h/.cpp                — dynamic Value/Object type model,
-                                             prototype chain, Array semantics
+                                             prototype chain, Array semantics,
+                                             native property hooks (Phase 5)
               Stack.h                     — AVM1 operand stack
               Scope.h/.cpp                — scope chain (variable lookup)
               GlobalObject.h/.cpp         — global object construction
               ActionCode.h/.cpp           — AVM1 opcode enum + name table
               HostBindings.h              — abstract seam to MovieClip/
-                                             Timeline actions (no-op stubs;
-                                             wired up in Phase 5)
+                                             Timeline actions (implemented by
+                                             runtime/MovieClipInstance.cpp's
+                                             MovieClipHostBindings, Phase 5)
               ExecutionContext.h/.cpp     — stack+scope+registers+constant
                                              pool+globals for one call frame
               Interpreter.h/.cpp          — tree-walking bytecode dispatch

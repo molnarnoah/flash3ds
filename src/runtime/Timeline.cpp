@@ -156,6 +156,19 @@ void Timeline::prevFrame() {
     gotoAndStop(currentFrame_ - 1);
 }
 
+std::vector<std::vector<uint8_t>> Timeline::currentFrameDoActionBodies() const {
+    std::vector<std::vector<uint8_t>> result;
+    if (currentFrame_ == 0 || currentFrame_ > frameCount()) return result;
+    for (size_t tagIndex : frames_[currentFrame_ - 1].tagIndices) {
+        const swf::TagRecord& tag = tags_[tagIndex];
+        if (static_cast<swf::TagCode>(tag.code) == swf::TagCode::DoAction) {
+            swf::SwfReader reader = movie_->tagBodyReader(tag);
+            result.push_back(reader.readBytes(reader.size()));
+        }
+    }
+    return result;
+}
+
 void Timeline::advanceOneFrame() {
     if (!playing_ || frameCount() == 0) return;
     if (currentFrame_ >= frameCount()) {

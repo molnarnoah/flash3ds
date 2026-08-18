@@ -21,6 +21,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -167,6 +168,39 @@ public:
     // prototype chain, not Array elements) — used by ActionEnumerate/
     // Enumerate2's for-in support and potential future debugging tools.
     const std::unordered_map<std::string, Value>& ownProperties() const { return properties_; }
+
+    // Names of this object's NATIVE (host-intercepted) properties that
+    // should also show up in for-in enumeration — see `nativeEnumerate`
+    // below. Empty if `nativeEnumerate` is unset.
+    std::vector<std::string> enumerableNativeNames() const {
+        return nativeEnumerate ? nativeEnumerate() : std::vector<std::string>{};
+    }
+
+    // --- native property interception (Phase 5) --------------------------
+    // Optional hooks a host embedder (e.g. runtime::MovieClipInstance, which
+    // wraps a Timeline/DisplayList) can install to expose intrinsic
+    // properties (_x, _y, _currentframe, named child clips, ...) through
+    // the *normal* property-access path — hasOwnProperty/getOwnProperty/
+    // setOwnProperty (and therefore Scope's plain-variable lookup) as well
+    // as getMember/setMember (explicit `.member` access) — without avm1/
+    // needing to know anything about MovieClip/Timeline. This keeps avm1/
+    // host-agnostic (same seam philosophy as HostBindings.h) while still
+    // letting `this._x = 10;` and a bare `_x = 10;` inside a clip's script
+    // both resolve correctly.
+    //
+    // nativeGet(name, out): return true (and set `out`) if `name` is a
+    // recognized native property; return false to fall through to normal
+    // own-property storage. Checked BEFORE the own-property map on every
+    // read path, so a native property always shadows a same-named plain
+    // property (matches real AS2: you cannot shadow _x by assignment).
+    // nativeSet(name, value): return true if `name` was handled (including
+    // "recognized but read-only, write silently ignored"); return false to
+    // fall through to normal own-property storage.
+    // nativeEnumerate(): extra property names to report alongside
+    // `ownProperties()` (e.g. named child clip instances).
+    std::function<bool(const std::string&, Value&)> nativeGet;
+    std::function<bool(const std::string&, const Value&)> nativeSet;
+    std::function<std::vector<std::string>()> nativeEnumerate;
 
     std::shared_ptr<Object> prototype;
 

@@ -302,19 +302,19 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
             // --- timeline control (stubbed — see HostBindings.h) --------
             case ActionCode::NextFrame:
                 if (ctx.host) ctx.host->nextFrame();
-                else LOG_DEBUG("AVM1", "NextFrame — no HostBindings wired (Phase 5)");
+                else LOG_DEBUG("AVM1", "NextFrame — no HostBindings wired");
                 break;
             case ActionCode::PreviousFrame:
                 if (ctx.host) ctx.host->previousFrame();
-                else LOG_DEBUG("AVM1", "PreviousFrame — no HostBindings wired (Phase 5)");
+                else LOG_DEBUG("AVM1", "PreviousFrame — no HostBindings wired");
                 break;
             case ActionCode::Play:
                 if (ctx.host) ctx.host->play();
-                else LOG_DEBUG("AVM1", "Play — no HostBindings wired (Phase 5)");
+                else LOG_DEBUG("AVM1", "Play — no HostBindings wired");
                 break;
             case ActionCode::Stop:
                 if (ctx.host) ctx.host->stop();
-                else LOG_DEBUG("AVM1", "Stop — no HostBindings wired (Phase 5)");
+                else LOG_DEBUG("AVM1", "Stop — no HostBindings wired");
                 break;
             case ActionCode::ToggleQuality:
                 LOG_DEBUG("AVM1", "ToggleQuality — rendering quality control not modeled");
@@ -326,7 +326,7 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 swf::SwfReader r2(data.data(), data.size());
                 uint16_t frame = r2.readU16();
                 if (ctx.host) ctx.host->gotoFrame(frame);
-                else LOG_DEBUG("AVM1", "GotoFrame(%u) — no HostBindings wired (Phase 5)", frame);
+                else LOG_DEBUG("AVM1", "GotoFrame(%u) — no HostBindings wired", frame);
                 break;
             }
             case ActionCode::GotoLabel: {
@@ -334,7 +334,7 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 std::string label = r2.readCString();
                 if (ctx.host) ctx.host->gotoLabel(label);
                 else
-                    LOG_DEBUG("AVM1", "GotoLabel('%s') — no HostBindings wired (Phase 5)",
+                    LOG_DEBUG("AVM1", "GotoLabel('%s') — no HostBindings wired",
                               label.c_str());
                 break;
             }
@@ -351,7 +351,7 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                     if (playAfter) ctx.host->play();
                     else ctx.host->stop();
                 } else {
-                    LOG_DEBUG("AVM1", "GotoFrame2 — no HostBindings wired (Phase 5)");
+                    LOG_DEBUG("AVM1", "GotoFrame2 — no HostBindings wired");
                 }
                 break;
             }
@@ -376,23 +376,24 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 std::string target = r2.readCString();
                 if (ctx.host) ctx.host->setTarget(target);
                 else
-                    LOG_DEBUG("AVM1", "SetTarget('%s') — no HostBindings wired (Phase 5)",
+                    LOG_DEBUG("AVM1", "SetTarget('%s') — no HostBindings wired",
                               target.c_str());
                 break;
             }
             case ActionCode::SetTarget2: {
                 Value target = ctx.stack.pop();
                 if (ctx.host) ctx.host->setTarget(target.toString());
-                else LOG_DEBUG("AVM1", "SetTarget2 — no HostBindings wired (Phase 5)");
+                else LOG_DEBUG("AVM1", "SetTarget2 — no HostBindings wired");
                 break;
             }
             case ActionCode::GetProperty: {
                 Value indexVal = ctx.stack.pop();
-                ctx.stack.pop();  // Target — unused without scene-graph wiring
+                Value targetVal = ctx.stack.pop();
                 if (ctx.host) {
-                    ctx.stack.push(ctx.host->getProperty(static_cast<int>(indexVal.toNumber())));
+                    ctx.stack.push(ctx.host->getProperty(targetVal.toString(),
+                                                            static_cast<int>(indexVal.toNumber())));
                 } else {
-                    LOG_DEBUG("AVM1", "GetProperty — no HostBindings wired (Phase 5)");
+                    LOG_DEBUG("AVM1", "GetProperty — no HostBindings wired");
                     ctx.stack.push(Value::undefined());
                 }
                 break;
@@ -400,9 +401,13 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
             case ActionCode::SetProperty: {
                 Value valueVal = ctx.stack.pop();
                 Value indexVal = ctx.stack.pop();
-                ctx.stack.pop();  // Target — unused without scene-graph wiring
-                if (ctx.host) ctx.host->setProperty(static_cast<int>(indexVal.toNumber()), valueVal);
-                else LOG_DEBUG("AVM1", "SetProperty — no HostBindings wired (Phase 5)");
+                Value targetVal = ctx.stack.pop();
+                if (ctx.host) {
+                    ctx.host->setProperty(targetVal.toString(), static_cast<int>(indexVal.toNumber()),
+                                            valueVal);
+                } else {
+                    LOG_DEBUG("AVM1", "SetProperty — no HostBindings wired");
+                }
                 break;
             }
             case ActionCode::CloneSprite: {
@@ -413,14 +418,14 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                     ctx.host->cloneSprite(targetVal.toString(), newNameVal.toString(),
                                             static_cast<int>(depthVal.toNumber()));
                 } else {
-                    LOG_DEBUG("AVM1", "CloneSprite — no HostBindings wired (Phase 5)");
+                    LOG_DEBUG("AVM1", "CloneSprite — no HostBindings wired");
                 }
                 break;
             }
             case ActionCode::RemoveSprite: {
                 Value targetVal = ctx.stack.pop();
                 if (ctx.host) ctx.host->removeSprite(targetVal.toString());
-                else LOG_DEBUG("AVM1", "RemoveSprite — no HostBindings wired (Phase 5)");
+                else LOG_DEBUG("AVM1", "RemoveSprite — no HostBindings wired");
                 break;
             }
             case ActionCode::StartDrag: {
@@ -434,16 +439,16 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                     ctx.stack.pop();  // L, T, R, B
                 }
                 if (ctx.host) ctx.host->startDrag(targetVal.toString());
-                else LOG_DEBUG("AVM1", "StartDrag — no HostBindings wired (Phase 5)");
+                else LOG_DEBUG("AVM1", "StartDrag — no HostBindings wired");
                 break;
             }
             case ActionCode::EndDrag:
                 if (ctx.host) ctx.host->endDrag();
-                else LOG_DEBUG("AVM1", "EndDrag — no HostBindings wired (Phase 5)");
+                else LOG_DEBUG("AVM1", "EndDrag — no HostBindings wired");
                 break;
             case ActionCode::Call: {
                 ctx.stack.pop();  // Target frame — subroutine-style calls not wired (Phase 5)
-                LOG_DEBUG("AVM1", "Call — no HostBindings wired (Phase 5)");
+                LOG_DEBUG("AVM1", "Call — no HostBindings wired");
                 break;
             }
             case ActionCode::GetURL: {
@@ -462,7 +467,7 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
             }
             case ActionCode::TargetPath: {
                 ctx.stack.pop();
-                LOG_DEBUG("AVM1", "TargetPath — no scene graph wired (Phase 5); pushing \"\"");
+                LOG_DEBUG("AVM1", "TargetPath — no scene graph wired; pushing \"\"");
                 ctx.stack.push(Value::string(""));
                 break;
             }
@@ -870,6 +875,9 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                     for (const auto& entry : target.asObject()->ownProperties()) {
                         ctx.stack.push(Value::string(entry.first));
                     }
+                    for (const auto& name : target.asObject()->enumerableNativeNames()) {
+                        ctx.stack.push(Value::string(name));
+                    }
                 }
                 break;
             }
@@ -877,6 +885,9 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 Value target = ctx.stack.pop();
                 ctx.stack.push(Value::null());
                 if (target.isObject() && target.asObject()) {
+                    for (const auto& name : target.asObject()->enumerableNativeNames()) {
+                        ctx.stack.push(Value::string(name));
+                    }
                     for (const auto& entry : target.asObject()->ownProperties()) {
                         ctx.stack.push(Value::string(entry.first));
                     }

@@ -43,7 +43,7 @@ SceneRenderer::SceneRenderer(const runtime::Movie& movie,
                               const runtime::CharacterDictionary& characters)
     : movie_(&movie), characters_(&characters) {}
 
-void SceneRenderer::render(const runtime::Timeline& timeline, IRenderer& target,
+void SceneRenderer::render(const runtime::MovieClipInstance& root, IRenderer& target,
                             int outputWidthPixels, int outputHeightPixels) {
     double stageWidthTwips = movie_->frameSize.widthTwips();
     double stageHeightTwips = movie_->frameSize.heightTwips();
@@ -59,15 +59,14 @@ void SceneRenderer::render(const runtime::Timeline& timeline, IRenderer& target,
     // when no such tag is present.
     target.beginFrame(swf::RgbaColor{255, 255, 255, 255});
 
-    renderDisplayList(timeline.displayList(), swf::Matrix::identity(), target, pixelsPerTwipX,
-                       pixelsPerTwipY, 0);
+    renderClip(root, root.localMatrix(), target, pixelsPerTwipX, pixelsPerTwipY, 0);
 
     target.endFrame();
 }
 
-void SceneRenderer::renderDisplayList(const runtime::DisplayList& displayList,
-                                       const swf::Matrix& parentWorldMatrix, IRenderer& target,
-                                       double pixelsPerTwipX, double pixelsPerTwipY, int depth) {
+void SceneRenderer::renderClip(const runtime::MovieClipInstance& clip,
+                                const swf::Matrix& worldMatrix, IRenderer& target,
+                                double pixelsPerTwipX, double pixelsPerTwipY, int depth) {
     if (depth > kMaxRecursionDepth) {
         LOG_WARN("RENDER",
                   "Recursion depth limit (%d) exceeded while walking the display list — "
@@ -75,60 +74,60 @@ void SceneRenderer::renderDisplayList(const runtime::DisplayList& displayList,
                   kMaxRecursionDepth);
         return;
     }
+    if (!clip.visible()) return;
 
     // DisplayList::entries() is a std::map<int32_t, ...>, so this iterates
     // in ascending depth order — exactly the back-to-front paint order the
     // SWF display model requires (lower depth = painted first/underneath).
-    for (const auto& [depthValue, entry] : displayList.entries()) {
-        (void)depthValue;
-        swf::Matrix worldMatrix = swf::concatMatrix(parentWorldMatrix, entry.matrix);
-        renderCharacterInstance(entry.characterId, worldMatrix, target, pixelsPerTwipX,
-                                 pixelsPerTwipY, depth);
+    for (const auto& [depthValue, entry] : clip.timeline().displayList().entries()) {
+        auto childIt = clip.children().find(depthValue);
+        if (childIt != clip.children().end() && childIt->second) {
+            // A sprite/MovieClip child — render via ITS OWN (possibly
+            // script-mutated) transform, not the placement entry's, and
+            // recurse using its own display list/children.
+            const runtime::MovieClipInstance& child = *childIt->second;
+            swf::Matrix childWorld = swf::concatMatrix(worldMatrix, child.localMatrix());
+            renderClip(child, childWorld, target, pixelsPerTwipX, pixelsPerTwipY, depth + 1);
+            continue;
+        }
+        // Not a MovieClipInstance — either a Shape leaf character, or an
+        // unresolved/unsupported character (bitmap/text/button/font —
+        // Phase 8+), which renderShapeCharacter() silently ignores.
+        swf::Matrix childWorld = swf::concatMatrix(worldMatrix, entry.matrix);
+        renderShapeCharacter(entry.characterId, childWorld, target, pixelsPerTwipX,
+                              pixelsPerTwipY);
     }
 }
 
-void SceneRenderer::renderCharacterInstance(uint16_t characterId, const swf::Matrix& worldMatrix,
-                                             IRenderer& target, double pixelsPerTwipX,
-                                             double pixelsPerTwipY, int depth) {
+void SceneRenderer::renderShapeCharacter(uint16_t characterId, const swf::Matrix& worldMatrix,
+                                          IRenderer& target, double pixelsPerTwipX,
+                                          double pixelsPerTwipY) {
     const runtime::CharacterDef* def = characters_->find(characterId);
-    if (!def) {
-        // Unresolved reference: either a character type we don't parse yet
-        // (bitmap/text/button/font — Phase 8+) or malformed input. Nothing
-        // to draw; not an error worth logging per-instance (would spam for
-        // every frame of every unsupported character).
+    if (!def) return;
+
+    const auto* shapeDef = std::get_if<swf::ShapeDef>(def);
+    if (!shapeDef) {
+        // A SpriteDef here means syncChildren() hasn't (yet) created a
+        // MovieClipInstance for this depth — shouldn't normally happen
+        // (every sprite-resolving depth gets a child at sync time), but
+        // fail safe rather than crash/recurse via a stale path.
         return;
     }
 
-    if (const auto* shapeDef = std::get_if<swf::ShapeDef>(def)) {
-        TessellatedShape tess = tessellateShape(shapeDef->shape);
+    TessellatedShape tess = tessellateShape(shapeDef->shape);
 
-        for (const auto& poly : tess.polygons) {
-            auto devicePoints = toDevicePolyline(poly.points, worldMatrix, pixelsPerTwipX,
-                                                  pixelsPerTwipY);
-            target.fillPolygon(devicePoints, poly.color);
-        }
-        for (const auto& stroke : tess.strokes) {
-            auto devicePoints = toDevicePolyline(stroke.points, worldMatrix, pixelsPerTwipX,
-                                                  pixelsPerTwipY);
-            double avgPixelsPerTwip = (pixelsPerTwipX + pixelsPerTwipY) / 2.0;
-            int widthPixels =
-                std::max(1, static_cast<int>(std::lround(stroke.widthTwips * avgPixelsPerTwip)));
-            target.strokePolyline(devicePoints, stroke.color, widthPixels);
-        }
-        return;
+    for (const auto& poly : tess.polygons) {
+        auto devicePoints =
+            toDevicePolyline(poly.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
+        target.fillPolygon(devicePoints, poly.color);
     }
-
-    if (const auto* spriteDef = std::get_if<runtime::SpriteDef>(def)) {
-        auto it = spriteTimelines_.find(characterId);
-        if (it == spriteTimelines_.end()) {
-            auto spriteTimeline = runtime::Timeline::build(*movie_, spriteDef->tags);
-            it = spriteTimelines_.emplace(characterId, std::move(spriteTimeline)).first;
-        }
-        if (it->second) {
-            renderDisplayList(it->second->displayList(), worldMatrix, target, pixelsPerTwipX,
-                               pixelsPerTwipY, depth + 1);
-        }
-        return;
+    for (const auto& stroke : tess.strokes) {
+        auto devicePoints =
+            toDevicePolyline(stroke.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
+        double avgPixelsPerTwip = (pixelsPerTwipX + pixelsPerTwipY) / 2.0;
+        int widthPixels =
+            std::max(1, static_cast<int>(std::lround(stroke.widthTwips * avgPixelsPerTwip)));
+        target.strokePolyline(devicePoints, stroke.color, widthPixels);
     }
 }
 

@@ -49,7 +49,54 @@ std::vector<uint8_t> buildMovieWithShapeAndSprite() {
     return fixtures::wrapFws(6, body);
 }
 
+// A movie whose shape character (id=11) is defined NESTED INSIDE the
+// sprite's own tag stream (id=20) rather than at the top level — legal per
+// the public SWF spec (the character ID dictionary is global across the
+// whole file, not scoped per-sprite), and something some authoring
+// tools/obfuscators produce even though the standard Flash IDE publish
+// pipeline puts nearly everything at the top level. Regression coverage for
+// a real Phase 5 bug: CharacterDictionary::build() originally only scanned
+// movie.tags (the top level), silently failing to resolve any
+// character defined only inside a sprite's nested stream.
+std::vector<uint8_t> buildMovieWithShapeNestedInsideSprite() {
+    auto shapeBody = fixtures::buildDefineShapeBytes(2, /*characterId=*/11, 20 * 20, 20 * 20, 0x00,
+                                                        0xFF, 0x00, 0xFF);
+    std::vector<fixtures::FixtureTag> nestedTags = {
+        {static_cast<uint16_t>(TagCode::DefineShape2), shapeBody},
+        {26 /* PlaceObject2 */,
+         fixtures::buildPlaceObject2Bytes(1, false, 11, fixtures::buildMatrixBytes(0, 0))},
+        {1 /* ShowFrame */, {}},
+    };
+    auto spriteBody = fixtures::buildDefineSpriteBytes(/*characterId=*/20, /*frameCount=*/1,
+                                                          nestedTags);
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSprite), spriteBody},
+        {26 /* PlaceObject2 */,
+         fixtures::buildPlaceObject2Bytes(1, false, 20, fixtures::buildMatrixBytes(0, 0))},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    return fixtures::wrapFws(6, body);
+}
+
 }  // namespace
+
+TEST_CASE(CharacterDictionary_Build_ResolvesShapeNestedInsideSprite) {
+    auto bytes = buildMovieWithShapeNestedInsideSprite();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+
+    auto dict = CharacterDictionary::build(*movie);
+    CHECK_EQ(dict.size(), static_cast<size_t>(2));  // sprite 20 + nested shape 11
+
+    const auto* shapeCharacter = dict.find(11);
+    CHECK(shapeCharacter != nullptr);
+    CHECK(std::holds_alternative<ShapeDef>(*shapeCharacter));
+
+    const auto* spriteCharacter = dict.find(20);
+    CHECK(spriteCharacter != nullptr);
+    CHECK(std::holds_alternative<SpriteDef>(*spriteCharacter));
+}
 
 TEST_CASE(CharacterDictionary_Build_ResolvesShapeAndSprite) {
     auto bytes = buildMovieWithShapeAndSprite();

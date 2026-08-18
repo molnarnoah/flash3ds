@@ -131,21 +131,35 @@ std::string Value::toString() const {
 }
 
 bool Object::hasOwnProperty(const std::string& name) const {
+    if (nativeGet) {
+        Value probe;
+        if (nativeGet(name, probe)) return true;
+    }
     return properties_.find(name) != properties_.end();
 }
 
 Value Object::getOwnProperty(const std::string& name) const {
+    if (nativeGet) {
+        Value v;
+        if (nativeGet(name, v)) return v;
+    }
     auto it = properties_.find(name);
     return it == properties_.end() ? Value::undefined() : it->second;
 }
 
 void Object::setOwnProperty(const std::string& name, Value value) {
+    if (nativeSet && nativeSet(name, value)) return;
     properties_[name] = std::move(value);
 }
 
 void Object::deleteOwnProperty(const std::string& name) { properties_.erase(name); }
 
 Value Object::getMember(const std::string& name) const {
+    if (nativeGet) {
+        Value v;
+        if (nativeGet(name, v)) return v;
+    }
+
     if (kind_ == Kind::kArray) {
         if (name == "length") {
             return Value::number(static_cast<double>(elements.size()));
@@ -176,6 +190,8 @@ Value Object::getMember(const std::string& name) const {
 }
 
 void Object::setMember(const std::string& name, Value value) {
+    if (nativeSet && nativeSet(name, value)) return;
+
     if (kind_ == Kind::kArray) {
         if (name == "length") {
             double n = value.toNumber();
