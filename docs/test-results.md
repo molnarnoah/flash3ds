@@ -122,6 +122,31 @@ created — see `tests/swf/README.md`).
 - Full writeup: `docs/known-limitations.md`'s "Sub-fix 2/N", corrected
   coordinate-flow diagram in `docs/input.md`.
 
+## Input-transitions phase (2026-08-19) — edge-detected input state
+
+- **217/217 tests passing** (up from 199) — 18 new regression tests in
+  `tests/test_input_state.cpp`: 6 covering the base UP/DOWN/HELD/RELEASE/
+  RELEASED matrix (`InputState_KeyEdge_InitialUp_NoTransition` through
+  `_BeforeAnyCommit_ReportsNoTransition`), 8 covering edge cases (held for
+  many frames, very-short sub-tick press, release-without-another-press,
+  repeated press/release, simultaneous different buttons, simultaneous
+  touch+button, no-setter-calls-between-commits, aliased key codes), 4
+  covering the touch matrix (up, press-with-coordinates, held-while-
+  moving, release-after-movement). All passing, zero regressions
+  elsewhere — every pre-existing `_xmouse`/`_ymouse`/`InputState_*` test
+  (viewport conversion, key-down tracking, mouse-position round-trip)
+  passes completely unchanged.
+- `hobo.swf` (real stage: 600x450) frames 1-5 rendered before/after this
+  phase, byte-for-byte identical (`md5sum` match) — expected, since this
+  phase touches only `InputState`/`Nintendo3DSInput`, neither of which is
+  in the rendering or MovieClipInstance code path.
+- 3DS build (`build_3ds`) rebuilds clean; new `.3dsx` (390048 bytes, up
+  from 387780 — confirms the new code linked in). **Not yet tested on
+  Azahar/hardware** — no emulator/device access from this environment (see
+  `docs/3ds-limitations.md`'s new entry for this phase).
+- Full writeup: `docs/known-limitations.md`'s "Sub-fix 3/N", full audit +
+  model + semantics in `docs/input.md`'s "Input-transitions phase" section.
+
 ## Not yet tested (carried over from `docs/compatibility.md`, still open)
 
 - `hobo 2 - prison brawl.swf` through `hobo 7 - heaven.swf` (sequels).

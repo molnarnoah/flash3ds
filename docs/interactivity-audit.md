@@ -207,14 +207,17 @@ prior phase's audit.
 In dependency order (each depends on the ones above it):
 
 1. ~~Bounding-box geometry for any placed object (`_width`/`_height`)~~ —
-   **done this turn.**
-2. **Device-px -> stage-twips inverse coordinate mapping.** Does not exist
-   at all (see §2). Needed before ANY hit test can run, since `InputState`'s
-   mouse position is in screen/device px, not stage twips.
-3. **Previous-tick input state (edge detection).** `InputState` is
-   level-only; press/release/rollOver/rollOut are inherently edge-triggered.
-   Needs either a "previous InputState snapshot" or a small dedicated
-   press/release-tracking layer.
+   **done, interactivity phase 2026-08-18 (sub-fix 1/N).**
+2. ~~Device-px -> stage-twips inverse coordinate mapping~~ — **done,
+   interactivity phase 2026-08-18 (sub-fix 2/N)** — see
+   `docs/known-limitations.md`/`docs/input.md`.
+3. ~~Previous-tick input state (edge detection)~~ — **done, input-
+   transitions phase 2026-08-19 (sub-fix 3/N)** — `InputState::
+   commitFrame()`/`isKeyPressed()`/`isKeyReleased()`/`isMousePressed()`/
+   `isMouseReleased()`/`isTouchPressed()`/`isTouchReleased()`, see
+   `docs/known-limitations.md`/`docs/input.md`. Deliberately NOT yet
+   consumed by any hit-testing/button/event-dispatch code — this phase was
+   scoped to the low-level primitive only.
 4. **A hit-testing routine** (screen/stage point -> which display-list
    entry, walking depth-order, respecting `_visible`, nested transforms —
    see `docs/hit-testing.md`'s design). Bounding-box-only for a first pass,
@@ -252,11 +255,15 @@ STEP 1-10 writeup, `tests/test_movieclip_instance.cpp`'s 5 new
 `MovieClipInstance_Width*`/`*Height*` tests for regression coverage, and
 this doc's §5 above for the implementation summary.
 
-**Explicitly NOT done this turn** (each needs its own repro-fix-test-
-regression cycle per the audit charter, not batched together): the
-device-px -> stage-twips inverse mapping, edge-detected input state,
-bounding-box hit-testing itself, the button-instance object, the generic
-event dispatcher, and all `onClipEvent`/button-`on()` dispatch. These are
-the next items in the dependency chain, roughly in the order listed in §8
-above — item 2 (coordinate mapping) is the natural next pick, being small,
-isolated, and itself a hard blocker for item 4.
+**Explicitly NOT done as of the `_width`/`_height` turn** (each needed its
+own repro-fix-test-regression cycle per the audit charter, not batched
+together): the device-px -> stage-twips inverse mapping, edge-detected
+input state, bounding-box hit-testing itself, the button-instance object,
+the generic event dispatcher, and all `onClipEvent`/button-`on()`
+dispatch. Items 2 and 3 (coordinate mapping, edge-detected input state)
+are now **done** — see the numbered list above. **Remaining, not yet
+started:** items 4-8 — bounding-box hit-testing (item 4, design already
+written in `docs/hit-testing.md`) is the natural next pick, now unblocked
+on both fronts (correct stage coordinates AND edge-detected press/
+release), followed by the button-instance object, the generic event
+dispatcher, and `onClipEvent`/button-`on()` dispatch.

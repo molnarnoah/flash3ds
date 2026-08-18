@@ -43,14 +43,27 @@ on real/emulated hardware than on the desktop CLI.
   `docs/renderer.md`). Compiles/links; boots in Azahar per user report;
   visual correctness of BOTH screens simultaneously not independently
   confirmed.
-- **Input mapping (D-Pad/Circle Pad/A/B/X/Y/touch -> `Key`/`Mouse`).** Real
-  `hid`-polling code (`Nintendo3DSInput.cpp`), but the specific mapping
-  choices (documented as "judgment calls, not spec-derived facts" in
-  `docs/input.md`) have not been confirmed against actual button presses on
-  hardware or in Azahar this session. One specific open question, flagged
-  in-code: `KEY_TOUCH` is documented by libctru's own header as "not
-  actually provided by HID" — this implementation gates touch reads on it
-  anyway, unconfirmed.
+- **Input mapping (D-Pad/Circle Pad/A/B/X/Y/L/R/touch -> `Key`/`Mouse`).**
+  Real `hid`-polling code (`Nintendo3DSInput.cpp`), but the specific
+  mapping choices (documented as "judgment calls, not spec-derived facts"
+  in `docs/input.md`) have not been confirmed against actual button
+  presses on hardware or in Azahar this session. One specific open
+  question, flagged in-code: `KEY_TOUCH` is documented by libctru's own
+  header as "not actually provided by HID" — this implementation gates
+  touch reads on it anyway, unconfirmed.
+- **Edge-detected input state (input-transitions phase, 2026-08-19,
+  `InputState::commitFrame()`/`isKeyPressed()`/`isKeyReleased()`/
+  `isTouchPressed()`/`isTouchReleased()`).** Desktop-side logic is fully
+  unit-tested (18 new tests, `tests/test_input_state.cpp`) and the model's
+  correctness (exactly one edge per real transition, given `poll()` fires
+  once per real hardware frame) is verified by trace/reasoning against the
+  confirmed `poll()`/`hidScanInput()`/main-loop call pattern — but, like
+  everything else input-related in this project, has **not been confirmed
+  against an actual physical button press or touch on real hardware or in
+  Azahar**. In particular: whether one real physical press genuinely
+  produces exactly one `isKeyPressed()`-true tick (not zero, not more than
+  one) has only been reasoned about and desktop-simulated, never observed
+  on the actual polling cadence a real device produces.
 - **Audio (`Nintendo3DSAudioBackend`).** The diagnostic `playTestTone()`
   path (real ndsp channel + waveform buffer submission) is the ONLY
   confirmed-plausible-audible code path — it was specifically built and

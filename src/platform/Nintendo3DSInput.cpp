@@ -66,6 +66,18 @@ void Nintendo3DSInput::poll(runtime::InputState& state) {
                       (held & (KEY_B | KEY_SELECT)) != 0);
     state.setKeyDown('X', (held & KEY_X) != 0);
     state.setKeyDown('Y', (held & KEY_Y) != 0);
+    // L/R shoulder buttons (input-transitions phase, 2026-08-19) — see
+    // header comment for the same reasonable-effort-convention rationale
+    // X/Y above already use.
+    state.setKeyDown('L', (held & KEY_L) != 0);
+    state.setKeyDown('R', (held & KEY_R) != 0);
+
+    // Edge detection: exactly one commit per poll() call (see header's
+    // doc comment) — MUST be last, after every setKeyDown()/
+    // setMousePosition()/setMouseDown() call above has already run for
+    // this tick, so this tick's full "current" state is in place before
+    // the previous/current diff happens.
+    state.commitFrame();
 }
 
 }  // namespace flash3ds::platform

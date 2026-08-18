@@ -74,6 +74,83 @@ public:
     double viewportWidth() const { return viewportWidth_; }
     double viewportHeight() const { return viewportHeight_; }
 
+    // --- edge detection (input-transitions phase, 2026-08-19) -------------
+    //
+    // AUDIT FINDING this phase confirmed (see docs/input.md): the only
+    // thing InputState previously tracked was "what's true RIGHT NOW" — no
+    // notion of "what changed since last time" existed anywhere. On the
+    // 3DS, `Nintendo3DSInput::poll()` is called exactly once per real
+    // hardware frame (once per `hidScanInput()`, inside
+    // `nintendo3ds_main.cpp`'s `while (aptMainLoop())` loop) — critically,
+    // this is DECOUPLED from and typically more frequent than the SWF's
+    // own timeline advancing (`root->advanceFrame()` is throttled to the
+    // SWF's authored frame rate, e.g. 12fps against a 60Hz poll loop — see
+    // that file). So "once per SWF frame" is NOT a safe definition of
+    // "once per input tick"; "once per poll() call" is the only frequency
+    // that's actually guaranteed to fire exactly once per real input
+    // sample, on every platform (including a future desktop/test harness
+    // that has no SWF-timeline concept driving it at all).
+    //
+    // Model: commitFrame() is an explicit, EXTRA call — separate from the
+    // individual setKeyDown()/setMousePosition()/setMouseDown() calls,
+    // which only ever update "current" state and never touch edges — that
+    // the caller makes exactly ONCE per input tick, after every setter
+    // call for that tick has run. It snapshots "current" against
+    // whatever was current as of the LAST commitFrame() call ("previous"),
+    // computes this tick's pressed/released transitions from that diff,
+    // caches them (stable/re-readable until the NEXT commitFrame() call),
+    // then updates its "previous" snapshot to match "current" for the
+    // following commit. This is what keeps "poll() poll() poll()" from
+    // ever producing more than one pressed/released event per actual
+    // physical transition: each commitFrame() call computes edges exactly
+    // once, from exactly one comparison, no matter how many individual
+    // setKeyDown()/etc. calls preceded it.
+    //
+    // isKeyDown()/isMouseDown() are UNCHANGED and remain live/current reads
+    // at all times, independent of commitFrame() — existing callers (and
+    // existing tests) keep working exactly as before. isKeyPressed()/
+    // isKeyReleased()/isMousePressed()/isMouseReleased() only become
+    // meaningful once commitFrame() has been called at least once; before
+    // that, or on a commit where nothing changed, they simply report no
+    // transition (false) — there is no error state, this is deliberate and
+    // matches "no edge observed yet."
+    //
+    // A press-then-release (or release-then-press) that both happen
+    // BETWEEN two commitFrame() calls (i.e. within a single input tick, no
+    // commit in between) is invisible to this model — only the LAST
+    // setter call before a commit is what's diffed. This is a deliberate,
+    // standard polled-input limitation (the exact same one libctru's own
+    // hidKeysDown()/hidKeysUp() have, since they're likewise computed once
+    // per hidScanInput() call), not a bug — see docs/input.md's edge-case
+    // writeup and the matching regression test
+    // (InputState_KeyPressed_VeryShortPress_WithinOneTick_IsInvisible).
+    void commitFrame();
+
+    bool isKeyPressed(int keyCode) const;
+    bool isKeyReleased(int keyCode) const;
+
+    bool isMousePressed() const { return mousePressed_; }
+    bool isMouseReleased() const { return mouseReleased_; }
+
+    // --- touch (input-transitions phase, 2026-08-19) ----------------------
+    //
+    // Touch is NOT a separate underlying state from mouse — by PRE-EXISTING
+    // design (Phase 10 — see Nintendo3DSInput.h's own header comment:
+    // "Touch screen ... drives the AS2 mouse"), Nintendo3DSInput's touch
+    // handling calls setMousePosition()/setMouseDown() directly; there has
+    // never been a second, parallel "touch" field in this class. Per this
+    // phase's own task scoping ("if touch is currently represented
+    // separately, do not unnecessarily merge the two layers yet") — since
+    // it was NOT separate before this phase, these are intentionally thin,
+    // documented ALIASES over the exact same mouse-down edge state, not a
+    // second parallel tracking mechanism (which would risk the two
+    // diverging under some future input path and silently disagreeing with
+    // each other). Named distinctly anyway, matching this task's own
+    // vocabulary, so call sites that conceptually mean "touch" can say so.
+    bool isTouchDown() const { return isMouseDown(); }
+    bool isTouchPressed() const { return isMousePressed(); }
+    bool isTouchReleased() const { return isMouseReleased(); }
+
     // --- well-known AS2 Key.* constants (documented confidence — see file
     // header) — exposed here so both InputState's own callers and
     // ScriptEnvironment's native Key object (which reads them to populate
@@ -110,6 +187,18 @@ private:
 
     double viewportWidth_ = 0.0;
     double viewportHeight_ = 0.0;
+
+    // --- edge-detection state (input-transitions phase, 2026-08-19) -------
+    // "previous" snapshots, updated only by commitFrame(); "pressed"/
+    // "released" are this tick's computed transitions, cached until the
+    // next commitFrame() call. See commitFrame()'s doc comment above.
+    std::unordered_set<int> previousKeysDown_;
+    std::unordered_set<int> pressedKeys_;
+    std::unordered_set<int> releasedKeys_;
+
+    bool previousMouseDown_ = false;
+    bool mousePressed_ = false;
+    bool mouseReleased_ = false;
 };
 
 }  // namespace flash3ds::runtime

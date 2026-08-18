@@ -352,25 +352,24 @@ docs" section — don't just assume this is resolved.
 2. No mouse/button interactivity at all — **CURRENT, SOLE FOCUS per
    explicit user instruction (2026-08-18); priorities #3-5 below are on
    hold until this one reaches a stable state.** Sub-fix 1/N
-   (`_width`/`_height`, previously hardcoded to 0) is **done**. Sub-fix 2/N
-   (the `_xmouse`/`_ymouse` device-pixel -> stage-pixel coordinate
-   conversion — previously read raw input-viewport-pixel coordinates with
-   no stage-pixel scaling, a real bug for any movie whose stage size
-   doesn't match the input viewport) is **also done** — see
-   `docs/known-limitations.md`'s STEP 1-10 writeups for both, `docs/
-   interactivity-audit.md` (full 8-part trace: input pipeline, coordinate
-   system, Button2, hit-testing, event representation, `onClipEvent`),
-   `docs/input.md` (old vs. corrected coordinate-flow diagram),
+   (`_width`/`_height`, previously hardcoded to 0), Sub-fix 2/N (the
+   `_xmouse`/`_ymouse` device-pixel -> stage-pixel coordinate conversion),
+   and Sub-fix 3/N (edge-detected input state — `InputState::
+   commitFrame()`/`isKeyPressed()`/`isKeyReleased()`/`isMousePressed()`/
+   `isMouseReleased()`/`isTouchPressed()`/`isTouchReleased()`, previously
+   `InputState` only ever tracked "current" level, no press/release
+   transitions) are **all done** — see `docs/known-limitations.md`'s
+   STEP 1-10 writeups for all three, `docs/interactivity-audit.md` (full
+   8-part trace, kept up to date as each sub-fix lands), `docs/input.md`
+   (coordinate-flow diagram + edge-detection model/semantics),
    `docs/hit-testing.md`/`docs/events.md` (design docs for later sub-fixes,
    not yet implemented), `docs/onclipevent-compatibility.md` (all 19 flags
    individually tabulated). **Next sub-fix, not yet started:**
-   edge-detected input state (tracking press/release EDGES — "just went
-   down/up this tick" — rather than only the current held/not-held level
-   `InputState` tracks today; both hit-testing's press/release semantics
-   and button state transitions need this) — small, isolated, and the
-   natural next pick. After that: bounding-box hit-testing itself, a
-   per-placement Button "instance" object (buttons currently have NO
-   runtime object of their own at all — a bigger gap than expected, see
+   bounding-box hit-testing itself (design: `docs/hit-testing.md`) — now
+   unblocked on both fronts it needed (correct stage coordinates AND
+   edge-detected press/release). After that: a per-placement Button
+   "instance" object (buttons currently have NO runtime object of their
+   own at all — a bigger gap than expected, see
    `docs/interactivity-audit.md` §3), a generic event dispatcher, then
    `onClipEvent`'s remaining 15 mouse/key flags + button `on()` dispatch.
 3. `GlobalObject` has zero named built-ins — no `Math`/`Date`/`Number()`/

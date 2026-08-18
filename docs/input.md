@@ -184,3 +184,143 @@ task.
   makes that choice CORRECT REGARDLESS of what the embedded demo's own
   stage size happens to be (no longer needs to match), but nobody has
   verified what the embedded demo's actual authored stage dimensions are.
+
+## Input-transitions phase (2026-08-19) — edge-detected input state
+
+### Audit: the actual current path, traced before any code was touched
+
+```
+Nintendo3DSInput::poll()  (once per real hardware frame -- see below)
+    -> hidKeysHeld() / hidTouchRead()
+    -> InputState::setKeyDown()/setMousePosition()/setMouseDown()
+        -> stores "what's true RIGHT NOW" only -- no previous-state
+           concept existed anywhere before this phase
+    -> runtime consumers (AVM1 Key.isDown(), _xmouse/_ymouse, Mouse) read
+       InputState directly, always getting the CURRENT/live value
+```
+
+Findings, confirmed by reading the actual code (not assumed):
+
+- **Button state storage (before this phase):** a single
+  `std::unordered_set<int> keysDown_` of AS2 `Key.*`-style codes — "is this
+  code currently in the set," nothing else. No previous-frame snapshot
+  existed anywhere in `InputState`.
+- **When `poll()` occurs:** exactly once per iteration of
+  `nintendo3ds_main.cpp`'s `while (aptMainLoop())` loop, immediately after
+  `hidScanInput()` — i.e. once per REAL hardware vblank (~60Hz).
+- **When the runtime advances a (SWF) frame:** `root->advanceFrame()` is
+  throttled to the movie's own authored frame rate (`vblanksPerSwfFrame`,
+  e.g. 5 for a 12fps SWF at 60Hz) — **decoupled from and typically much
+  less frequent than `poll()`**. This means several `poll()` calls
+  normally happen between two `root->advanceFrame()` calls, not the
+  reverse — a critical fact for choosing where edge detection lives (see
+  below).
+- **Can multiple polls occur per runtime tick?** Yes, routinely (the
+  reverse of what might be assumed) — `poll()` runs every real frame
+  regardless of whether the SWF's own timeline ticks that iteration.
+- **Touch representation:** NOT a separate field from mouse. Touch was
+  already, by Phase 10's own original design, wired directly into
+  `setMousePosition()`/`setMouseDown()` — there has never been a second
+  "touch" state anywhere in `InputState`. Confirmed by reading
+  `Nintendo3DSInput::poll()`'s touch-handling branch directly.
+- **Mouse representation:** `mouseX_`/`mouseY_`/`mouseDown_`, all plain
+  fields, same "current only" limitation as keys.
+- **Existing native edge source:** libctru itself already computes
+  `hidKeysDown()`/`hidKeysUp()` once per `hidScanInput()` call —
+  `nintendo3ds_main.cpp` already uses `hidKeysDown()` directly (bypassing
+  `InputState` entirely) for its A/B/X/Y test-tone triggers. This is NOT
+  reused for the fix below, deliberately: it only exists on the 3DS, and
+  the desktop test suite (which has no `hid` layer at all) needs the exact
+  same press/release semantics to be unit-testable — so `InputState` needed
+  its own, fully platform-independent diffing mechanism regardless.
+
+### Model chosen: explicit `commitFrame()`, diffed once per call
+
+`InputState::commitFrame()` is a new, explicit method — separate from
+every `setKeyDown()`/`setMousePosition()`/`setMouseDown()` call, which
+still only ever update "current" state and never compute anything.
+`Nintendo3DSInput::poll()` calls it exactly once, as its LAST step, after
+every other setter for that tick has already run.
+
+```
+poll() call N:
+    setKeyDown()/setMousePosition()/setMouseDown() (any number of calls,
+        any order -- these never touch edges)
+    commitFrame()   <-- exactly once, last
+        diffs current keysDown_/mouseDown_ against the snapshot saved by
+        commit N-1, computes this tick's pressed/released sets, caches
+        them (stable until commit N+1), then saves current as the new
+        snapshot for commit N+1's diff
+```
+
+Because `poll()` is called exactly once per real hardware frame (confirmed
+above — never more, never less), and `commitFrame()` is called exactly
+once per `poll()` call, "once per commit" and "once per real input sample"
+are the same thing — this is what prevents "poll() poll() poll()" from
+ever producing more than one pressed/released event per actual physical
+transition. `isKeyDown()`/`isMouseDown()` were left completely untouched
+(still always live/current reads) so every pre-existing caller and test
+keeps working exactly as before.
+
+### New APIs (existing `isKeyDown()`/`isMouseDown()`/`mouseX()`/`mouseY()`
+unchanged)
+
+| Method | Meaning |
+|---|---|
+| `commitFrame()` | Computes this tick's edges from current-vs-previous; call once per input tick |
+| `isKeyPressed(keyCode)` | True only on the commit where `keyCode` transitioned UP->DOWN |
+| `isKeyReleased(keyCode)` | True only on the commit where `keyCode` transitioned DOWN->UP |
+| `isMousePressed()` / `isMouseReleased()` | Same, for `mouseDown_` |
+| `isTouchDown()` / `isTouchPressed()` / `isTouchReleased()` | Thin, documented ALIASES over `isMouseDown()`/`isMousePressed()`/`isMouseReleased()` — touch and mouse remain the same underlying state (see "Touch representation" above); not a second parallel tracking mechanism |
+
+`Nintendo3DSInput` also gained L/R shoulder-button mapping (`'L'`/`'R'`
+ASCII codes, same reasonable-effort convention as the existing X/Y ->
+`'X'`/`'Y'` mapping) — previously L/R weren't fed into `InputState` at
+all, so all of A/B/X/Y/L/R/START/SELECT/D-Pad now have some testable
+`InputState` key code.
+
+### Exact semantics / documented behavior for edge cases
+
+- **Before the first `commitFrame()` ever, or on a commit where nothing
+  changed:** `isKeyPressed()`/`isKeyReleased()`/`isMousePressed()`/
+  `isMouseReleased()` simply report `false` — "no transition observed,"
+  not an error state.
+- **A press-then-release (or release-then-press) entirely BETWEEN two
+  `commitFrame()` calls is invisible.** Only the state as of the last
+  setter call before a commit is what gets diffed. This is a deliberate,
+  standard polled-input limitation — the exact same one libctru's own
+  `hidKeysDown()`/`hidKeysUp()` have (both computed once per
+  `hidScanInput()`) — not a bug introduced by this design.
+  Test: `InputState_KeyEdge_VeryShortPress_WithinOneTick_IsInvisible`.
+- **A commit with no setter calls at all before it** (simulating a
+  "missed"/unavailable poll) produces no spurious edges — state simply
+  stays whatever it was last committed as.
+  Test: `InputState_KeyEdge_NoSetterCallsBetweenCommits_NoSpuriousEdges`.
+- **Aliased key codes** (a real, pre-existing Phase 10 design decision, not
+  something new to this phase): `Nintendo3DSInput` maps BOTH the A button
+  and the START button onto the same `InputState::kEnter` code (and B/
+  SELECT onto `kEscape`). If A is already held and START also goes down,
+  `kEnter` was already `true`, so no new press edge fires for the second
+  physical button — this is CORRECT behavior for key-CODE-level edge
+  detection; the lossy many-to-one physical-button -> AS2-key mapping
+  upstream is what collapses the two, and redesigning that mapping is out
+  of scope for this phase (flagged, not fixed).
+  Test: `InputState_KeyEdge_AliasedKeyCodes_SecondButtonProducesNoNewEdge`.
+- **Simultaneous different buttons/touch** both get correctly independent
+  edges in the same commit (keys and mouse/touch are entirely separate
+  storage, diffed independently).
+- **Touch coordinate updates are independent of the edge transition** —
+  `isTouchPressed()`/`isTouchDown()`/`isTouchReleased()` never gate or
+  affect what `mouseX()`/`mouseY()` report, and vice versa; a touch can
+  move every tick while held with the edge state correctly staying
+  "held, not pressed" throughout.
+
+### What this phase deliberately does NOT do
+
+Per explicit task scope: no hit-testing, no `Button2`/`ButtonDef` state
+machine, no mouse/keyboard event dispatch (`Button.onPress`, `onClipEvent
+(mouseDown)`, rollover/rollout, etc.) were implemented. This phase only
+provides the low-level `isPressed()`/`isReleased()` primitive those
+systems will need — see `docs/known-limitations.md`'s Sub-fix 3/N writeup
+for the full STEP 1-10 record and `docs/interactivity-audit.md` §8 for the
+remaining dependency chain.

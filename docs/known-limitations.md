@@ -285,17 +285,108 @@ exactly once per transition rather than every tick the mouse happens to be
 down). See `docs/interactivity-audit.md` §8 for the full remaining
 dependency chain.
 
+### Sub-fix 3/N — Edge-detected input state (`isPressed`/`isReleased`) — **FIXED THIS TURN**
+
+**Classification: INPUT (platform-independent primitive, no AVM1/Flash-layer
+changes).**
+
+**STEP 1 — Audit.** Traced the actual pipeline (`Nintendo3DSInput::poll()`
+-> `InputState` -> runtime consumers) before writing any code — full
+writeup in `docs/input.md`'s "Input-transitions phase" section. Key
+findings, all confirmed by reading the real code rather than assumed:
+`InputState` had no previous-frame concept anywhere (`keysDown_`/
+`mouseDown_`/`mouseX_`/`mouseY_` were all "current only"); `poll()` runs
+exactly once per real hardware frame (`hidScanInput()`, ~60Hz), which is
+**decoupled from and more frequent than** the SWF's own timeline advance
+(`root->advanceFrame()`, throttled to the movie's authored frame rate) —
+so "once per poll()" is the correct edge-computation granularity, not
+"once per SWF frame"; touch was never a separate field from mouse (already
+routed into `setMousePosition()`/`setMouseDown()` directly, a pre-existing
+Phase 10 design decision, not new); libctru's own `hidKeysDown()`/
+`hidKeysUp()` already exist as a native edge source but aren't reusable
+for `InputState`'s own edge detection because the desktop test suite has
+no `hid` layer at all and needs identical semantics.
+
+**STEP 2-3 — Reproduction/isolation.** N/A in the usual "found a bug"
+sense — this phase adds a missing CAPABILITY (there was no edge detection
+to reproduce a failure of), not a broken existing behavior. Isolated
+design decision: an explicit `InputState::commitFrame()` method, called
+once by `Nintendo3DSInput::poll()` as its last step, diffs current vs.
+previous state and caches the results — see `docs/input.md` for the full
+model and why "once per `commitFrame()` call" is the correct granularity
+given the confirmed `poll()` call pattern.
+
+**STEP 4-5 — Fix/implementation.** Added
+`InputState::commitFrame()`/`isKeyPressed()`/`isKeyReleased()`/
+`isMousePressed()`/`isMouseReleased()`/`isTouchDown()`/`isTouchPressed()`/
+`isTouchReleased()` (`src/runtime/InputState.h/.cpp`) — `isKeyDown()`/
+`isMouseDown()`/`mouseX()`/`mouseY()` are completely UNCHANGED (still
+live/current reads at all times), preserving every existing caller's
+behavior exactly, per the task's explicit requirement. Touch's edge
+methods are thin, documented ALIASES over the mouse-down edge state (not
+a second parallel tracking mechanism), matching how touch was already
+represented before this phase. `Nintendo3DSInput::poll()` now calls
+`state.commitFrame()` as its last step and also maps L/R shoulder buttons
+(`'L'`/`'R'` ASCII codes, same reasonable-effort convention as the
+existing X/Y mapping) — previously unmapped, needed so all of
+A/B/X/Y/L/R/START/SELECT/D-Pad have some testable `InputState` code.
+
+**STEP 6 — Desktop tests.** 18 new regression tests
+(`tests/test_input_state.cpp`): the full UP/DOWN/HELD/RELEASE/RELEASED
+matrix from the task spec (6 tests), 8 edge-case tests (held for many
+frames, sub-tick press invisibility, release-without-another-press,
+repeated press/release cycles, simultaneous different buttons,
+simultaneous touch+button, no-setter-calls-between-commits, aliased key
+codes), and 4 touch-specific tests (up, press-with-coordinates, held-
+while-moving, release-after-movement). **217/217 tests passing** (up from
+199), zero regressions — every pre-existing `_xmouse`/`_ymouse`/viewport-
+conversion/`InputState_*` test passes completely unchanged.
+
+**Independent real-content check:** rendered `hobo.swf` frames 1-5 before
+and after this phase and diffed byte-for-byte — **100% identical**
+(expected: this phase touches only `InputState`/`Nintendo3DSInput`,
+neither of which is in the rendering or `MovieClipInstance` code path).
+
+**STEP 7-8 — 3DS build.** `cmake --build build_3ds` succeeds cleanly (only
+the same pre-existing, unrelated newlib/ABI warnings as every prior 3DS
+build). New `.3dsx` built (390048 bytes, up from 387780 — confirms the new
+code linked in). **Not yet tested on Azahar/hardware** — no
+emulator/device access from this environment; see `docs/3ds-limitations.md`'s
+new entry for the honest confidence level (desktop-verified + reasoned
+about the confirmed `poll()` cadence, but a real physical press producing
+exactly one edge has never actually been observed on real polling timing).
+
+**STEP 9 — Regression tests.** Done — see STEP 6, all 18 permanent.
+
+**STEP 10 — What now works / what remains.** `InputState` can now
+distinguish UP/DOWN/PRESSED/RELEASED for both keys/buttons and
+mouse/touch, computed once per input tick with no risk of "poll() poll()
+poll()" producing duplicate events, and with documented, intentional
+(not-a-bug) behavior for sub-tick presses, missed polls, and aliased key
+codes. **This is explicitly an input-layer-only primitive** — no AVM1/
+Flash-visible behavior changed at all this phase (no new AS2 API, no
+`Button` dispatch, no `onClipEvent` changes — none of `_xmouse`/`_ymouse`/
+`Key.isDown()`/existing button state were touched beyond what STEP 6
+regression-tested as unchanged). **Recommended next step: bounding-box
+hit-testing** (design already written, `docs/hit-testing.md`) — it can now
+correctly consume `isMousePressed()`/`isMouseReleased()` (via `_xmouse`/
+`_ymouse`'s already-correct stage coordinates from Sub-fix 2/N) to
+determine exactly which tick a click began/ended on, rather than only
+"is the mouse currently down," which was the last missing low-level
+primitive hit-testing and button dispatch both needed.
+
 ### Remaining sub-fixes for this priority (not started, in dependency order)
 
 See `docs/interactivity-audit.md` §8 for the complete list and reasoning:
-edge-detected input state (next pick — small, isolated, hard-blocks both
-hit-testing's press/release semantics and button state transitions),
-bounding-box hit-testing (design: `docs/hit-testing.md`), a per-placement
+bounding-box hit-testing (design: `docs/hit-testing.md`, next pick — now
+unblocked, has both correct stage coordinates [Sub-fix 2/N] and
+edge-detected press/release [Sub-fix 3/N] to build on), a per-placement
 Button instance object, a generic event dispatcher (design:
 `docs/events.md`), then finally `onClipEvent`'s remaining 15 mouse/key
 flags (status: `docs/onclipevent-compatibility.md`) and button `on()`
-handler dispatch. The device-px -> stage-pixel coordinate mapping that
-used to head this list is **DONE** — see Sub-fix 2/N above.
+handler dispatch. The device-px -> stage-pixel coordinate mapping and
+edge-detected input state that used to head this list are both **DONE**
+— see Sub-fix 2/N and Sub-fix 3/N above.
 
 
 **Classification: AVM1 + DISPLAY LIST (hit-testing needs `_width`/`_height`, itself blocked on bounding-box computation) + OBJECT MODEL.**

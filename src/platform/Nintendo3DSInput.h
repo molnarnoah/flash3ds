@@ -24,6 +24,21 @@
 //     see docs/3ds-toolchain.md and docs/input.md).
 //   - START maps to Key.ENTER (13), SELECT to Key.ESCAPE (27) as
 //     reasonable-effort conventions.
+//   - L/R shoulder buttons (input-transitions phase, 2026-08-19) map to
+//     printable ASCII codes 'L'/'R' — same reasonable-effort convention as
+//     X/Y above (no natural AS2 Key.* equivalent exists for a shoulder
+//     button either). Added specifically so all of A/B/X/Y/L/R/START/
+//     SELECT/D-Pad have SOME InputState key code to test edge detection
+//     against — previously L/R weren't fed into InputState at all.
+//
+// Edge detection (input-transitions phase, 2026-08-19): poll() now calls
+// InputState::commitFrame() as its LAST step, once per call — see that
+// method's doc comment (runtime/InputState.h) for the full model. This is
+// safe/correct here specifically because poll() is called exactly once per
+// real hardware frame (once per hidScanInput(), from
+// nintendo3ds_main.cpp's main loop) — never more, never less — so "once
+// per poll()" and "once per real input sample" are the same thing on this
+// platform.
 //
 // This file is only compiled for the 3DS target (guarded by __3DS__).
 
