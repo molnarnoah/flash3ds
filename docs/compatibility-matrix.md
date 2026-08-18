@@ -139,17 +139,20 @@ populates `_global` with `Key`, `Mouse`, `Sound`, `ExternalInterface` (see
 | `onClipEvent(Load)`/`(Unload)`/`(EnterFrame)` | WORKING | `runClipEvent()`, 3 call sites, `MovieClipInstance.cpp:626,678,736,929` |
 | `onClipEvent(MouseMove/MouseDown/MouseUp/KeyDown/KeyUp/Data/Initialize/Press/Release/ReleaseOutside/RollOver/RollOut/DragOver/DragOut/KeyPress/Construct)` | **NOT IMPLEMENTED** | all 16 remaining flags are parsed into `clipActions_` but never passed to `runClipEvent()` anywhere — confirmed by exhaustive call-site grep |
 | Button `on()` handler dispatch (`actionsV1`/`condActionsV2`) | **NOT IMPLEMENTED** | confirmed by codebase-wide grep — these fields are read only by the `swf/` parser and `SceneRenderer`'s render-only `ButtonDef` consumer; nothing ever runs their bytecode |
-| Hit testing (any point-in-object test) | **NOT IMPLEMENTED** | confirmed zero code anywhere in `src/` before/after this turn — design recorded in `docs/hit-testing.md`, blocked on a still-missing device-px -> stage-twips coordinate conversion (see `docs/input.md`'s new finding) |
+| Hit testing (any point-in-object test) | **WORKING — interactivity phase (2026-08-19, sub-fix 4/N)** | see row below and §6; design recorded in `docs/hit-testing.md` |
 | Generic input-event dispatch (mouse press/release/rollOver/rollOut -> AVM1) | **NOT IMPLEMENTED** | design recorded in `docs/events.md`; no `InputEvent`/dispatcher type exists anywhere |
-| Per-placement Button "instance" (state, AS2-settable `onRelease`/etc.) | **NOT IMPLEMENTED** | confirmed: buttons have no runtime object of their own at all — a placed button is just a `characterId` resolved to a `ButtonDef` at render time, with no Phase-5-style instance wrapper the way sprites have (`MovieClipInstance`) — see `docs/interactivity-audit.md` §3 |
+| Per-placement Button "instance" (transform, depth, visibility, hit area, UP/OVER/DOWN state) | **NEW, WORKING — ButtonInstance phase (2026-08-19)** | `ButtonInstance`/`MovieClipInstance::buttonInstances_` — a real runtime instance is now created for every placed `DefineButton`/`DefineButton2`, with its own transform, independent state, and hit-testing via the existing `hitTestPoint()` machinery; 16 regression tests (`tests/test_button_instance.cpp`); see `docs/buttons.md`. **AS2-settable `onRelease`/etc. are still NOT implemented** — `ButtonInstance::scriptObject_` is a bare identity object only, no properties/methods wired, and no event dispatch of any kind fires yet (see `docs/buttons.md`'s "Not implemented yet") |
 | Nested MovieClips | WORKING | recursive `Timeline::build`, independent playheads (Phase 5) |
 | Frame scripts (`DoAction` per frame) | WORKING | run every intermediate frame during replay, confirmed against real `hobo.swf` (Phase 9) |
 | Timeline/AVM1 execution order vs real Flash | UNKNOWN | not independently cross-checked against a real Flash Player's frame/script/render ordering this phase |
 
 **Direct consequence for Hobo-style content:** clicking a "PLAY!" button
-(or any button) does **nothing** right now — no `Press`/`Release`
-`onClipEvent`, no button `on(release)` handler, and hit-testing itself is
-impossible without `_width`/`_height`. This is very likely why Phase 9's
+(or any button) still does **nothing** right now — hit-testing and a real
+per-placement `ButtonInstance` (with UP/OVER/DOWN state) both now exist
+and are proven against real `hobo.swf` `DefineButton2` content (see
+`docs/buttons.md`'s "Real Hobo `DefineButton2` findings"), but no
+`Press`/`Release`/`onClipEvent`/button `on(release)` handler is dispatched
+by anything yet — that's the next phase. This is very likely why Phase 9's
 manual walk of `hobo.swf` never got past the title screen. See
 `docs/known-limitations.md`'s priority list.
 
@@ -200,7 +203,7 @@ tracing this phase confirms it is real and fully wired.
 | Stroke rendering | WORKING (crude) | naive Bresenham + square-stamp thickness, no joins/caps/anti-aliasing |
 | Text rendering (`DefineText`/`2`) | WORKING | both DefineFont v1 and v2 glyphs render (glyph-index lookup doesn't need a code table) |
 | Dynamic text rendering (`DefineEditText`) | PARTIALLY WORKING | only when embedding a DefineFont2-with-code-table font; no word-wrap/scrolling/alignment/variable-binding |
-| Button rendering | PARTIALLY WORKING | Up state only, no hit-testing/state machine (see §5) |
+| Button rendering | PARTIALLY WORKING | `SceneRenderer` still renders only the Up-state records, unchanged and deliberately so (ButtonInstance phase, 2026-08-19 — see `docs/buttons.md`'s "Rendering — deliberately unchanged"); hit-testing and an UP/OVER/DOWN state machine now exist at the runtime-instance level (see §5) but nothing yet feeds that state back into what gets rendered |
 | `SetBackgroundColor` | NOT IMPLEMENTED | renderer hardcodes white always |
 | Nintendo 3DS framebuffer blit | WORKING (compiles/links; visually unconfirmed pixel-exact) | real `gfxGetFramebuffer` write, rotated/column-major indexing — confirmed booting in Azahar per user report, not yet pixel-verified |
 

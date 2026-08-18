@@ -462,26 +462,110 @@ architecture change needed is isolated to one leaf-level check, per
 `docs/hit-testing.md`'s "Why bounding-box, not exact shape" section, and
 requires nothing else to be redesigned). `hitTest(target)` (1-arg,
 compare-two-objects' -bounds form) is NOT implemented — flagged, not
-guessed at. **Recommended next step: a per-placement Button "instance"
-object** — buttons currently have NO runtime object of their own at all
-(the biggest remaining structural gap per `docs/interactivity-audit.md`
-§3) — needed to hold Up/Over/Down state and an AS2-visible scripting
-object before a generic event dispatcher (design: `docs/events.md`) can
-wire `onRelease`/`onPress`/`onClipEvent(press)` to the new `hitTestPoint()`
-+ edge-detection (`isMousePressed()`/`isMouseReleased()`) primitives that
-now both exist.
+guessed at.
+
+### Sub-fix 5/N — `ButtonInstance`: a real runtime object for placed buttons — **FIXED THIS TURN**
+
+**STEP 1 — Audit.** Traced the actual source (not inferred) end-to-end:
+`swf::ButtonDef`/`ButtonRecordDef` parsing (`swf/DefineButtonTag.h`),
+`CharacterDictionary`'s generic (already-working) character-variant
+storage, `DisplayList`/`PlaceObjectTag`'s already-generic, character-
+type-agnostic placement pipeline — all already fully correct and
+untouched by this phase. The actual, confirmed gap:
+`MovieClipInstance::syncChildren()` created a runtime instance ONLY for
+`SpriteDef` characters (`std::holds_alternative<SpriteDef>(*def)`) —
+every other type, buttons included, was skipped with no runtime object
+created at all. A second confirmed finding: `characterOwnBoundsRect()`
+(built for the `_width`/`_height` fix) already correctly resolved a
+button's HitTest-state-preferred hit-area geometry — meaning the
+requirement 5/12 worry ("what if the parser doesn't retain hit-state
+geometry") turned out to already be a non-issue; only the RUNTIME
+INSTANCE WRAPPER and its hit-testing/lifetime/AS2-identity integration
+were actually missing. Full writeup: `docs/buttons.md`'s "Architecture
+audit" section.
+
+**STEP 4-5 — Fix/implementation.** Added `ButtonInstance`
+(`src/runtime/ButtonInstance.{h,cpp}`) — the button-phase counterpart of
+`MovieClipInstance` for `SpriteDef`, following the exact same established
+`Def` (shared immutable) / `Instance` (per-placement mutable) split.
+Extracted `emptyBoundsRect()`/`isEmptyBoundsRect()`/`unionBoundsRect()`/
+`characterOwnBoundsRect()` out of `MovieClipInstance.cpp`'s anonymous
+namespace into a new shared file (`src/runtime/CharacterBounds.{h,cpp}`)
+so both files can reuse them without duplication — pure mechanical
+extraction, verified zero behavior change. `MovieClipInstance` gained a
+new `buttonInstances_` map (deliberately separate from `children_`, NOT
+visible to `SceneRenderer` — guarantees pixel-identical rendering by
+construction), synced via the SAME two-phase pattern/entry points
+`syncChildren()`'s existing Sprite-child logic already uses.
+`hitTestPointInOwnSpace()` gained one more branch (a thin wrapper around
+the SAME existing primitives, not a second implementation) so
+`HitTestResult` can now carry a `ButtonInstance*`. Added a per-tick
+`updateButtonStatesRecursive()` driver, called root-only from
+`advanceFrame()` (mirroring `updateDrag()`'s own precedent), computing the
+UP/OVER/DOWN state machine (`!isOver -> UP`; `isOver && !mouseDown ->
+OVER`; `isOver && mouseDown -> DOWN`) from one root-level
+`hitTestPoint()` call. Added a bare AS2 identity object
+(`ButtonInstance::scriptObject_`, no properties/methods wired) plus a
+`childNameToDepth_`/`handleNativeGet()` fallback so a named button
+placement resolves to a real, distinct object. Full architecture writeup,
+including the documented 3-vs-5-state simplification and the exact AS2
+identity gap left open: `docs/buttons.md`.
+
+**STEP 6 — Desktop tests.** 16 new tests in the new
+`tests/test_button_instance.cpp`: creation (+ confirming NO
+`MovieClipInstance` is also created), default state, two-independent-
+placements-of-the-same-def, transforms (origin/translated/scaled/nested-
+in-MovieClip), overlapping-buttons depth ordering, HitTest-vs-visual-state
+geometry, invisible-button exclusion, the full UP/OVER/DOWN transition
+table driven through real `advanceFrame()` ticks, multiple-buttons
+only-topmost-gets-OVER, display-list-driven removal, same-depth
+replacement-with-a-different-button (verified via a `std::weak_ptr` that
+the OLD instance is genuinely destroyed, not just relabeled — a raw
+pointer comparison would be unreliable since the allocator can legally
+reuse a just-freed address), and duplicate-placement AS2 name resolution.
+**253/253 tests passing** (up from 237), zero regressions.
+
+**Independent real-content check:** rendered `hobo.swf` frames 1-5 before
+and after this phase and diffed byte-for-byte — **100% identical**
+(expected: `SceneRenderer.cpp` was not touched at all this phase).
+
+**STEP 7-8 — 3DS build.** `cmake --build build_3ds` succeeds cleanly (only
+the same pre-existing, unrelated newlib/ABI warnings as every prior 3DS
+build). New `.3dsx` built (397216 bytes, up from 392032 — confirms the new
+code linked in). **Not yet tested on Azahar/hardware** — no emulator/
+device access from this environment.
+
+**STEP 9 — Regression tests.** Done — see STEP 6, all 16 permanent.
+
+**STEP 10 — What now works / what remains.** A placed SWF Button2 now has
+a real runtime instance with its own transform, depth, visibility, hit
+area, and UP/OVER/DOWN state — verified against both synthetic fixtures
+and, via a diagnostic-only tool, real `hobo.swf` content (3 real buttons
+placed on frame 1, including one correctly composed through a level of
+MovieClip nesting — see `docs/buttons.md`'s "Real Hobo `DefineButton2`
+findings"). **No ActionScript event dispatch of any kind exists yet** —
+`onPress`/`onRelease`/`onRollOver`/`onRollOut`/`onClipEvent(mouse*)`/
+`Mouse.onMouseDown`/`onMouseUp`, and the button's own parsed
+`condActionsV1`/`condActionsV2` bytecode, are all still completely
+undispatched, exactly as scoped. Hobo interaction does **not** work yet.
+**Recommended next step: a generic event dispatcher** (design:
+`docs/events.md`, not yet written) — every primitive it needs now exists
+(`hitTestPoint()`'s `HitTestResult::button`, `ButtonInstance::
+updateState()`'s "did it change" return value, `InputState::
+isMousePressed()`/`isMouseReleased()`), it just needs to actually call
+them and fire the right AS2 handlers on the right transitions.
 
 ### Remaining sub-fixes for this priority (not started, in dependency order)
 
 See `docs/interactivity-audit.md` §8 for the complete list and reasoning: a
-per-placement Button instance object (next pick — now unblocked, has
-hit-testing and edge-detected input to build on), a generic event
-dispatcher (design: `docs/events.md`), then finally `onClipEvent`'s
-remaining 15 mouse/key flags (status: `docs/onclipevent-compatibility.md`)
-and button `on()` handler dispatch. The device-px -> stage-pixel coordinate
-mapping, edge-detected input state, and bounding-box hit-testing that used
-to head this list are all **DONE** — see Sub-fix 2/N, Sub-fix 3/N, and
-Sub-fix 4/N above.
+generic event dispatcher (design: `docs/events.md`), then finally
+`onClipEvent`'s remaining 15 mouse/key flags (status:
+`docs/onclipevent-compatibility.md`) and button `on()`/`condActionsV2`
+handler dispatch. The device-px -> stage-pixel coordinate mapping,
+edge-detected input state, bounding-box hit-testing, and a real
+per-placement Button runtime instance that used to head this list are all
+**DONE** — see Sub-fix 2/N, Sub-fix 3/N, Sub-fix 4/N, and Sub-fix 5/N
+above.
 
 
 **Classification: AVM1 + DISPLAY LIST (hit-testing needs `_width`/`_height`, itself blocked on bounding-box computation) + OBJECT MODEL.**

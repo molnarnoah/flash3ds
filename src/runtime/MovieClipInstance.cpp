@@ -9,6 +9,8 @@
 #include "avm1/Interpreter.h"
 #include "avm1/Scope.h"
 #include "platform/Log.h"
+#include "runtime/ButtonInstance.h"
+#include "runtime/CharacterBounds.h"
 #include "swf/TagCode.h"
 
 namespace flash3ds::runtime {
@@ -21,84 +23,6 @@ constexpr double kPi = 3.14159265358979323846;
 // near-identical setOwnProperty calls.
 void setKeyConstant(avm1::Object& keyObj, const char* name, int code) {
     keyObj.setOwnProperty(name, avm1::Value::number(code));
-}
-
-// --- _width/_height bounds computation (interactivity-audit phase) --------
-//
-// A small "empty rect" sentinel/union algebra, analogous to swf::
-// ColorTransform::identity() being the neutral element for
-// concatColorTransform: emptyBoundsRect() is the neutral element for
-// unionBoundsRect() (unioning with it returns the other operand unchanged),
-// detected via the classic "inverted" empty-rect convention (xMin > xMax)
-// rather than a separate bool flag.
-swf::Rect emptyBoundsRect() {
-    return swf::Rect{INT32_MAX, INT32_MIN, INT32_MAX, INT32_MIN};
-}
-
-bool isEmptyBoundsRect(const swf::Rect& r) { return r.xMin > r.xMax || r.yMin > r.yMax; }
-
-swf::Rect unionBoundsRect(const swf::Rect& a, const swf::Rect& b) {
-    if (isEmptyBoundsRect(a)) return b;
-    if (isEmptyBoundsRect(b)) return a;
-    return swf::Rect{std::min(a.xMin, b.xMin), std::max(a.xMax, b.xMax), std::min(a.yMin, b.yMin),
-                      std::max(a.yMax, b.yMax)};
-}
-
-// Resolves a LEAF character's own (untransformed) bounds — the same
-// "which CharacterDef alternative is this" dispatch renderer::SceneRenderer
-// uses, but returning a bounding Rect instead of drawing. Deliberately
-// scoped (matches this codebase's "trace real gaps, don't guess" habit):
-//   - ShapeDef/TextDef/EditTextDef: use the tag's own already-parsed
-//     ShapeBounds/TextBounds/bounds RECT directly — no computation needed.
-//   - ButtonDef: unions the HitTest-state records' underlying character
-//     bounds (falling back to Up-state records if the button defines no
-//     explicit HitTest state at all — matches real Flash, which requires
-//     an author-supplied hit area but tolerates its absence by using
-//     Up-state geometry). Only resolves ONE level deep (a button record
-//     referencing a Shape/Text/EditText) — a button record referencing a
-//     nested Sprite for its hit area is rare/unusual authoring and is
-//     skipped rather than recursed into, to keep this a bounded, simple
-//     first pass (see docs/hit-testing.md).
-//   - SpriteDef/SoundDef/FontDef: empty — sprites are never leaf display-
-//     list entries at runtime (they resolve to a MovieClipInstance child
-//     instead, handled separately by computeBoundsInOwnSpace() below), and
-//     Sound/Font are never placeable characters at all.
-//   - Bitmap characters (DefineBits*) and DefineMorphShape/2 don't resolve
-//     into CharacterDictionary at all yet (see docs/compatibility-matrix.md)
-//     so `def` itself would be null for those — never reaches this function.
-swf::Rect characterOwnBoundsRect(const CharacterDef& def, const CharacterDictionary& characters) {
-    if (const auto* shape = std::get_if<swf::ShapeDef>(&def)) return shape->bounds;
-    if (const auto* text = std::get_if<swf::TextDef>(&def)) return text->bounds;
-    if (const auto* editText = std::get_if<swf::EditTextDef>(&def)) return editText->bounds;
-    if (const auto* button = std::get_if<swf::ButtonDef>(&def)) {
-        bool anyHitTest = false;
-        for (const auto& rec : button->records) {
-            if (rec.stateHitTest) {
-                anyHitTest = true;
-                break;
-            }
-        }
-        swf::Rect result = emptyBoundsRect();
-        for (const auto& rec : button->records) {
-            bool use = anyHitTest ? rec.stateHitTest : rec.stateUp;
-            if (!use) continue;
-            const CharacterDef* nested = characters.find(rec.characterId);
-            if (!nested) continue;
-            swf::Rect nestedBounds;
-            if (const auto* nShape = std::get_if<swf::ShapeDef>(nested)) {
-                nestedBounds = nShape->bounds;
-            } else if (const auto* nText = std::get_if<swf::TextDef>(nested)) {
-                nestedBounds = nText->bounds;
-            } else if (const auto* nEdit = std::get_if<swf::EditTextDef>(nested)) {
-                nestedBounds = nEdit->bounds;
-            } else {
-                continue;
-            }
-            result = unionBoundsRect(result, swf::transformRect(rec.matrix, nestedBounds));
-        }
-        return result;
-    }
-    return emptyBoundsRect();
 }
 
 }  // namespace
@@ -706,7 +630,24 @@ std::optional<MovieClipInstance::HitTestResult> MovieClipInstance::hitTestPointI
             continue;
         }
 
-        // Not a MovieClipInstance -- a leaf character (or an unresolved/
+        // A placed Button2/DefineButton (ButtonInstance phase, 2026-08-19)
+        // -- reuse the EXACT SAME primitives the generic leaf-character
+        // branch below uses (characterOwnBoundsRect/invertMatrix/
+        // transformPoint/rectContainsPoint), just via ButtonInstance::
+        // hitTestLocal() so the result can carry a ButtonInstance* back to
+        // the caller (see docs/buttons.md). Not a second hit-testing
+        // implementation -- hitTestLocal() is a thin wrapper.
+        auto buttonIt = buttonInstances_.find(depthValue);
+        if (buttonIt != buttonInstances_.end() && buttonIt->second) {
+            if (!characters_) continue;
+            if (buttonIt->second->hitTestLocal(localPoint, *characters_)) {
+                return HitTestResult{const_cast<MovieClipInstance*>(this), entry.characterId,
+                                      depthValue, buttonIt->second.get()};
+            }
+            continue;
+        }
+
+        // Not a MovieClipInstance or ButtonInstance -- a leaf character (or an unresolved/
         // still-unsupported one, e.g. bitmap/DefineMorphShape --
         // characters_->find() returns nullptr for those, contributing
         // nothing, matching how they already render as nothing and
@@ -901,6 +842,22 @@ bool MovieClipInstance::handleNativeGet(const std::string& name, avm1::Value& ou
             out = avm1::Value::object(childIt->second->scriptObject_);
             return true;
         }
+        // A named placed Button2/DefineButton (ButtonInstance phase,
+        // 2026-08-19) -- establishes AS2 object identity only (a bare
+        // object with no properties/methods wired — see ButtonInstance.h's
+        // "AS2 OBJECT IDENTITY" section for exactly what this does and
+        // does NOT provide yet). `_root.someButtonName` now resolves to a
+        // real, distinct object; `_root.someButtonName._x` does not (the
+        // object has no nativeGet hook), and resolvePath()/target-path
+        // traversal (SetTarget, tellTarget, CallMethod on a path) still
+        // can't reach a button at all, since resolvePath() only walks
+        // children_ (MovieClipInstance objects) — documented as the exact
+        // missing bridge in docs/buttons.md rather than worked around here.
+        auto buttonIt = buttonInstances_.find(it->second);
+        if (buttonIt != buttonInstances_.end() && buttonIt->second) {
+            out = avm1::Value::object(buttonIt->second->scriptObject());
+            return true;
+        }
     }
     return false;
 }
@@ -996,11 +953,37 @@ void MovieClipInstance::syncChildren() {
         }
     }
 
+    // 1b) Remove button instances whose depth no longer has a valid entry,
+    // or whose entry's characterId changed (ButtonInstance phase,
+    // 2026-08-19) — mirrors the children_ removal loop above exactly
+    // (same display-list-driven lifetime mechanism, reused rather than
+    // duplicated — see docs/buttons.md's "Instance lifetime" section).
+    // Buttons have no onClipEvent/drag-target concept, so this is simpler
+    // than the children_ loop: no runClipEvent(kUnload) / notifyRemoved()
+    // call is needed.
+    for (auto it = buttonInstances_.begin(); it != buttonInstances_.end();) {
+        const DisplayListEntry* entry = dl.find(it->first);
+        bool stillValid = entry && entry->characterId == it->second->characterId();
+        if (!stillValid) {
+            for (auto nameIt = childNameToDepth_.begin(); nameIt != childNameToDepth_.end();) {
+                if (nameIt->second == it->first) nameIt = childNameToDepth_.erase(nameIt);
+                else ++nameIt;
+            }
+            it = buttonInstances_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     // 2) For every depth in the current display list that resolves to a
     // Sprite character and doesn't already have a live child, create one
     // and run its initial (frame 1 / DoInitAction) scripts. See the class
     // header for why a SURVIVING child's transform is deliberately NOT
-    // re-copied from the display-list entry here.
+    // re-copied from the display-list entry here. As of the ButtonInstance
+    // phase (2026-08-19), a depth resolving to a ButtonDef instead gets a
+    // new ButtonInstance the same way (see the second branch below) — the
+    // exact same "don't already have one -> create it" loop, just
+    // branching by which CharacterDef alternative is at this depth.
     if (childrenSyncDepth_ >= kMaxDepth) {
         LOG_WARN("MOVIECLIP",
                   "recursion depth limit (%d) exceeded while syncing children — possible cyclic "
@@ -1010,29 +993,65 @@ void MovieClipInstance::syncChildren() {
     }
 
     for (const auto& [depthValue, entry] : dl.entries()) {
-        if (children_.count(depthValue)) continue;
+        if (children_.count(depthValue) || buttonInstances_.count(depthValue)) continue;
 
         const CharacterDef* def = characters_->find(entry.characterId);
-        if (!def || !std::holds_alternative<SpriteDef>(*def)) continue;
+        if (!def) continue;
 
-        const SpriteDef& spriteDef = std::get<SpriteDef>(*def);
-        auto childTimeline = Timeline::build(*movie_, spriteDef.tags);
-        if (!childTimeline) continue;
+        if (std::holds_alternative<SpriteDef>(*def)) {
+            const SpriteDef& spriteDef = std::get<SpriteDef>(*def);
+            auto childTimeline = Timeline::build(*movie_, spriteDef.tags);
+            if (!childTimeline) continue;
 
-        std::string childName = entry.name.value_or("");
-        std::shared_ptr<MovieClipInstance> child(new MovieClipInstance(
-            *movie_, *characters_, *env_, this, childName, depthValue, std::move(childTimeline)));
-        child->characterId_ = entry.characterId;
-        child->matrix_ = entry.matrix;
-        child->colorTransform_ = entry.colorTransform;
-        child->clipActions_ = entry.clipActions;
-        child->childrenSyncDepth_ = childrenSyncDepth_ + 1;
-        child->wireScriptObject();
+            std::string childName = entry.name.value_or("");
+            std::shared_ptr<MovieClipInstance> child(
+                new MovieClipInstance(*movie_, *characters_, *env_, this, childName, depthValue,
+                                       std::move(childTimeline)));
+            child->characterId_ = entry.characterId;
+            child->matrix_ = entry.matrix;
+            child->colorTransform_ = entry.colorTransform;
+            child->clipActions_ = entry.clipActions;
+            child->childrenSyncDepth_ = childrenSyncDepth_ + 1;
+            child->wireScriptObject();
 
-        children_[depthValue] = child;
-        if (!childName.empty()) childNameToDepth_[childName] = depthValue;
+            children_[depthValue] = child;
+            if (!childName.empty()) childNameToDepth_[childName] = depthValue;
 
-        child->initializeNewlyCreated();
+            child->initializeNewlyCreated();
+            continue;
+        }
+
+        if (const auto* buttonDef = std::get_if<swf::ButtonDef>(def)) {
+            // ButtonInstance phase (2026-08-19): give this placement a
+            // real runtime instance instead of leaving it as a bare
+            // DisplayListEntry SceneRenderer draws directly (see
+            // ButtonInstance.h's class header). No onClipEvent(load)/
+            // DoInitAction equivalent runs for buttons — real Flash
+            // buttons don't have their own timeline/frame scripts, and
+            // this phase doesn't dispatch condActionsV1/condActionsV2
+            // (see ButtonInstance.h's "SCOPE OF THIS PHASE").
+            std::string buttonName = entry.name.value_or("");
+            auto button = std::make_shared<ButtonInstance>(*buttonDef, entry.characterId, this,
+                                                              depthValue, buttonName);
+            button->setLocalMatrix(entry.matrix);
+            button->setColorTransform(entry.colorTransform);
+            button->wireScriptObject();
+
+            buttonInstances_[depthValue] = button;
+            if (!buttonName.empty()) childNameToDepth_[buttonName] = depthValue;
+            continue;
+        }
+    }
+}
+
+void MovieClipInstance::updateButtonStatesRecursive(ButtonInstance* hitButton, bool mouseDown) {
+    for (auto& [depthValue, button] : buttonInstances_) {
+        (void)depthValue;
+        if (button) button->updateState(button.get() == hitButton, mouseDown);
+    }
+    for (auto& [depthValue, child] : children_) {
+        (void)depthValue;
+        if (child) child->updateButtonStatesRecursive(hitButton, mouseDown);
     }
 }
 
@@ -1052,6 +1071,20 @@ void MovieClipInstance::advanceFrame() {
     // redundantly, harmlessly but wastefully).
     if (!parent_) {
         env_->updateDrag();
+        // Button UP/OVER/DOWN state driver (ButtonInstance phase,
+        // 2026-08-19) -- same "root-only, once per full-tree tick"
+        // precedent as updateDrag() just above. ONE hitTestPoint() call
+        // from the root already recurses through the ENTIRE tree
+        // (children_ + buttonInstances_ at every level -- see
+        // hitTestPointInOwnSpace()), so this finds the single topmost
+        // button anywhere in the tree the mouse/touch point currently
+        // hits (or none) in one pass, then propagates isOver/mouseDown to
+        // every ButtonInstance in the tree. Does NOT dispatch any
+        // ActionScript event -- see ButtonInstance.h's "SCOPE OF THIS
+        // PHASE".
+        auto hit = hitTestPoint(stageMouseX(), stageMouseY());
+        ButtonInstance* hitButton = (hit && hit->button) ? hit->button : nullptr;
+        updateButtonStatesRecursive(hitButton, env_->inputState().isMouseDown());
     }
     // Copy the child list before recursing: a script that ran just above
     // (via runCurrentFrameScripts/syncChildren) could have removed a child

@@ -174,3 +174,22 @@ version needs to be thrown away later.
   the algorithm above already treats this uniformly (any leaf/child with
   resolvable bounds is hit-testable), so no special-casing should be
   needed, but this hasn't been exercised against real content yet.
+
+## Update (ButtonInstance phase, 2026-08-19): buttons now have a real runtime identity in hit-test results
+
+`HitTestResult` gained a fourth field, `ButtonInstance* button` (`nullptr`
+for every non-button hit) — a placed button hitting via
+`hitTestPointInOwnSpace()`'s leaf-character branch used to be
+indistinguishable from a shape/text hit in the returned result (both just
+carried `characterId`/`depth`). The hit-test ALGORITHM itself is
+unchanged: buttons were already correctly hit-testable before this phase
+(via `characterOwnBoundsRect()`'s existing HitTest-state-aware geometry,
+reached through the same generic leaf-character fallback), the only new
+code is a thin `ButtonInstance::hitTestLocal()` wrapper (called from a new
+branch checked BEFORE the generic leaf fallback) that reuses the exact
+same primitives and lets the result carry a `ButtonInstance*` back to the
+caller — needed so a future event-dispatch phase can call
+`ButtonInstance::updateState()`/access button-specific state on the thing
+that was actually hit. See `docs/buttons.md`'s "Hit-test integration"
+section for the full writeup, including the multi-button depth-ordering
+and nested-button regression tests this phase added.

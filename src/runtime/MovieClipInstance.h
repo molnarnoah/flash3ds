@@ -37,10 +37,16 @@
 //     (see runClipEvent()/initializeNewlyCreated()/removeFromParent()/
 //     advanceFrame()). Mouse*/Press/Release/RollOver*/DragOver*/KeyDown/
 //     KeyUp are parsed (ClipActionRecord — swf/PlaceObjectTag.h) but still
-//     NOT dispatched: hit-testing itself (which now HAS bounds to work
-//     with, above) still doesn't exist yet — see docs/hit-testing.md for
-//     the planned design. Button `on()` handlers are parsed
-//     (DefineButton/2, Phase 8) but not dispatched for the same reason.
+//     NOT dispatched: hit-testing now exists (interactivity phase,
+//     2026-08-19 — see hitTestPoint()/hitTestBounds() below) but nothing
+//     yet DRIVES clip-event dispatch off of it — see docs/hit-testing.md.
+//     Button `on()` handlers are parsed (DefineButton/2, Phase 8) and a
+//     placed button now HAS a real runtime instance with UP/OVER/DOWN
+//     state (ButtonInstance phase, 2026-08-19 — see buttonInstances_/
+//     ButtonInstance.h/docs/buttons.md), but the parsed condActionsV1/
+//     condActionsV2 bytecode is still NOT dispatched anywhere — that, and
+//     onClipEvent(mouse*)/onPress/onRelease/onRollOver/onRollOut, are the
+//     explicit next phase (see docs/buttons.md's "Not implemented yet").
 //     DoAction/DoInitAction frame scripts ARE fully wired.
 //   - StartDrag/EndDrag (Phase 6) are real: ScriptEnvironment tracks at
 //     most one dragged clip and repositions it from InputState's mouse
@@ -86,6 +92,7 @@
 namespace flash3ds::runtime {
 
 class MovieClipInstance;
+class ButtonInstance;  // runtime/ButtonInstance.h — see MovieClipInstance.cpp's #include
 
 // Shared AVM1 scripting environment for one loaded movie's whole MovieClip
 // tree: owns the global object (so a top-level user-defined function/var
@@ -282,6 +289,12 @@ public:
         return children_;
     }
 
+    // Placed Button2/DefineButton runtime instances at this clip's own
+    // depth level (not recursive) — see buttonInstances_'s field comment.
+    const std::map<int32_t, std::shared_ptr<ButtonInstance>>& buttonInstances() const {
+        return buttonInstances_;
+    }
+
     // --- script-mutable placement state --------------------------------
     const swf::Matrix& localMatrix() const { return matrix_; }
     const swf::ColorTransform& colorTransform() const { return colorTransform_; }
@@ -354,6 +367,11 @@ public:
         MovieClipInstance* clip = nullptr;
         uint16_t characterId = 0;
         int32_t depth = 0;
+        // Non-null iff the hit depth held a placed Button2/DefineButton —
+        // i.e. `clip->buttonInstances_[depth].get()` (ButtonInstance
+        // phase, 2026-08-19). nullptr for every other hit (a shape/text/
+        // MovieClip). See docs/buttons.md.
+        ButtonInstance* button = nullptr;
     };
 
     // Bounding-box hit test: given a point in STAGE-PIXEL space (the same
@@ -412,6 +430,20 @@ private:
     void runCurrentFrameSounds();
     void syncChildren();
 
+    // Per-tick UP/OVER/DOWN state driver (ButtonInstance phase,
+    // 2026-08-19) — mirrors ScriptEnvironment::updateDrag()'s own
+    // "one global per-tick update, driven only from the ROOT's
+    // advanceFrame()" precedent, but implemented as a tree-recursive
+    // MovieClipInstance method rather than centralized in
+    // ScriptEnvironment, since (unlike drag, which tracks at most one
+    // target) buttons are per-clip/tree-distributed — every
+    // MovieClipInstance in the tree may own its own buttonInstances_.
+    // `hitButton` is the SINGLE topmost ButtonInstance the mouse/touch
+    // point currently hits anywhere in the whole tree (computed ONCE by
+    // the root, via hitTestPoint(), before this call — see
+    // advanceFrame()) — every OTHER button in the tree gets isOver=false.
+    void updateButtonStatesRecursive(ButtonInstance* hitButton, bool mouseDown);
+
     // The union of every currently-placed character/child's bounds, in
     // THIS instance's own local space (i.e. BEFORE this instance's own
     // matrix_ is applied) — see MovieClipInstance.cpp for the full doc
@@ -443,6 +475,14 @@ private:
 
     std::unique_ptr<Timeline> timeline_;
     std::map<int32_t, std::shared_ptr<MovieClipInstance>> children_;
+    // Placed Button2/DefineButton runtime instances — a SEPARATE map from
+    // children_ (ButtonInstance phase, 2026-08-19), deliberately NOT a
+    // MovieClipInstance subtype and NOT visible to SceneRenderer (which
+    // keeps walking the raw DisplayList exactly as before — see
+    // ButtonInstance.h's class header for why this guarantees pixel-
+    // identical rendering by construction). Keyed by depth, exactly like
+    // children_ and the underlying DisplayList itself.
+    std::map<int32_t, std::shared_ptr<ButtonInstance>> buttonInstances_;
     std::unordered_map<std::string, int32_t> childNameToDepth_;
     std::vector<swf::ClipActionRecord> clipActions_;  // Phase 6, copied from the placing DisplayListEntry
 

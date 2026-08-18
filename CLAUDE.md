@@ -356,26 +356,31 @@ docs" section — don't just assume this is resolved.
    `_xmouse`/`_ymouse` device-pixel -> stage-pixel coordinate conversion),
    Sub-fix 3/N (edge-detected input state — `InputState::commitFrame()`/
    `isKeyPressed()`/`isKeyReleased()`/`isMousePressed()`/`isMouseReleased()`/
-   `isTouchPressed()`/`isTouchReleased()`), and Sub-fix 4/N (bounding-box
+   `isTouchPressed()`/`isTouchReleased()`), Sub-fix 4/N (bounding-box
    hit-testing — `MovieClipInstance::hitTestPoint()`, an internal
    topmost-object-under-a-point primitive, plus real AS2-visible
-   `MovieClip.hitTest(x, y)`) are **all done** — see
-   `docs/known-limitations.md`'s STEP 1-10 writeups for all four,
+   `MovieClip.hitTest(x, y)`), and Sub-fix 5/N (`ButtonInstance` — a real
+   per-placement runtime object for placed buttons, with its own
+   transform/depth/visibility/hit-area/UP-OVER-DOWN state, wired into
+   hit-testing/display-list-lifetime/AS2-identity via the existing
+   machinery, NOT via a second implementation) are **all done** — see
+   `docs/known-limitations.md`'s STEP 1-10 writeups for all five,
    `docs/interactivity-audit.md` (full 8-part trace, kept up to date as
    each sub-fix lands), `docs/input.md` (coordinate-flow diagram +
    edge-detection model/semantics), `docs/hit-testing.md` (design +
    implementation summary — the original design held up unchanged),
-   `docs/events.md` (design doc for the next sub-fix, not yet
+   `docs/buttons.md` (ButtonInstance architecture, real Hobo
+   `DefineButton2` diagnostic findings, explicit "not implemented yet"
+   list), `docs/events.md` (design doc for the next sub-fix, not yet
    implemented), `docs/onclipevent-compatibility.md` (all 19 flags
-   individually tabulated). **Next sub-fix, not yet started:** a
-   per-placement Button "instance" object — buttons currently have NO
-   runtime object of their own at all (the biggest remaining structural
-   gap, see `docs/interactivity-audit.md` §3) — needed to hold Up/Over/
-   Down state and an AS2-visible scripting object before a generic event
-   dispatcher (design: `docs/events.md`) can wire `onRelease`/`onPress`/
-   `onClipEvent(press)` to the `hitTestPoint()` + edge-detection
-   primitives that now both exist. After that: `onClipEvent`'s remaining
-   15 mouse/key flags + button `on()` dispatch.
+   individually tabulated). **Next sub-fix, not yet started:** a generic
+   event dispatcher (design: `docs/events.md`) wiring `onRelease`/
+   `onPress`/`onRollOver`/`onRollOut`/`onClipEvent(press)` to the
+   `hitTestPoint()`/`ButtonInstance::updateState()`/edge-detection
+   primitives that now all exist. **Do not claim button clicking/Hobo
+   interaction works yet — it does not**, per `docs/buttons.md`'s explicit
+   stop condition. After that: `onClipEvent`'s remaining 15 mouse/key
+   flags + button `on()`/`condActionsV2` dispatch.
 3. `GlobalObject` has zero named built-ins — no `Math`/`Date`/`Number()`/
    `String()`/`Boolean()` at all. **ON HOLD** per user instruction until
    priority #2 is stable.

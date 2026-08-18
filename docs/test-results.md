@@ -166,6 +166,27 @@ created — see `tests/swf/README.md`).
 - Full writeup: `docs/known-limitations.md`'s "Sub-fix 4/N", implementation
   summary + AS2-vs-internal-primitive distinction in `docs/hit-testing.md`.
 
+## ButtonInstance phase (2026-08-19) — `ButtonDef` -> `ButtonInstance` runtime instance
+
+- **253/253 tests passing** (up from 237) — 16 new tests in the new
+  `tests/test_button_instance.cpp` (creation, independent instances,
+  transforms including nested-in-MovieClip composition, depth-ordered
+  hit testing, HitTest-vs-visual-state geometry, invisible-button
+  exclusion, the full UP/OVER/DOWN transition table, multi-button state
+  isolation, removal, replacement, duplicate placements). All passing,
+  zero regressions elsewhere.
+- `hobo.swf` (real stage: 600x450) frames 1-5 rendered before/after this
+  phase, byte-for-byte identical (`md5sum` match) — expected:
+  `src/renderer/SceneRenderer.cpp` was not modified at all this phase (see
+  `docs/buttons.md`'s "Rendering — deliberately unchanged" section).
+- 3DS build (`build_3ds`) rebuilds clean; new `.3dsx` (397216 bytes, up
+  from 392032 — confirms the new code linked in). **Not yet tested on
+  Azahar/hardware** — no emulator/device access from this environment.
+- Full writeup: `docs/known-limitations.md`'s "Sub-fix 5/N",
+  architecture/design in `docs/buttons.md`, real Hobo `DefineButton2`
+  diagnostic findings in `docs/buttons.md`'s "Real Hobo `DefineButton2`
+  findings" section.
+
 ## Not yet tested (carried over from `docs/compatibility.md`, still open)
 
 - `hobo 2 - prison brawl.swf` through `hobo 7 - heaven.swf` (sequels).

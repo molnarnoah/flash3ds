@@ -1,0 +1,227 @@
+hobo.swf loaded: 4967978 bytes, stage 12000x9000 twips, 13 frames
+
+--- DefineButton character #1 (tag code 34) ---
+  characterId=12 trackAsMenu=0 records=4 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=8 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[1]: up=0 over=1 down=0 hitTest=0 characterId=9 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[2]: up=0 over=0 down=1 hitTest=0 characterId=10 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[3]: up=0 over=0 down=0 hitTest=1 characterId=11 depth=1 matrix=(scaleX=0.869 scaleY=1.908 tx=114tw ty=17145tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=37
+
+--- DefineButton character #2 (tag code 34) ---
+  characterId=32 trackAsMenu=0 records=4 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=25 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[1]: up=0 over=1 down=0 hitTest=0 characterId=30 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[2]: up=0 over=0 down=1 hitTest=0 characterId=31 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[3]: up=0 over=0 down=0 hitTest=1 characterId=16 depth=1 matrix=(scaleX=182.150 scaleY=4.792 tx=-1775tw ty=61tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=40
+
+--- DefineButton character #3 (tag code 34) ---
+  characterId=85 trackAsMenu=0 records=4 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=81 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[1]: up=0 over=1 down=0 hitTest=0 characterId=82 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[2]: up=0 over=0 down=1 hitTest=0 characterId=83 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[3]: up=0 over=0 down=0 hitTest=1 characterId=84 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=37
+
+--- DefineButton character #4 (tag code 34) ---
+  characterId=88 trackAsMenu=0 records=1 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=1 down=1 hitTest=1 characterId=87 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=128
+
+--- DefineButton character #5 (tag code 34) ---
+  characterId=90 trackAsMenu=0 records=1 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=1 down=1 hitTest=1 characterId=89 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=128
+
+--- DefineButton character #6 (tag code 34) ---
+  characterId=187 trackAsMenu=0 records=4 actionsV1.size=0 condActionsV2.size=0
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=184 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[1]: up=0 over=1 down=0 hitTest=0 characterId=185 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[2]: up=0 over=0 down=1 hitTest=0 characterId=186 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[3]: up=0 over=0 down=0 hitTest=1 characterId=16 depth=1 matrix=(scaleX=273.200 scaleY=2.235 tx=-2689tw ty=21tw) hasColorTransform=1
+
+--- DefineButton character #7 (tag code 34) ---
+  characterId=277 trackAsMenu=0 records=5 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=1 down=1 hitTest=1 characterId=270 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[1]: up=1 over=0 down=0 hitTest=0 characterId=271 depth=2 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[2]: up=0 over=1 down=0 hitTest=0 characterId=275 depth=2 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[3]: up=0 over=0 down=1 hitTest=0 characterId=276 depth=2 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[4]: up=0 over=0 down=0 hitTest=1 characterId=16 depth=2 matrix=(scaleX=105.000 scaleY=3.388 tx=-1071tw ty=15tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=40
+
+--- DefineButton character #8 (tag code 34) ---
+  characterId=1285 trackAsMenu=0 records=4 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=1278 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[1]: up=0 over=1 down=0 hitTest=0 characterId=1282 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[2]: up=0 over=0 down=1 hitTest=0 characterId=1283 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[3]: up=0 over=0 down=0 hitTest=1 characterId=1284 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=96
+
+--- DefineButton character #9 (tag code 34) ---
+  characterId=1309 trackAsMenu=0 records=10 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=909 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=-249tw ty=15tw) hasColorTransform=1
+    record[1]: up=1 over=0 down=0 hitTest=0 characterId=1019 depth=3 matrix=(scaleX=1.000 scaleY=1.000 tx=-752tw ty=15tw) hasColorTransform=1
+    record[2]: up=1 over=0 down=0 hitTest=0 characterId=1152 depth=5 matrix=(scaleX=1.000 scaleY=1.000 tx=648tw ty=7tw) hasColorTransform=1
+    record[3]: up=1 over=0 down=0 hitTest=0 characterId=913 depth=7 matrix=(scaleX=1.025 scaleY=1.025 tx=233tw ty=-5tw) hasColorTransform=1
+    record[4]: up=0 over=1 down=0 hitTest=0 characterId=1308 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[5]: up=0 over=0 down=1 hitTest=0 characterId=909 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=-249tw ty=15tw) hasColorTransform=1
+    record[6]: up=0 over=0 down=1 hitTest=0 characterId=1019 depth=3 matrix=(scaleX=1.000 scaleY=1.000 tx=-752tw ty=15tw) hasColorTransform=1
+    record[7]: up=0 over=0 down=1 hitTest=0 characterId=1152 depth=5 matrix=(scaleX=1.000 scaleY=1.000 tx=648tw ty=7tw) hasColorTransform=1
+    record[8]: up=0 over=0 down=1 hitTest=0 characterId=913 depth=7 matrix=(scaleX=1.025 scaleY=1.025 tx=233tw ty=-5tw) hasColorTransform=1
+    record[9]: up=0 over=0 down=0 hitTest=1 characterId=16 depth=1 matrix=(scaleX=112.850 scaleY=2.870 tx=-1148tw ty=9tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=569
+
+--- DefineButton character #10 (tag code 34) ---
+  characterId=1311 trackAsMenu=0 records=14 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=830 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=-1248tw ty=7tw) hasColorTransform=1
+    record[1]: up=1 over=0 down=0 hitTest=0 characterId=822 depth=3 matrix=(scaleX=1.000 scaleY=1.000 tx=-698tw ty=5tw) hasColorTransform=1
+    record[2]: up=1 over=0 down=0 hitTest=0 characterId=1013 depth=5 matrix=(scaleX=1.000 scaleY=1.000 tx=231tw ty=7tw) hasColorTransform=1
+    record[3]: up=1 over=0 down=0 hitTest=0 characterId=1118 depth=7 matrix=(scaleX=1.000 scaleY=1.000 tx=-219tw ty=-5tw) hasColorTransform=1
+    record[4]: up=1 over=0 down=0 hitTest=0 characterId=909 depth=9 matrix=(scaleX=1.000 scaleY=1.000 tx=835tw ty=4tw) hasColorTransform=1
+    record[5]: up=1 over=0 down=0 hitTest=0 characterId=1017 depth=11 matrix=(scaleX=1.000 scaleY=1.000 tx=1322tw ty=4tw) hasColorTransform=1
+    record[6]: up=0 over=1 down=0 hitTest=0 characterId=1310 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[7]: up=0 over=0 down=1 hitTest=0 characterId=830 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=-1248tw ty=7tw) hasColorTransform=1
+    record[8]: up=0 over=0 down=1 hitTest=0 characterId=822 depth=3 matrix=(scaleX=1.000 scaleY=1.000 tx=-698tw ty=5tw) hasColorTransform=1
+    record[9]: up=0 over=0 down=1 hitTest=0 characterId=1013 depth=5 matrix=(scaleX=1.000 scaleY=1.000 tx=231tw ty=7tw) hasColorTransform=1
+    record[10]: up=0 over=0 down=1 hitTest=0 characterId=1118 depth=7 matrix=(scaleX=1.000 scaleY=1.000 tx=-219tw ty=-5tw) hasColorTransform=1
+    record[11]: up=0 over=0 down=1 hitTest=0 characterId=909 depth=9 matrix=(scaleX=1.000 scaleY=1.000 tx=835tw ty=4tw) hasColorTransform=1
+    record[12]: up=0 over=0 down=1 hitTest=0 characterId=1017 depth=11 matrix=(scaleX=1.000 scaleY=1.000 tx=1322tw ty=4tw) hasColorTransform=1
+    record[13]: up=0 over=0 down=0 hitTest=1 characterId=16 depth=1 matrix=(scaleX=179.100 scaleY=3.215 tx=-1731tw ty=39tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=585
+
+--- DefineButton character #11 (tag code 34) ---
+  characterId=1313 trackAsMenu=0 records=10 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=909 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=-145tw ty=2tw) hasColorTransform=1
+    record[1]: up=1 over=0 down=0 hitTest=0 characterId=832 depth=3 matrix=(scaleX=1.000 scaleY=1.000 tx=-738tw ty=3tw) hasColorTransform=1
+    record[2]: up=1 over=0 down=0 hitTest=0 characterId=1118 depth=5 matrix=(scaleX=1.000 scaleY=1.000 tx=395tw ty=2tw) hasColorTransform=1
+    record[3]: up=1 over=0 down=0 hitTest=0 characterId=911 depth=7 matrix=(scaleX=1.000 scaleY=1.000 tx=804tw ty=-5tw) hasColorTransform=1
+    record[4]: up=0 over=1 down=0 hitTest=0 characterId=1312 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[5]: up=0 over=0 down=1 hitTest=0 characterId=909 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=-145tw ty=2tw) hasColorTransform=1
+    record[6]: up=0 over=0 down=1 hitTest=0 characterId=832 depth=3 matrix=(scaleX=1.000 scaleY=1.000 tx=-738tw ty=3tw) hasColorTransform=1
+    record[7]: up=0 over=0 down=1 hitTest=0 characterId=1118 depth=5 matrix=(scaleX=1.000 scaleY=1.000 tx=395tw ty=2tw) hasColorTransform=1
+    record[8]: up=0 over=0 down=1 hitTest=0 characterId=911 depth=7 matrix=(scaleX=1.000 scaleY=1.000 tx=804tw ty=-5tw) hasColorTransform=1
+    record[9]: up=0 over=0 down=0 hitTest=1 characterId=16 depth=1 matrix=(scaleX=117.600 scaleY=3.033 tx=-1173tw ty=35tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=569
+
+--- DefineButton character #12 (tag code 34) ---
+  characterId=1320 trackAsMenu=0 records=8 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=822 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=150tw ty=36tw) hasColorTransform=1
+    record[1]: up=1 over=0 down=0 hitTest=0 characterId=1011 depth=3 matrix=(scaleX=1.000 scaleY=1.000 tx=-300tw ty=38tw) hasColorTransform=1
+    record[2]: up=1 over=0 down=0 hitTest=0 characterId=1317 depth=5 matrix=(scaleX=1.000 scaleY=1.000 tx=487tw ty=-6tw) hasColorTransform=1
+    record[3]: up=0 over=1 down=0 hitTest=0 characterId=1318 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[4]: up=0 over=0 down=1 hitTest=0 characterId=822 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=150tw ty=36tw) hasColorTransform=1
+    record[5]: up=0 over=0 down=1 hitTest=0 characterId=1011 depth=3 matrix=(scaleX=1.000 scaleY=1.000 tx=-300tw ty=38tw) hasColorTransform=1
+    record[6]: up=0 over=0 down=1 hitTest=0 characterId=1317 depth=5 matrix=(scaleX=1.000 scaleY=1.000 tx=487tw ty=-6tw) hasColorTransform=1
+    record[7]: up=0 over=0 down=0 hitTest=1 characterId=1319 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    condAction[0]: conditions=0x01a keyCode=4 actionBytes.size=1213
+
+--- DefineButton character #13 (tag code 34) ---
+  characterId=1324 trackAsMenu=0 records=18 actionsV1.size=0 condActionsV2.size=0
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=824 depth=1 matrix=(scaleX=0.947 scaleY=0.947 tx=-1687tw ty=7tw) hasColorTransform=1
+    record[1]: up=1 over=0 down=0 hitTest=0 characterId=1118 depth=3 matrix=(scaleX=0.947 scaleY=0.947 tx=-1243tw ty=-1tw) hasColorTransform=1
+    record[2]: up=1 over=0 down=0 hitTest=0 characterId=1152 depth=5 matrix=(scaleX=0.947 scaleY=0.947 tx=-822tw ty=-1tw) hasColorTransform=1
+    record[3]: up=1 over=0 down=0 hitTest=0 characterId=909 depth=7 matrix=(scaleX=0.947 scaleY=0.947 tx=-139tw ty=-1tw) hasColorTransform=1
+    record[4]: up=1 over=0 down=0 hitTest=0 characterId=905 depth=9 matrix=(scaleX=0.947 scaleY=0.947 tx=1338tw ty=-6tw) hasColorTransform=1
+    record[5]: up=1 over=0 down=0 hitTest=0 characterId=909 depth=11 matrix=(scaleX=0.947 scaleY=0.947 tx=925tw ty=1tw) hasColorTransform=1
+    record[6]: up=1 over=0 down=0 hitTest=0 characterId=1011 depth=13 matrix=(scaleX=0.947 scaleY=0.947 tx=375tw ty=-1tw) hasColorTransform=1
+    record[7]: up=1 over=0 down=0 hitTest=0 characterId=830 depth=15 matrix=(scaleX=0.947 scaleY=0.947 tx=1699tw ty=-3tw) hasColorTransform=1
+    record[8]: up=0 over=1 down=0 hitTest=0 characterId=1322 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[9]: up=0 over=0 down=1 hitTest=0 characterId=824 depth=1 matrix=(scaleX=0.947 scaleY=0.947 tx=-1687tw ty=7tw) hasColorTransform=1
+    record[10]: up=0 over=0 down=1 hitTest=0 characterId=1118 depth=3 matrix=(scaleX=0.947 scaleY=0.947 tx=-1243tw ty=-1tw) hasColorTransform=1
+    record[11]: up=0 over=0 down=1 hitTest=0 characterId=1152 depth=5 matrix=(scaleX=0.947 scaleY=0.947 tx=-822tw ty=-1tw) hasColorTransform=1
+    record[12]: up=0 over=0 down=1 hitTest=0 characterId=909 depth=7 matrix=(scaleX=0.947 scaleY=0.947 tx=-139tw ty=-1tw) hasColorTransform=1
+    record[13]: up=0 over=0 down=1 hitTest=0 characterId=905 depth=9 matrix=(scaleX=0.947 scaleY=0.947 tx=1338tw ty=-6tw) hasColorTransform=1
+    record[14]: up=0 over=0 down=1 hitTest=0 characterId=909 depth=11 matrix=(scaleX=0.947 scaleY=0.947 tx=925tw ty=1tw) hasColorTransform=1
+    record[15]: up=0 over=0 down=1 hitTest=0 characterId=1011 depth=13 matrix=(scaleX=0.947 scaleY=0.947 tx=375tw ty=-1tw) hasColorTransform=1
+    record[16]: up=0 over=0 down=1 hitTest=0 characterId=830 depth=15 matrix=(scaleX=0.947 scaleY=0.947 tx=1699tw ty=-3tw) hasColorTransform=1
+    record[17]: up=0 over=0 down=0 hitTest=1 characterId=1323 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+
+--- DefineButton character #14 (tag code 34) ---
+  characterId=1325 trackAsMenu=0 records=18 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=824 depth=1 matrix=(scaleX=0.947 scaleY=0.947 tx=-1687tw ty=7tw) hasColorTransform=1
+    record[1]: up=1 over=0 down=0 hitTest=0 characterId=1118 depth=3 matrix=(scaleX=0.947 scaleY=0.947 tx=-1243tw ty=-1tw) hasColorTransform=1
+    record[2]: up=1 over=0 down=0 hitTest=0 characterId=1152 depth=5 matrix=(scaleX=0.947 scaleY=0.947 tx=-822tw ty=-1tw) hasColorTransform=1
+    record[3]: up=1 over=0 down=0 hitTest=0 characterId=909 depth=7 matrix=(scaleX=0.947 scaleY=0.947 tx=-139tw ty=-1tw) hasColorTransform=1
+    record[4]: up=1 over=0 down=0 hitTest=0 characterId=905 depth=9 matrix=(scaleX=0.947 scaleY=0.947 tx=1338tw ty=-6tw) hasColorTransform=1
+    record[5]: up=1 over=0 down=0 hitTest=0 characterId=909 depth=11 matrix=(scaleX=0.947 scaleY=0.947 tx=925tw ty=1tw) hasColorTransform=1
+    record[6]: up=1 over=0 down=0 hitTest=0 characterId=1011 depth=13 matrix=(scaleX=0.947 scaleY=0.947 tx=375tw ty=-1tw) hasColorTransform=1
+    record[7]: up=1 over=0 down=0 hitTest=0 characterId=830 depth=15 matrix=(scaleX=0.947 scaleY=0.947 tx=1699tw ty=-3tw) hasColorTransform=1
+    record[8]: up=0 over=1 down=0 hitTest=0 characterId=1322 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[9]: up=0 over=0 down=1 hitTest=0 characterId=824 depth=1 matrix=(scaleX=0.947 scaleY=0.947 tx=-1687tw ty=7tw) hasColorTransform=1
+    record[10]: up=0 over=0 down=1 hitTest=0 characterId=1118 depth=3 matrix=(scaleX=0.947 scaleY=0.947 tx=-1243tw ty=-1tw) hasColorTransform=1
+    record[11]: up=0 over=0 down=1 hitTest=0 characterId=1152 depth=5 matrix=(scaleX=0.947 scaleY=0.947 tx=-822tw ty=-1tw) hasColorTransform=1
+    record[12]: up=0 over=0 down=1 hitTest=0 characterId=909 depth=7 matrix=(scaleX=0.947 scaleY=0.947 tx=-139tw ty=-1tw) hasColorTransform=1
+    record[13]: up=0 over=0 down=1 hitTest=0 characterId=905 depth=9 matrix=(scaleX=0.947 scaleY=0.947 tx=1338tw ty=-6tw) hasColorTransform=1
+    record[14]: up=0 over=0 down=1 hitTest=0 characterId=909 depth=11 matrix=(scaleX=0.947 scaleY=0.947 tx=925tw ty=1tw) hasColorTransform=1
+    record[15]: up=0 over=0 down=1 hitTest=0 characterId=1011 depth=13 matrix=(scaleX=0.947 scaleY=0.947 tx=375tw ty=-1tw) hasColorTransform=1
+    record[16]: up=0 over=0 down=1 hitTest=0 characterId=830 depth=15 matrix=(scaleX=0.947 scaleY=0.947 tx=1699tw ty=-3tw) hasColorTransform=1
+    record[17]: up=0 over=0 down=0 hitTest=1 characterId=1323 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=76
+
+--- DefineButton character #15 (tag code 34) ---
+  characterId=1365 trackAsMenu=0 records=4 actionsV1.size=0 condActionsV2.size=0
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=8 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[1]: up=0 over=1 down=0 hitTest=0 characterId=9 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[2]: up=0 over=0 down=1 hitTest=0 characterId=10 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[3]: up=0 over=0 down=0 hitTest=1 characterId=11 depth=1 matrix=(scaleX=0.869 scaleY=1.908 tx=114tw ty=17145tw) hasColorTransform=1
+
+--- DefineButton character #16 (tag code 34) ---
+  characterId=1374 trackAsMenu=0 records=4 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=25 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[1]: up=0 over=1 down=0 hitTest=0 characterId=30 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[2]: up=0 over=0 down=1 hitTest=0 characterId=31 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[3]: up=0 over=0 down=0 hitTest=1 characterId=16 depth=1 matrix=(scaleX=182.150 scaleY=4.792 tx=-1775tw ty=61tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=40
+
+Total top-level DefineButton/DefineButton2 tags found: 16
+
+=== Placed button #1 ===
+  parent path: /
+  name: (unnamed)
+  depth: 25
+  characterId: 12
+  local matrix: scaleX=1.000 scaleY=1.000 rotateSkew0=0.000 rotateSkew1=0.000 translateX=372.75px translateY=327.35px
+  world matrix: translateX=372.75px translateY=327.35px
+  state: UP
+  AS2 association: NONE -- unnamed placement, no childNameToDepth_ entry, unreachable from AS2
+  ButtonDef detail:
+  characterId=12 trackAsMenu=0 records=4 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=8 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[1]: up=0 over=1 down=0 hitTest=0 characterId=9 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[2]: up=0 over=0 down=1 hitTest=0 characterId=10 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[3]: up=0 over=0 down=0 hitTest=1 characterId=11 depth=1 matrix=(scaleX=0.869 scaleY=1.908 tx=114tw ty=17145tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=37
+
+=== Placed button #2 ===
+  parent path: /
+  name: (unnamed)
+  depth: 44
+  characterId: 85
+  local matrix: scaleX=1.000 scaleY=1.000 rotateSkew0=0.000 rotateSkew1=0.000 translateX=267.50px translateY=370.55px
+  world matrix: translateX=267.50px translateY=370.55px
+  state: UP
+  AS2 association: NONE -- unnamed placement, no childNameToDepth_ entry, unreachable from AS2
+  ButtonDef detail:
+  characterId=85 trackAsMenu=0 records=4 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=0 down=0 hitTest=0 characterId=81 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[1]: up=0 over=1 down=0 hitTest=0 characterId=82 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[2]: up=0 over=0 down=1 hitTest=0 characterId=83 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    record[3]: up=0 over=0 down=0 hitTest=1 characterId=84 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=37
+
+=== Placed button #3 ===
+  parent path: /mutebutton
+  name: (unnamed)
+  depth: 1
+  characterId: 88
+  local matrix: scaleX=1.000 scaleY=1.000 rotateSkew0=0.000 rotateSkew1=0.000 translateX=0.00px translateY=0.00px
+  world matrix: translateX=581.45px translateY=430.90px
+  state: UP
+  AS2 association: NONE -- unnamed placement, no childNameToDepth_ entry, unreachable from AS2
+  ButtonDef detail:
+  characterId=88 trackAsMenu=0 records=1 actionsV1.size=0 condActionsV2.size=1
+    record[0]: up=1 over=1 down=1 hitTest=1 characterId=87 depth=1 matrix=(scaleX=1.000 scaleY=1.000 tx=0tw ty=0tw) hasColorTransform=1
+    condAction[0]: conditions=0x000 keyCode=4 actionBytes.size=128
+
+Total PLACED button instances found on frame 1 of the root timeline: 3
