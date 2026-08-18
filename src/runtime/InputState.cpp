@@ -18,4 +18,9 @@ void InputState::setMousePosition(double xPixels, double yPixels) {
     mouseY_ = yPixels;
 }
 
+void InputState::setViewportSize(double widthPixels, double heightPixels) {
+    viewportWidth_ = widthPixels;
+    viewportHeight_ = heightPixels;
+}
+
 }  // namespace flash3ds::runtime

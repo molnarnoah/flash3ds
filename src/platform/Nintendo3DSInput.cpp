@@ -15,6 +15,16 @@ void Nintendo3DSInput::poll(runtime::InputState& state) {
     // subsystems from the same hid snapshot only pays for one scan.
     const u32 held = hidKeysHeld();
 
+    // Tell InputState what pixel space setMousePosition()'s x/y below are
+    // actually expressed in (interactivity phase, 2026-08-18 fix) — this is
+    // what lets MovieClipInstance::stageMouseX()/stageMouseY() (the actual
+    // _xmouse/_ymouse implementation) convert into the loaded movie's own
+    // stage-pixel space, regardless of whether screenWidth_/screenHeight_
+    // happen to match that movie's stage size. Set every poll (cheap, and
+    // correct even if a future caller reconstructs/reconfigures screen
+    // dimensions between polls).
+    state.setViewportSize(screenWidth_, screenHeight_);
+
     // --- touch screen -> mouse ------------------------------------------
     if (held & KEY_TOUCH) {
         touchPosition touch;

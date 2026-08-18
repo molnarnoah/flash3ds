@@ -75,23 +75,112 @@ only Azahar) — it's real code that compiles and links against libctru (see
 [3ds-toolchain.md](3ds-toolchain.md)), with a documented, reasonable-effort
 mapping a target title can override if its own control needs differ.
 
-## Interactivity phase (2026-08-18) — coordinate-space finding
+## Interactivity phase (2026-08-18) — coordinate-space finding, then fix
 
 Tracing the full input pipeline for the interactivity phase
 (`docs/interactivity-audit.md` §1-2 has the complete trace) surfaced a
-real, previously-undocumented, **not yet exercised** gap:
-`Nintendo3DSInput`'s `screenWidth_`/`screenHeight_` (the space
-`InputState::mouseX()`/`mouseY()` end up in) is the DEVICE/SCREEN's own
-pixel dimensions (e.g. 400x240 top / 320x240 bottom, per
-`nintendo3ds_main.cpp`'s construction), **not** the loaded movie's own
-stage pixel dimensions (`Movie::frameSize`, e.g. 600x450 for `hobo.swf`).
-`_xmouse`/`_ymouse` (`MovieClipInstance.cpp:357-358,511-512`) read
-`InputState` directly with **no stage-scaling applied at all**. Whenever a
-movie's stage size doesn't exactly match the rendering screen's pixel
-size, `_xmouse`/`_ymouse` — and any future hit-testing built directly on
-`InputState`'s raw values — would be wrong by exactly that scale factor.
-Not caught by any existing test (no test in this project has ever set
-`InputState`'s mouse position while also rendering a non-1:1-scaled
-stage). Flagged, not fixed this turn — the fix belongs in a new
-device-px -> stage-twips conversion layer, tracked as the next item in
-`docs/interactivity-audit.md` §8 and designed for in `docs/hit-testing.md`.
+real, previously-undocumented gap: `Nintendo3DSInput`'s
+`screenWidth_`/`screenHeight_` (the space `InputState::mouseX()`/
+`mouseY()` end up in) is the DEVICE/SCREEN's own pixel dimensions (e.g.
+400x240 top / 320x240 bottom, per `nintendo3ds_main.cpp`'s construction),
+**not** the loaded movie's own stage pixel dimensions (`Movie::frameSize`,
+e.g. 600x450 for `hobo.swf`). `_xmouse`/`_ymouse` read `InputState`
+directly with **no stage-scaling applied at all**. Flagged first, then
+fixed in the same phase — see below.
+
+### Old (incorrect) flow
+
+```
+raw touch::px/py (320x240 libctru panel space)
+  -> Nintendo3DSInput::poll() rescales by screenWidth_/screenHeight_
+     (e.g. 400x240, the TOP screen's logical size)
+  -> InputState::setMousePosition(x, y)   [now in 400x240 "screen" space]
+  -> AS2 _xmouse/_ymouse read InputState::mouseX()/mouseY() DIRECTLY
+     [WRONG whenever the movie's stage size != 400x240 — e.g. hobo.swf's
+      600x450 stage would report coordinates squeezed into a 400x240
+      range, off by a factor of 1.5x/1.875x]
+```
+
+### Corrected flow
+
+```
+raw touch::px/py (320x240 libctru panel space)
+  -> Nintendo3DSInput::poll() rescales by screenWidth_/screenHeight_
+     (unchanged — still whatever pixel space the caller constructed it
+     with, e.g. 400x240)
+  -> InputState::setMousePosition(x, y)              [raw viewport-pixel space]
+  -> InputState::setViewportSize(screenWidth_, screenHeight_)  [NEW — records
+     what pixel space the value above is actually in]
+  -> AS2 _xmouse/_ymouse now call MovieClipInstance::stageMouseX()/
+     stageMouseY(), which read BOTH InputState::mouseX()/mouseY() AND
+     InputState::viewportWidth()/viewportHeight(), then scale into the
+     ACTUAL LOADED MOVIE's own stage-pixel space using movie_->frameSize:
+
+         stageX = rawX * (movie_->frameSize.widthPixels()  / viewportWidth)
+         stageY = rawY * (movie_->frameSize.heightPixels() / viewportHeight)
+
+     [CORRECT — reports coordinates in the same stage-pixel space _x/_y/
+      _width/_height already use, matching real Flash Player's _xmouse/
+      _ymouse contract]
+```
+
+This mirrors `SceneRenderer::render()`'s own `pixelsPerTwipX`/
+`pixelsPerTwipY` stage<->device-pixel ratio (see `docs/renderer.md`) —
+same non-uniform (independent X/Y), no-offset stretch-to-fill mapping,
+just inverted and expressed in stage pixels rather than device pixels.
+Deliberately reused rather than reinvented, per this fix's own scoping
+task.
+
+### Exact coordinate-space assumptions
+
+- **No Y-axis flip.** Both SWF stage Y and 3DS device/touch pixel Y
+  increase downward — confirmed against `SceneRenderer::twipsToDevice()`,
+  which applies no flip either.
+- **No offset/letterboxing/pillarboxing.** `SceneRenderer.cpp` has no such
+  logic anywhere (confirmed) — a plain independent-axis stretch-to-fill —
+  so the inverse conversion here adds none either. A raw (0,0) always maps
+  to stage (0,0) exactly.
+- **Non-uniform (independent X/Y) scaling.** X and Y each use their own
+  ratio; a 600x450 stage against a 400x240 viewport scales X by 1.5x and Y
+  by 1.875x independently, not a single shared aspect-locked factor.
+- **Backward-compatible default.** If `InputState::setViewportSize()` is
+  never called (every test predating this fix, and the desktop CLI, which
+  has no input backend at all), `viewportWidth()`/`viewportHeight()` stay
+  at their `0.0` default and `stageMouseX()`/`stageMouseY()` fall back to
+  returning the raw value unscaled — i.e. "stage size == input viewport"
+  is the implicit assumption whenever no viewport is known, exactly
+  preserving pre-fix behavior for every existing caller.
+- **Units are pixels throughout**, matching `_x`/`_y`/`_width`/`_height`'s
+  existing pixel-valued AS2 contract (not twips) — `movie_->frameSize`'s
+  `widthPixels()`/`heightPixels()` helpers (twips/20.0) are used, the same
+  helpers `width()`/`height()` already use.
+- **`movie_` is the one true top-level Movie for every instance in the
+  tree** (root and every descendant share the same pointer — see
+  `createRoot()`/`syncChildren()`/`cloneSprite()`), so `stageMouseX()`/
+  `stageMouseY()` give the same answer no matter which `MovieClipInstance`
+  they're called on.
+
+### Remaining limitations
+
+- **Single global "input viewport."** Only ONE `InputState` (and thus one
+  viewport size) is tracked at a time. `nintendo3ds_main.cpp` only wires
+  the TOP screen's `Nintendo3DSInput` into `env.inputState()` — the bottom
+  screen's touch reading (`drawButtonTestScreen()`) is separate/diagnostic
+  and never feeds AS2. If dual-screen touch-to-stage mapping is ever
+  needed (e.g. a movie meant to be touched on the bottom screen), this
+  single-viewport model would need extending — not attempted here, out of
+  scope for this fix.
+- **Still no hit-testing, button dispatch, or mouse-event dispatch** — this
+  fix only corrects the raw coordinate VALUE `_xmouse`/`_ymouse` report;
+  everything that would consume a correct coordinate to determine "is the
+  pointer over this clip" remains unbuilt (see `docs/hit-testing.md`).
+- **Never exercised against real 3DS touch hardware** — no
+  hardware/emulator input access from this environment; only compile/link
+  verification and desktop-side unit tests were possible (see
+  `docs/test-results.md`).
+- **Not yet re-derived: what the "correct" viewport for the embedded 3DS
+  demo actually is.** `nintendo3ds_main.cpp` still passes `kTopWidth`/
+  `kTopHeight` (400x240) to `Nintendo3DSInput`'s constructor — this fix
+  makes that choice CORRECT REGARDLESS of what the embedded demo's own
+  stage size happens to be (no longer needs to match), but nobody has
+  verified what the embedded demo's actual authored stage dimensions are.

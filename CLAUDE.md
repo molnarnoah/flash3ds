@@ -352,18 +352,23 @@ docs" section — don't just assume this is resolved.
 2. No mouse/button interactivity at all — **CURRENT, SOLE FOCUS per
    explicit user instruction (2026-08-18); priorities #3-5 below are on
    hold until this one reaches a stable state.** Sub-fix 1/N
-   (`_width`/`_height`, previously hardcoded to 0) is **done** — see
-   `docs/known-limitations.md`'s STEP 1-10 writeup, `docs/
+   (`_width`/`_height`, previously hardcoded to 0) is **done**. Sub-fix 2/N
+   (the `_xmouse`/`_ymouse` device-pixel -> stage-pixel coordinate
+   conversion — previously read raw input-viewport-pixel coordinates with
+   no stage-pixel scaling, a real bug for any movie whose stage size
+   doesn't match the input viewport) is **also done** — see
+   `docs/known-limitations.md`'s STEP 1-10 writeups for both, `docs/
    interactivity-audit.md` (full 8-part trace: input pipeline, coordinate
    system, Button2, hit-testing, event representation, `onClipEvent`),
-   `docs/hit-testing.md`/`docs/events.md` (design docs for the next two
-   sub-fixes, not yet implemented), `docs/onclipevent-compatibility.md`
-   (all 19 flags individually tabulated). **Next sub-fix, not yet started:**
-   the device-px -> stage-twips coordinate conversion (`_xmouse`/`_ymouse`
-   currently read raw DEVICE-pixel coordinates with no stage-pixel scaling
-   — a real, newly-found bug, see `docs/input.md`) — small, isolated, and
-   hard-blocks hit-testing, so it's the natural next pick. After that:
-   edge-detected input state, bounding-box hit-testing itself, a
+   `docs/input.md` (old vs. corrected coordinate-flow diagram),
+   `docs/hit-testing.md`/`docs/events.md` (design docs for later sub-fixes,
+   not yet implemented), `docs/onclipevent-compatibility.md` (all 19 flags
+   individually tabulated). **Next sub-fix, not yet started:**
+   edge-detected input state (tracking press/release EDGES — "just went
+   down/up this tick" — rather than only the current held/not-held level
+   `InputState` tracks today; both hit-testing's press/release semantics
+   and button state transitions need this) — small, isolated, and the
+   natural next pick. After that: bounding-box hit-testing itself, a
    per-placement Button "instance" object (buttons currently have NO
    runtime object of their own at all — a bigger gap than expected, see
    `docs/interactivity-audit.md` §3), a generic event dispatcher, then

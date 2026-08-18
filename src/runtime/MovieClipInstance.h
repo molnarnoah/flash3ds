@@ -314,6 +314,20 @@ public:
     double width() const;
     double height() const;
 
+    // AS2 _xmouse/_ymouse: the current mouse/touch position, converted from
+    // whatever raw pixel space the host's input backend reports in (see
+    // InputState::setViewportSize()) into THIS MOVIE's own SWF stage-pixel
+    // space — the same coordinate space _x/_y/_width/_height already use.
+    // Added (interactivity phase, 2026-08-18) to fix a real bug: previously
+    // _xmouse/_ymouse returned InputState's raw value directly, with NO
+    // conversion, which was wrong whenever the input viewport's pixel size
+    // differed from the movie's own stage size (e.g. hobo.swf's 600x450
+    // stage vs. a 3DS reporting touch in 400x240 top-screen pixels). If no
+    // viewport size was ever set (InputState's default), this is the
+    // identity — see docs/input.md.
+    double stageMouseX() const;
+    double stageMouseY() const;
+
     // --- AVM1 lifecycle actions (CloneSprite/RemoveSprite), applied
     // eagerly/synchronously — used by the internal HostBindings
     // implementation, exposed here so tests can drive them directly too.

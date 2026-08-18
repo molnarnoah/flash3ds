@@ -197,15 +197,105 @@ publicly-understood AS2 semantics, same confidence tier as this project's
 other "believed correct, not independently cross-checked" items (see
 `docs/avm1-compatibility.md`'s unverified-assumption inventory).
 
+### Sub-fix 2/N — `_xmouse`/`_ymouse` device-pixel/stage-pixel coordinate mismatch — **FIXED THIS TURN**
+
+**Classification: INPUT + AVM1 (coordinate-space conversion).**
+
+**STEP 1 — Audit.** Traced the full pipeline (see `docs/input.md`'s
+"Interactivity phase" section for the complete before/after diagram):
+`Nintendo3DSInput::poll()` rescales raw `touchPosition` into whatever pixel
+space its constructor was given (`nintendo3ds_main.cpp` passes the TOP
+screen's logical 400x240, NOT the loaded movie's stage size), writes it
+into `InputState` via `setMousePosition()`, and `_xmouse`/`_ymouse`
+(`MovieClipInstance.cpp`'s `handleNativeGet()` bare-member path and
+`MovieClipHostBindings::getProperty()` case 20/21) read that value back
+with **zero conversion**. Confirmed `InputState` is deliberately
+stage-agnostic (own header comment: "No AVM1/runtime dependency in either
+direction") and that `SceneRenderer::render()` already has the canonical
+stage-twips <-> output-viewport-pixels ratio this fix needed to mirror
+(`pixelsPerTwipX`/`pixelsPerTwipY`, confirmed non-uniform, no offset/
+letterboxing anywhere in `SceneRenderer.cpp`).
+
+**STEP 2-3 — Reproduction/isolation.** Minimal repro: a 600x450-stage
+movie (matching `hobo.swf`'s real dimensions), `InputState` mouse position
+set to a raw viewport-pixel value, `_xmouse` read back — pre-fix, returns
+the raw value unscaled regardless of stage size (verifiable with the new
+`MovieClipInstance_XMouse_600x450StageDifferentViewport_ScalesNonUniformly`
+test, which would fail against the pre-fix code). Isolated to
+`InputState`/`MovieClipInstance` — no dependency on hit-testing, buttons,
+or rendering.
+
+**STEP 4-5 — Fix.** Added `InputState::setViewportSize(width, height)` /
+`viewportWidth()`/`viewportHeight()` (`src/runtime/InputState.h/.cpp`) — a
+plain size fact ("what pixel space does `mouseX()`/`mouseY()` mean"),
+still no AVM1/Movie dependency, keeping `InputState`'s "dumb bag" design
+intact. Added `MovieClipInstance::stageMouseX()`/`stageMouseY()`
+(`src/runtime/MovieClipInstance.h/.cpp`) — the one place that already
+knows both `InputState` and the movie's own `frameSize` — which scale
+`InputState`'s raw value by `movie_->frameSize.widthPixels() /
+viewportWidth()` (and the Y equivalent), falling back to the identity
+(no scaling) whenever no viewport was ever set (every pre-existing test,
+the desktop CLI). Both `_xmouse`/`_ymouse` read sites now call these
+instead of `InputState::mouseX()`/`mouseY()` directly.
+`Nintendo3DSInput::poll()` now also calls `state.setViewportSize
+(screenWidth_, screenHeight_)` every poll, so the 3DS input path is wired
+end-to-end with no further caller changes needed.
+
+**STEP 6 — Desktop tests.** Five new regression tests
+(`tests/test_movieclip_instance.cpp`): an EXPLICIT viewport matching the
+stage size still yields unscaled coordinates (proving the scaling math
+itself, not just the "viewport never set" shortcut the two pre-existing
+`_xmouse`/`_ymouse` tests already covered and which remain untouched); a
+600x450 stage against a 400x240 viewport scales X and Y by independent,
+non-square factors (1.5x/1.875x); the viewport's top-left corner maps to
+exact stage-space (0,0); the viewport's bottom-right corner maps to exact
+stage width/height; the bare-member (`handleNativeGet`) read path gets the
+same conversion as the `GetProperty` numeric-index path. **199/199 tests
+passing** (up from 194), zero regressions — both pre-existing `_xmouse`/
+`_ymouse` tests pass completely unchanged.
+
+**Independent real-content check:** rendered `hobo.swf` (real stage:
+600x450) frames 1-5 before and after this fix and diffed byte-for-byte —
+**100% identical** (expected: this is a pure property-read change: no
+rendering code was touched, and no test/CLI path calls
+`setViewportSize()`, so every existing render path stays on the
+identity/unscaled branch).
+
+**STEP 7-8 — 3DS build.** `cmake --build build_3ds` succeeds cleanly (only
+the same pre-existing, unrelated newlib/ABI warnings as every prior 3DS
+build in this project). New `.3dsx` built (387780 bytes, up from 387556 —
+confirms the new code linked in). **Not yet tested on Azahar/hardware.**
+
+**STEP 9 — Regression tests.** Done — see STEP 6, all 5 permanent.
+
+**STEP 10 — What now works / what remains.** `_xmouse`/`_ymouse` now
+report coordinates in the loaded movie's own stage-pixel space, correctly
+scaled from whatever pixel space the host's input backend reports raw
+touch/mouse coordinates in — matching real Flash Player's `_xmouse`/
+`_ymouse` contract and the same coordinate space `_x`/`_y`/`_width`/
+`_height` already use. This is an **input-coordinate correctness fix
+only** — hit-testing, `ButtonDef` instances, button state transitions,
+mouse event dispatch (press/release/rollOver/rollOut), and `onClipEvent`
+changes were explicitly out of scope and remain unbuilt. **Recommended
+next step: edge-detected input state** (tracking press/release EDGES —
+"just went down this tick" / "just went up this tick" — rather than only
+the current held/not-held level `InputState` tracks today; hit-testing and
+button state machines both need edge detection to fire `press`/`release`
+exactly once per transition rather than every tick the mouse happens to be
+down). See `docs/interactivity-audit.md` §8 for the full remaining
+dependency chain.
+
 ### Remaining sub-fixes for this priority (not started, in dependency order)
 
 See `docs/interactivity-audit.md` §8 for the complete list and reasoning:
-device-px -> stage-twips coordinate mapping (next pick — small, isolated,
-hard-blocks hit-testing), edge-detected input state, bounding-box hit-
-testing (design: `docs/hit-testing.md`), a per-placement Button instance
-object, a generic event dispatcher (design: `docs/events.md`), then finally
-`onClipEvent`'s remaining 15 mouse/key flags (status:
-`docs/onclipevent-compatibility.md`) and button `on()` handler dispatch.
+edge-detected input state (next pick — small, isolated, hard-blocks both
+hit-testing's press/release semantics and button state transitions),
+bounding-box hit-testing (design: `docs/hit-testing.md`), a per-placement
+Button instance object, a generic event dispatcher (design:
+`docs/events.md`), then finally `onClipEvent`'s remaining 15 mouse/key
+flags (status: `docs/onclipevent-compatibility.md`) and button `on()`
+handler dispatch. The device-px -> stage-pixel coordinate mapping that
+used to head this list is **DONE** — see Sub-fix 2/N above.
 
 
 **Classification: AVM1 + DISPLAY LIST (hit-testing needs `_width`/`_height`, itself blocked on bounding-box computation) + OBJECT MODEL.**

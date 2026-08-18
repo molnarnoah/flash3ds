@@ -44,6 +44,23 @@ std::vector<uint8_t> buildRootScriptMovie(const std::vector<uint8_t>& actionByte
     return swf_fixtures::wrapFws(6, body);
 }
 
+// Like buildRootScriptMovie(), but with a caller-chosen stage size instead
+// of the fixed 100x100px — used by the _xmouse/_ymouse coordinate-space
+// conversion tests (interactivity phase, 2026-08-18), which need to
+// exercise a stage size that DIFFERS from the input viewport size (e.g.
+// hobo.swf's real 600x450 stage) to prove the scaling math, not just the
+// "no viewport set" identity path the pre-existing 100x100px tests cover.
+std::vector<uint8_t> buildRootScriptMovieWithStage(int32_t stageWidthTwips,
+                                                    int32_t stageHeightTwips,
+                                                    const std::vector<uint8_t>& actionBytes) {
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DoAction), actionBytes},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(stageWidthTwips, stageHeightTwips, 12.0, 1, tags);
+    return swf_fixtures::wrapFws(6, body);
+}
+
 // A 100x100px, `frameCount`-frame movie whose frame 1 DoAction body is
 // `actionBytes`; `labels[i]` (if non-empty) becomes a FrameLabel tag on
 // frame `i+1`. Used for Phase 9's OOP MovieClip-method tests
@@ -613,6 +630,176 @@ TEST_CASE(MovieClipInstance_XMouse_BareMemberAccess_ReadsFromInputState) {
     CHECK(root != nullptr);
 
     CHECK_EQ(root->scriptObject()->getOwnProperty("capturedX").toNumber(), 12.0);
+}
+
+// --- _xmouse/_ymouse coordinate-space conversion (interactivity phase,
+// 2026-08-18 fix) -----------------------------------------------------------
+//
+// The two tests above (MovieClipInstance_XMouseYMouse_GetProperty_
+// ReadsFromInputState / MovieClipInstance_XMouse_BareMemberAccess_
+// ReadsFromInputState) never call InputState::setViewportSize(), so they
+// exercise the "no known viewport -> identity" path — left completely
+// unmodified by this fix (still passing, unchanged assertions), which is
+// exactly requirement E from docs/known-limitations.md's writeup for this
+// fix ("preserve existing behavior for movies whose stage size exactly
+// matches the input viewport" — the *default*, no-viewport-set case is
+// defined to behave as if they always match). The tests below cover the
+// actual scaling math via an EXPLICIT viewport, which nothing before this
+// fix ever exercised.
+//
+// Note on requirement F (viewport offset/letterboxing): SceneRenderer's own
+// stage<->device-pixel mapping has no offset/letterboxing/pillarboxing term
+// at all (confirmed against SceneRenderer.cpp — a plain, independent-axis
+// stretch-to-fill), so stageMouseX()/stageMouseY() intentionally don't add
+// one either — a dedicated "offset" test isn't applicable here; the
+// top-left/bottom-right corner tests below (C/D) already confirm there's no
+// stray offset (0,0 raw must map to exactly (0,0) stage, not (0,0)+something).
+
+TEST_CASE(MovieClipInstance_XMouse_ViewportMatchesStage_CoordinatesUnchanged) {
+    // Requirement A2: an EXPLICIT viewport equal to the movie's own stage
+    // size must still produce scale == 1.0 (unlike the two tests above,
+    // this exercises the actual division/multiplication, not just the
+    // "viewport never set" shortcut).
+    Asm a;
+    a.pushString("capturedX");
+    a.pushString("");
+    a.pushInt(20);  // _xmouse
+    a.op(0x22);     // ActionGetProperty
+    a.op(0x1D);
+    a.pushString("capturedY");
+    a.pushString("");
+    a.pushInt(21);  // _ymouse
+    a.op(0x22);
+    a.op(0x1D);
+    auto bytes = buildRootScriptMovie(a.build());  // 100x100px stage
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    env.inputState().setViewportSize(100.0, 100.0);  // matches the 100x100px stage
+    env.inputState().setMousePosition(55.0, 66.0);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedX").toNumber(), 55.0);
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedY").toNumber(), 66.0);
+}
+
+TEST_CASE(MovieClipInstance_XMouse_600x450StageDifferentViewport_ScalesNonUniformly) {
+    // Requirements B/E: a 600x450 stage (hobo.swf's real dimensions) with a
+    // 400x240 input viewport (the 3DS top screen's logical size, per
+    // nintendo3ds_main.cpp) — independent, non-square X/Y scale factors
+    // (600/400 = 1.5x, 450/240 = 1.875x), proving X and Y are NOT scaled by
+    // a single shared/uniform factor.
+    Asm a;
+    a.pushString("capturedX");
+    a.pushString("");
+    a.pushInt(20);  // _xmouse
+    a.op(0x22);
+    a.op(0x1D);
+    a.pushString("capturedY");
+    a.pushString("");
+    a.pushInt(21);  // _ymouse
+    a.op(0x22);
+    a.op(0x1D);
+    auto bytes = buildRootScriptMovieWithStage(600 * 20, 450 * 20, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    env.inputState().setViewportSize(400.0, 240.0);
+    env.inputState().setMousePosition(200.0, 120.0);  // dead center of the 400x240 viewport
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    // 200 * (600/400) = 300; 120 * (450/240) = 225 — dead center of the
+    // 600x450 stage too, as expected for a center point under a pure
+    // stretch-to-fill (no offset) mapping.
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedX").toNumber(), 300.0);
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedY").toNumber(), 225.0);
+}
+
+TEST_CASE(MovieClipInstance_XMouse_TopLeftViewportCorner_MapsToStageOrigin) {
+    // Requirement C.
+    Asm a;
+    a.pushString("capturedX");
+    a.pushString("");
+    a.pushInt(20);
+    a.op(0x22);
+    a.op(0x1D);
+    a.pushString("capturedY");
+    a.pushString("");
+    a.pushInt(21);
+    a.op(0x22);
+    a.op(0x1D);
+    auto bytes = buildRootScriptMovieWithStage(600 * 20, 450 * 20, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    env.inputState().setViewportSize(400.0, 240.0);
+    env.inputState().setMousePosition(0.0, 0.0);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedX").toNumber(), 0.0);
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedY").toNumber(), 0.0);
+}
+
+TEST_CASE(MovieClipInstance_XMouse_BottomRightViewportCorner_MapsToStageWidthHeight) {
+    // Requirement D.
+    Asm a;
+    a.pushString("capturedX");
+    a.pushString("");
+    a.pushInt(20);
+    a.op(0x22);
+    a.op(0x1D);
+    a.pushString("capturedY");
+    a.pushString("");
+    a.pushInt(21);
+    a.op(0x22);
+    a.op(0x1D);
+    auto bytes = buildRootScriptMovieWithStage(600 * 20, 450 * 20, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    env.inputState().setViewportSize(400.0, 240.0);
+    env.inputState().setMousePosition(400.0, 240.0);  // bottom-right corner of the viewport
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedX").toNumber(), 600.0);
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedY").toNumber(), 450.0);
+}
+
+TEST_CASE(MovieClipInstance_XMouse_BareMemberAccess_AppliesStageConversionToo) {
+    // Confirms the fix applies to BOTH read sites (handleNativeGet's bare
+    // "_xmouse" member path — see MovieClipInstance_XMouse_
+    // BareMemberAccess_ReadsFromInputState's ActionGetVariable form above —
+    // and GetProperty's numeric-index path, already covered by the tests
+    // above), not just one of the two.
+    Asm a;
+    a.pushString("capturedX");
+    a.pushString("_xmouse");
+    a.op(0x1C);  // ActionGetVariable — resolves via handleNativeGet, not GetProperty
+    a.op(0x1D);
+    auto bytes = buildRootScriptMovieWithStage(600 * 20, 450 * 20, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    env.inputState().setViewportSize(400.0, 240.0);
+    env.inputState().setMousePosition(200.0, 120.0);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->scriptObject()->getOwnProperty("capturedX").toNumber(), 300.0);
 }
 
 TEST_CASE(MovieClipInstance_StartDrag_LockCenter_FollowsMousePosition_UntilEndDrag) {

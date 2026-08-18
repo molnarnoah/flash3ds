@@ -98,6 +98,30 @@ created — see `tests/swf/README.md`).
   yet fixed (next in the dependency chain, per
   `docs/known-limitations.md`).
 
+## Interactivity phase (2026-08-18) — `_xmouse`/`_ymouse` coordinate-space fix
+
+- **199/199 tests passing** (up from 194) — 5 new regression tests in
+  `tests/test_movieclip_instance.cpp`
+  (`MovieClipInstance_XMouse_ViewportMatchesStage_CoordinatesUnchanged`,
+  `_600x450StageDifferentViewport_ScalesNonUniformly`,
+  `_TopLeftViewportCorner_MapsToStageOrigin`,
+  `_BottomRightViewportCorner_MapsToStageWidthHeight`,
+  `_BareMemberAccess_AppliesStageConversionToo`), all passing, zero
+  regressions elsewhere — both PRE-existing `_xmouse`/`_ymouse` tests
+  (`MovieClipInstance_XMouseYMouse_GetProperty_ReadsFromInputState`,
+  `MovieClipInstance_XMouse_BareMemberAccess_ReadsFromInputState`) pass
+  completely unchanged, confirming the default (no-viewport-set) behavior
+  is preserved exactly.
+- `hobo.swf` (real stage: 600x450) frames 1-5 rendered before/after this
+  fix via `flash_runtime --render`, byte-for-byte identical (`md5sum`
+  match) — expected, since this is a pure property-read change with zero
+  rendering-path modification.
+- 3DS build (`build_3ds`) rebuilds clean; new `.3dsx` (387780 bytes, up
+  from 387556 — confirms the new code linked in) not yet tested on
+  Azahar/hardware.
+- Full writeup: `docs/known-limitations.md`'s "Sub-fix 2/N", corrected
+  coordinate-flow diagram in `docs/input.md`.
+
 ## Not yet tested (carried over from `docs/compatibility.md`, still open)
 
 - `hobo 2 - prison brawl.swf` through `hobo 7 - heaven.swf` (sequels).

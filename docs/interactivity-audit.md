@@ -94,10 +94,20 @@ Traced by reading `SceneRenderer.cpp`, `Nintendo3DSInput.cpp`, and
   `InputState`'s mouse position while also rendering a non-1:1-scaled
   stage.
 
-**Not verified this phase** (per task instruction — flagged, not assumed):
-top-left/center/bottom-right touch-to-stage mapping accuracy. Cannot be,
-until the missing device-px -> stage-twips inverse conversion (above)
-exists.
+**FIXED in a later turn this same phase** (2026-08-18): see
+`docs/known-limitations.md`'s "Sub-fix 2/N" and `docs/input.md`'s
+corrected-flow section for the full writeup.
+`InputState::setViewportSize()`/`viewportWidth()`/`viewportHeight()` now
+record what pixel space `mouseX()`/`mouseY()` are actually in;
+`MovieClipInstance::stageMouseX()`/`stageMouseY()` (the new `_xmouse`/
+`_ymouse` implementation) convert into the loaded movie's own
+`frameSize`-derived stage-pixel space using the same ratio
+`SceneRenderer::render()` already uses for the forward (stage-twips ->
+device-pixel) direction. Top-left/bottom-right mapping accuracy (flagged
+below as "not verified this phase") is now covered by dedicated regression
+tests (`MovieClipInstance_XMouse_TopLeftViewportCorner_MapsToStageOrigin`/
+`_BottomRightViewportCorner_MapsToStageWidthHeight`,
+`tests/test_movieclip_instance.cpp`).
 
 ## 3. Current `DefineButton2` implementation
 

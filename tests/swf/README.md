@@ -44,7 +44,7 @@ coverage, not necessarily in the project's overall test coverage).
 | 011 | define_button2 | COVERED BY C++ SUITE | `DefineButton2_*` (3 cases) |
 | 012 | define_sound_startsound | COVERED BY C++ SUITE | `MovieClipInstance_StartSoundTag_*` (2 cases) |
 | 013 | key_isdown | COVERED BY C++ SUITE | `MovieClipInstance_Key_IsDown_ReadsFromInputState` |
-| 014 | mouse_xmouse_ymouse | COVERED BY C++ SUITE | `MovieClipInstance_XMouse*` (2 cases) |
+| 014 | mouse_xmouse_ymouse | COVERED BY C++ SUITE | `MovieClipInstance_XMouse*` (7 cases as of the interactivity phase's 2026-08-18 coordinate-space fix — 2 original "reads InputState" cases + 5 new coordinate-conversion cases, see `docs/known-limitations.md`) |
 | 015 | startdrag_enddrag | COVERED BY C++ SUITE | `MovieClipInstance_StartDrag_*` (2 cases) |
 | 016 | clipactions_load_unload_enterframe | COVERED BY C++ SUITE | `MovieClipInstance_ClipActions_*` |
 | 017 | clonesprite_removesprite | COVERED BY C++ SUITE | `MovieClipInstance_CloneSprite_*`, `_RemoveSprite_*` |

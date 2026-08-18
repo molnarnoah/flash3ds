@@ -42,14 +42,22 @@ namespace flash3ds::platform {
 class Nintendo3DSInput {
 public:
     // screenWidthPixels/screenHeightPixels: the LOGICAL (non-rotated)
-    // dimensions of the touch-screen-bearing bottom screen (320x240 on
-    // real hardware), used to convert libctru's raw touch::px/py (already
-    // in that same logical space per libctru's own documentation) into the
-    // SWF stage's device pixel space the caller's InputState consumers
-    // expect. If the bottom screen is rendered at a different logical size
-    // than the SWF stage, pass the SWF stage's own width/height here
-    // instead and this class will report touch coordinates already scaled
-    // into stage space.
+    // dimensions of whichever screen is being used as the touch input
+    // surface (320x240 for the bottom screen on real hardware; the current
+    // nintendo3ds_main.cpp actually passes the TOP screen's 400x240, since
+    // that's the screen the embedded demo renders to — see that file).
+    // Used to rescale libctru's raw touch::px/py (320x240 touch-panel-
+    // logical space, per libctru's own documentation) into this same
+    // caller-chosen pixel space.
+    //
+    // Interactivity-phase fix (2026-08-18): poll() now also records these
+    // dimensions on InputState via setViewportSize(), so callers no longer
+    // need to pass the SWF stage's own width/height here to get correct
+    // _xmouse/_ymouse values — MovieClipInstance::stageMouseX()/
+    // stageMouseY() converts from THIS constructor's pixel space into
+    // whatever movie is actually loaded (which may not even be known yet
+    // at construction time — see docs/input.md). Just pass whatever screen
+    // pixel dimensions are actually being touched/rendered to.
     Nintendo3DSInput(int screenWidthPixels, int screenHeightPixels);
 
     // Call once per frame, after hidScanInput(), before reading

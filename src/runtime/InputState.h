@@ -45,6 +45,35 @@ public:
     void setMouseDown(bool down) { mouseDown_ = down; }
     bool isMouseDown() const { return mouseDown_; }
 
+    // --- input viewport (interactivity phase, 2026-08-18) -----------------
+    //
+    // The pixel-space dimensions that setMousePosition()'s raw x/y values
+    // are expressed in — i.e. whatever coordinate space the host's touch/
+    // mouse polling reports in, BEFORE any SWF-stage-aware conversion. On
+    // the 3DS, Nintendo3DSInput rescales the raw 320x240 touch panel into
+    // its own constructor's screenWidthPixels/screenHeightPixels and calls
+    // setViewportSize() with those same dimensions — but that space has NO
+    // relationship to any loaded movie's stage size, since InputState (by
+    // design, see the file header) has no Movie/AVM1 dependency at all.
+    //
+    // This still keeps InputState "dumb": it stores a SIZE (a fact about
+    // what raw x/y already means), not a coordinate-space TRANSFORM. The
+    // actual "convert from this viewport into the loaded movie's own stage-
+    // pixel space" math lives in MovieClipInstance (see its
+    // stageMouseX()/stageMouseY()), the one place that already knows both
+    // the movie's frameSize AND is where _xmouse/_ymouse are read from —
+    // mirroring SceneRenderer's own stage<->device-pixel ratio approach
+    // rather than adding a second, incompatible coordinate system here.
+    //
+    // Unset (0,0, the default) means "no known viewport" — every existing
+    // caller that never calls setViewportSize() (every test predating this,
+    // the desktop CLI) gets IDENTITY behavior: raw x/y is treated as
+    // already being in stage-pixel space, exactly matching this class's
+    // pre-existing (pre-2026-08-18) behavior.
+    void setViewportSize(double widthPixels, double heightPixels);
+    double viewportWidth() const { return viewportWidth_; }
+    double viewportHeight() const { return viewportHeight_; }
+
     // --- well-known AS2 Key.* constants (documented confidence — see file
     // header) — exposed here so both InputState's own callers and
     // ScriptEnvironment's native Key object (which reads them to populate
@@ -78,6 +107,9 @@ private:
     double mouseX_ = 0.0;
     double mouseY_ = 0.0;
     bool mouseDown_ = false;
+
+    double viewportWidth_ = 0.0;
+    double viewportHeight_ = 0.0;
 };
 
 }  // namespace flash3ds::runtime

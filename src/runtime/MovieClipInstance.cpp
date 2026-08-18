@@ -432,8 +432,8 @@ avm1::Value ScriptEnvironment::run(MovieClipInstance& target, const uint8_t* cod
                 case 13: return avm1::Value::string(mc->name());
                 case 14: return avm1::Value::string("");  // _droptarget — no drag model yet
                 case 15: return avm1::Value::string("");  // _url
-                case 20: return avm1::Value::number(env_->inputState().mouseX());  // _xmouse
-                case 21: return avm1::Value::number(env_->inputState().mouseY());  // _ymouse
+                case 20: return avm1::Value::number(mc->stageMouseX());  // _xmouse
+                case 21: return avm1::Value::number(mc->stageMouseY());  // _ymouse
                 default:
                     LOG_DEBUG("MOVIECLIP", "GetProperty: index %d not modeled — undefined",
                               propertyIndex);
@@ -607,6 +607,55 @@ double MovieClipInstance::height() const {
     return swf::transformRect(matrix_, own).heightPixels();
 }
 
+// --- _xmouse/_ymouse coordinate-space conversion (interactivity phase,
+// 2026-08-18) ---------------------------------------------------------------
+//
+// Mirrors SceneRenderer::render()'s own stage-twips <-> output-viewport-
+// pixels ratio (see SceneRenderer.cpp's pixelsPerTwipX/pixelsPerTwipY) —
+// this IS that same non-uniform (independent X/Y), no-offset stretch-to-fill
+// ratio, just inverted (input-viewport pixels -> stage pixels instead of
+// stage twips -> output pixels) and expressed in pixels throughout
+// (matching _xmouse/_ymouse's existing pixel-valued contract, same as _x/
+// _y, not twips). Deliberately NOT a second, incompatible coordinate
+// system: every movie shares this same non-flipped, non-letterboxed
+// mapping, because that's what the renderer itself actually does (confirmed
+// — no offset/letterboxing/pillarboxing logic exists anywhere in
+// SceneRenderer.cpp), and no Y-axis flip is needed because both SWF stage Y
+// and the 3DS's raw touch/device pixel Y already increase downward (same
+// convention SceneRenderer's own twipsToDevice() relies on).
+//
+// `movie_` is the SAME top-level Movie pointer for the root AND every
+// descendant MovieClipInstance (see createRoot()/syncChildren()/
+// cloneSprite(), which all thread `*movie_` straight through rather than
+// substituting a sprite's own definition) — so movie_->frameSize is always
+// the one true stage size, no matter which instance in the tree this is
+// called on.
+double MovieClipInstance::stageMouseX() const {
+    const InputState& input = env_->inputState();
+    const double viewportWidth = input.viewportWidth();
+    const double stageWidth = movie_->frameSize.widthPixels();
+    if (viewportWidth <= 0.0 || stageWidth <= 0.0) {
+        // No known input viewport (InputState::setViewportSize() was never
+        // called — the default for every test predating this fix and for
+        // the desktop CLI) -- treat the raw value as already being in
+        // stage-pixel space. This is what keeps every existing caller's
+        // behavior byte-for-byte unchanged (stage size == input viewport is
+        // the implicit assumption when no viewport is known).
+        return input.mouseX();
+    }
+    return input.mouseX() * (stageWidth / viewportWidth);
+}
+
+double MovieClipInstance::stageMouseY() const {
+    const InputState& input = env_->inputState();
+    const double viewportHeight = input.viewportHeight();
+    const double stageHeight = movie_->frameSize.heightPixels();
+    if (viewportHeight <= 0.0 || stageHeight <= 0.0) {
+        return input.mouseY();
+    }
+    return input.mouseY() * (stageHeight / viewportHeight);
+}
+
 void MovieClipInstance::wireScriptObject() {
     scriptObject_ = std::make_shared<avm1::Object>();
     std::weak_ptr<MovieClipInstance> weak = shared_from_this();
@@ -646,8 +695,8 @@ bool MovieClipInstance::handleNativeGet(const std::string& name, avm1::Value& ou
     if (name == "_droptarget" || name == "_url") { out = avm1::Value::string(""); return true; }
     if (name == "_width") { out = avm1::Value::number(width()); return true; }
     if (name == "_height") { out = avm1::Value::number(height()); return true; }
-    if (name == "_xmouse") { out = avm1::Value::number(env_->inputState().mouseX()); return true; }
-    if (name == "_ymouse") { out = avm1::Value::number(env_->inputState().mouseY()); return true; }
+    if (name == "_xmouse") { out = avm1::Value::number(stageMouseX()); return true; }
+    if (name == "_ymouse") { out = avm1::Value::number(stageMouseY()); return true; }
     if (name == "_parent") {
         out = parent_ ? avm1::Value::object(parent_->scriptObject_) : avm1::Value::undefined();
         return true;
