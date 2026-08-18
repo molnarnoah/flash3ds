@@ -59,6 +59,24 @@ struct ColorTransform {
     static ColorTransform identity() { return ColorTransform{}; }
 };
 
+// Composes a child's color transform with its parent's, producing the
+// child's EFFECTIVE (world) color transform: concatColorTransform(parent,
+// child) applies `child` first, then `parent` — same "parent-then-child"
+// convention as concatMatrix, and for the same reason (a nested display
+// object's authored/scripted color transform is relative to its parent's
+// already-transformed color, exactly like its placement matrix is relative
+// to its parent's coordinate space). Compose formula (standard affine
+// "mult then add" composition): out.mult = parent.mult * child.mult;
+// out.add = parent.mult * child.add + parent.add.
+//
+// Added 2026-08-18 (compatibility-audit phase, priority #1 fix): this
+// function did not exist before — ColorTransform was parsed and stored
+// per-MovieClipInstance (Phase 5+, e.g. `_alpha`) but never composed down
+// the tree or applied to any rendered pixel. See docs/known-limitations.md
+// and docs/compatibility-matrix.md for the audit finding, and
+// SceneRenderer.cpp for where this is now actually used.
+ColorTransform concatColorTransform(const ColorTransform& parent, const ColorTransform& child);
+
 // Reads a MATRIX record. Must be called at a byte-aligned position (or
 // right after another bit-packed record); leaves the reader byte-aligned.
 Matrix readMatrix(SwfReader& reader);

@@ -59,13 +59,15 @@ void SceneRenderer::render(const runtime::MovieClipInstance& root, IRenderer& ta
     // when no such tag is present.
     target.beginFrame(swf::RgbaColor{255, 255, 255, 255});
 
-    renderClip(root, root.localMatrix(), target, pixelsPerTwipX, pixelsPerTwipY, 0);
+    renderClip(root, root.localMatrix(), root.colorTransform(), target, pixelsPerTwipX,
+               pixelsPerTwipY, 0);
 
     target.endFrame();
 }
 
 void SceneRenderer::renderClip(const runtime::MovieClipInstance& clip,
-                                const swf::Matrix& worldMatrix, IRenderer& target,
+                                const swf::Matrix& worldMatrix,
+                                const swf::ColorTransform& worldColorTransform, IRenderer& target,
                                 double pixelsPerTwipX, double pixelsPerTwipY, int depth) {
     if (depth > kMaxRecursionDepth) {
         LOG_WARN("RENDER",
@@ -83,23 +85,29 @@ void SceneRenderer::renderClip(const runtime::MovieClipInstance& clip,
         auto childIt = clip.children().find(depthValue);
         if (childIt != clip.children().end() && childIt->second) {
             // A sprite/MovieClip child — render via ITS OWN (possibly
-            // script-mutated) transform, not the placement entry's, and
-            // recurse using its own display list/children.
+            // script-mutated) transform/color transform, not the placement
+            // entry's, and recurse using its own display list/children.
             const runtime::MovieClipInstance& child = *childIt->second;
             swf::Matrix childWorld = swf::concatMatrix(worldMatrix, child.localMatrix());
-            renderClip(child, childWorld, target, pixelsPerTwipX, pixelsPerTwipY, depth + 1);
+            swf::ColorTransform childColor =
+                swf::concatColorTransform(worldColorTransform, child.colorTransform());
+            renderClip(child, childWorld, childColor, target, pixelsPerTwipX, pixelsPerTwipY,
+                       depth + 1);
             continue;
         }
         // Not a MovieClipInstance — either a leaf character (shape/text/
         // button/edit-text) or an unresolved/still-unsupported (bitmap)
         // character, which renderCharacter() silently ignores.
         swf::Matrix childWorld = swf::concatMatrix(worldMatrix, entry.matrix);
-        renderCharacter(entry.characterId, childWorld, target, pixelsPerTwipX, pixelsPerTwipY,
-                         depth);
+        swf::ColorTransform childColor =
+            swf::concatColorTransform(worldColorTransform, entry.colorTransform);
+        renderCharacter(entry.characterId, childWorld, childColor, target, pixelsPerTwipX,
+                         pixelsPerTwipY, depth);
     }
 }
 
 void SceneRenderer::renderCharacter(uint16_t characterId, const swf::Matrix& worldMatrix,
+                                     const swf::ColorTransform& worldColorTransform,
                                      IRenderer& target, double pixelsPerTwipX,
                                      double pixelsPerTwipY, int depth) {
     if (depth > kMaxRecursionDepth) {
@@ -114,11 +122,14 @@ void SceneRenderer::renderCharacter(uint16_t characterId, const swf::Matrix& wor
     if (!def) return;
 
     if (const auto* shapeDef = std::get_if<swf::ShapeDef>(def)) {
-        renderShapeCharacter(*shapeDef, worldMatrix, target, pixelsPerTwipX, pixelsPerTwipY);
+        renderShapeCharacter(*shapeDef, worldMatrix, worldColorTransform, target, pixelsPerTwipX,
+                              pixelsPerTwipY);
     } else if (const auto* textDef = std::get_if<swf::TextDef>(def)) {
-        renderTextCharacter(*textDef, worldMatrix, target, pixelsPerTwipX, pixelsPerTwipY);
+        renderTextCharacter(*textDef, worldMatrix, worldColorTransform, target, pixelsPerTwipX,
+                             pixelsPerTwipY);
     } else if (const auto* editTextDef = std::get_if<swf::EditTextDef>(def)) {
-        renderEditTextCharacter(*editTextDef, worldMatrix, target, pixelsPerTwipX, pixelsPerTwipY);
+        renderEditTextCharacter(*editTextDef, worldMatrix, worldColorTransform, target,
+                                 pixelsPerTwipX, pixelsPerTwipY);
     } else if (const auto* buttonDef = std::get_if<swf::ButtonDef>(def)) {
         // No mouse hit-testing/state machine yet (see docs/avm1-support.md's
         // Known Phase 8 limitations) — always draw the "Up" state, matching
@@ -126,8 +137,10 @@ void SceneRenderer::renderCharacter(uint16_t characterId, const swf::Matrix& wor
         for (const auto& rec : buttonDef->records) {
             if (!rec.stateUp) continue;
             swf::Matrix recordWorld = swf::concatMatrix(worldMatrix, rec.matrix);
-            renderCharacter(rec.characterId, recordWorld, target, pixelsPerTwipX, pixelsPerTwipY,
-                             depth + 1);
+            swf::ColorTransform recordColor = swf::concatColorTransform(
+                worldColorTransform, rec.colorTransform.value_or(swf::ColorTransform::identity()));
+            renderCharacter(rec.characterId, recordWorld, recordColor, target, pixelsPerTwipX,
+                             pixelsPerTwipY, depth + 1);
         }
     }
     // A SpriteDef here means syncChildren() hasn't (yet) created a
@@ -139,14 +152,16 @@ void SceneRenderer::renderCharacter(uint16_t characterId, const swf::Matrix& wor
 }
 
 void SceneRenderer::renderShapeCharacter(const swf::ShapeDef& shapeDef,
-                                          const swf::Matrix& worldMatrix, IRenderer& target,
-                                          double pixelsPerTwipX, double pixelsPerTwipY) {
+                                          const swf::Matrix& worldMatrix,
+                                          const swf::ColorTransform& worldColorTransform,
+                                          IRenderer& target, double pixelsPerTwipX,
+                                          double pixelsPerTwipY) {
     TessellatedShape tess = tessellateShape(shapeDef.shape);
 
     for (const auto& poly : tess.polygons) {
         auto devicePoints =
             toDevicePolyline(poly.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
-        target.fillPolygon(devicePoints, poly.color);
+        target.fillPolygon(devicePoints, swf::applyColorTransform(poly.color, worldColorTransform));
     }
     for (const auto& stroke : tess.strokes) {
         auto devicePoints =
@@ -154,22 +169,28 @@ void SceneRenderer::renderShapeCharacter(const swf::ShapeDef& shapeDef,
         double avgPixelsPerTwip = (pixelsPerTwipX + pixelsPerTwipY) / 2.0;
         int widthPixels =
             std::max(1, static_cast<int>(std::lround(stroke.widthTwips * avgPixelsPerTwip)));
-        target.strokePolyline(devicePoints, stroke.color, widthPixels);
+        target.strokePolyline(devicePoints, swf::applyColorTransform(stroke.color, worldColorTransform),
+                               widthPixels);
     }
 }
 
 void SceneRenderer::renderGlyph(const swf::Shape& glyphShape, const swf::RgbaColor& color,
                                  double scale, int32_t offsetXTwips, int32_t offsetYTwips,
-                                 const swf::Matrix& worldMatrix, IRenderer& target,
+                                 const swf::Matrix& worldMatrix,
+                                 const swf::ColorTransform& worldColorTransform, IRenderer& target,
                                  double pixelsPerTwipX, double pixelsPerTwipY) {
     // A font glyph's own SHAPE carries no FillStyleArray of its own (see
     // swf/DefineFontTag.h) — synthesize a one-entry array holding the
-    // requested color. Per the common real-world convention (glyph
-    // StyleChangeRecords set FillStyle1=1 to mean "inside the glyph"), a
-    // single entry at index 1 is what real content resolves against;
-    // ShapeTessellator's fillStyle1-preferred-fallback-to-fillStyle0 logic
-    // means it also works if some encoder used index 0 instead, since both
-    // indices resolve into this same one-entry array either way.
+    // requested color (already color-transform-applied — the caller passes
+    // the RAW record/field color; ShapeTessellator's output color is
+    // transformed uniformly below, same as renderShapeCharacter, so the
+    // color is applied post-tessellation, not pre-synthesis). Per the
+    // common real-world convention (glyph StyleChangeRecords set
+    // FillStyle1=1 to mean "inside the glyph"), a single entry at index 1
+    // is what real content resolves against; ShapeTessellator's
+    // fillStyle1-preferred-fallback-to-fillStyle0 logic means it also works
+    // if some encoder used index 0 instead, since both indices resolve into
+    // this same one-entry array either way.
     swf::Shape scaled;
     swf::FillStyle fs;
     fs.solidColor = color;
@@ -197,15 +218,17 @@ void SceneRenderer::renderGlyph(const swf::Shape& glyphShape, const swf::RgbaCol
         }
         auto devicePoints =
             toDevicePolyline(poly.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
-        target.fillPolygon(devicePoints, poly.color);
+        target.fillPolygon(devicePoints, swf::applyColorTransform(poly.color, worldColorTransform));
     }
     // Glyph shapes never carry line styles (scaled.lineStyles is always
     // empty), so tess.strokes is always empty here too — nothing to draw.
 }
 
 void SceneRenderer::renderTextCharacter(const swf::TextDef& textDef,
-                                         const swf::Matrix& worldMatrix, IRenderer& target,
-                                         double pixelsPerTwipX, double pixelsPerTwipY) {
+                                         const swf::Matrix& worldMatrix,
+                                         const swf::ColorTransform& worldColorTransform,
+                                         IRenderer& target, double pixelsPerTwipX,
+                                         double pixelsPerTwipY) {
     // TextMatrix maps the text's own private "text space" (where glyph
     // coordinates/offsets live) into the character's local space, exactly
     // like a MovieClip's own transform maps into its parent's — compose it
@@ -237,7 +260,8 @@ void SceneRenderer::renderTextCharacter(const swf::TextDef& textDef,
         for (const auto& glyph : rec.glyphs) {
             if (glyph.glyphIndex < font->glyphShapes.size()) {
                 renderGlyph(font->glyphShapes[glyph.glyphIndex], currentColor, scale, cursorX,
-                            cursorY, textWorld, target, pixelsPerTwipX, pixelsPerTwipY);
+                            cursorY, textWorld, worldColorTransform, target, pixelsPerTwipX,
+                            pixelsPerTwipY);
             }
             cursorX += static_cast<int32_t>(std::lround(glyph.advance * scale));
         }
@@ -245,8 +269,10 @@ void SceneRenderer::renderTextCharacter(const swf::TextDef& textDef,
 }
 
 void SceneRenderer::renderEditTextCharacter(const swf::EditTextDef& editTextDef,
-                                             const swf::Matrix& worldMatrix, IRenderer& target,
-                                             double pixelsPerTwipX, double pixelsPerTwipY) {
+                                             const swf::Matrix& worldMatrix,
+                                             const swf::ColorTransform& worldColorTransform,
+                                             IRenderer& target, double pixelsPerTwipX,
+                                             double pixelsPerTwipY) {
     // Deliberately narrow: only renders when there's an embedded font (with
     // a code table — i.e. DefineFont2, not a legacy DefineFont/
     // DefineFontInfo pairing, which this runtime doesn't parse — see
@@ -280,7 +306,8 @@ void SceneRenderer::renderEditTextCharacter(const swf::EditTextDef& editTextDef,
         int glyphIndex = font->glyphIndexForCode(ch);
         if (glyphIndex < 0) continue;  // character not in this font — skipped, not substituted
         renderGlyph(font->glyphShapes[static_cast<size_t>(glyphIndex)], color, scale, cursorX,
-                    cursorY, worldMatrix, target, pixelsPerTwipX, pixelsPerTwipY);
+                    cursorY, worldMatrix, worldColorTransform, target, pixelsPerTwipX,
+                    pixelsPerTwipY);
         double advance = (!font->glyphAdvances.empty() &&
                            static_cast<size_t>(glyphIndex) < font->glyphAdvances.size())
                               ? font->glyphAdvances[static_cast<size_t>(glyphIndex)] * scale

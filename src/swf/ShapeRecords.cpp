@@ -1,8 +1,36 @@
 #include "swf/ShapeRecords.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include "platform/Log.h"
 
 namespace flash3ds::swf {
+
+namespace {
+
+uint8_t clampToByteChannel(double v) {
+    if (v < 0.0) return 0;
+    if (v > 255.0) return 255;
+    return static_cast<uint8_t>(std::lround(v));
+}
+
+}  // namespace
+
+RgbaColor applyColorTransform(const RgbaColor& color, const ColorTransform& ct) {
+    // Identity fast-path avoids float rounding drift for the overwhelming
+    // common case (a clip/character with no color transform at all).
+    if (ct.redMult == 1.0 && ct.greenMult == 1.0 && ct.blueMult == 1.0 && ct.alphaMult == 1.0 &&
+        ct.redAdd == 0 && ct.greenAdd == 0 && ct.blueAdd == 0 && ct.alphaAdd == 0) {
+        return color;
+    }
+    return RgbaColor{
+        clampToByteChannel(color.r * ct.redMult + ct.redAdd),
+        clampToByteChannel(color.g * ct.greenMult + ct.greenAdd),
+        clampToByteChannel(color.b * ct.blueMult + ct.blueAdd),
+        clampToByteChannel(color.a * ct.alphaMult + ct.alphaAdd),
+    };
+}
 
 namespace {
 

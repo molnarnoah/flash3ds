@@ -308,6 +308,62 @@ Do NOT implement AVM2/ActionScript 3 — out of scope per the project spec.
 Keep following the TDD pattern: small test SWFs / programmatic fixtures,
 regression test for every bug, build phase-by-phase.
 
+## Compatibility-audit phase (started 2026-08-18, ongoing)
+
+Phase 10 (3DS backend) is done; the project entered a new,
+not-phase-numbered "compatibility / limitation discovery and fixing" mode
+per explicit user instruction: audit the CURRENT source against actual
+execution paths (not prior docs' claims), build a compatibility matrix,
+then fix ONE highest-priority limitation at a time with a full
+repro-fix-test-regression-document cycle, never batching multiple fixes.
+
+**Required reading for a new session picking this up:**
+`docs/compatibility-matrix.md` (subsystem-by-subsystem ground truth),
+`docs/avm1-compatibility.md` (per-opcode table), `docs/known-limitations.md`
+(prioritized findings + the full STEP 1-10 writeup for the one fix already
+done), `docs/3ds-limitations.md`, `docs/test-results.md`.
+
+**Done so far:** Priority #1 — `ColorTransform`/`_alpha` was parsed/stored/
+script-mutable but had ZERO effect on any rendered pixel (confirmed by
+tracing `SceneRenderer.cpp` line by line — not assumed). Fixed:
+`swf::concatColorTransform`/`swf::applyColorTransform` (new,
+`src/swf/SwfRecords.h/.cpp` + `src/swf/ShapeRecords.h/.cpp`), threaded
+through every `SceneRenderer` render call alongside the existing
+`worldMatrix`. Two new regression tests
+(`SceneRenderer_MovieClipInstanceAlpha_*`, `tests/test_scene_renderer.cpp`).
+189/189 tests passing, zero regressions. 3DS build (`build_3ds`) rebuilds
+clean with the fix; new `.3dsx` delivered but **not yet confirmed on
+Azahar/hardware**. Found and fixed a real doc bug along the way:
+`docs/externalinterface.md` claimed "not started" when ExternalInterface
+has actually been real since Phase 7 — corrected in place.
+
+**Also found, a real (surprising) discrepancy worth a future session's
+attention:** `hobo.swf` frames 1-5 render byte-for-byte identical before
+and after the `_alpha` fix — so Phase 9's "PLAY! button fading in by frame
+5" observation is NOT caused by `ColorTransform`. There IS a real visual
+difference between those frames in the button region, cause
+uncharacterized. See `docs/compatibility-matrix.md`'s "Corrections to prior
+docs" section — don't just assume this is resolved.
+
+**Top of the priority queue for the next limitation (see
+`docs/known-limitations.md` for full detail, ranked):**
+
+1. ~~ColorTransform/`_alpha` rendering~~ — **done**.
+2. No mouse/button interactivity at all (`_width`/`_height` hardcoded 0,
+   no hit-testing, `onClipEvent`'s 16 mouse/key flags parsed-never-fired,
+   button `on()` handlers parsed-never-run) — **very likely why Hobo never
+   progresses past its title screen**. Large scope; recommend splitting
+   into bounding-box -> hit-test -> dispatch sub-phases rather than one
+   atomic change.
+3. `GlobalObject` has zero named built-ins — no `Math`/`Date`/`Number()`/
+   `String()`/`Boolean()` at all. Newly discovered this phase, not
+   previously documented anywhere. `Math.*` alone (random/floor/abs/etc.,
+   same `nativeImpl` mechanism `Key`/`Mouse`/`Sound` already use) is a
+   well-scoped, likely-high-value next candidate if #2 is deferred.
+4. `DefineMorphShape`/`2` not resolved (confirmed 19x in real `hobo.swf`).
+5. Audio codec decode — zero SWF sound is audible anywhere, on any
+   platform, regardless of the real `ndsp` plumbing Phase 10 built.
+
 ## Build
 
 ```sh

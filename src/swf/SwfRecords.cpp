@@ -20,6 +20,31 @@ Matrix concatMatrix(const Matrix& parent, const Matrix& child) {
     return out;
 }
 
+ColorTransform concatColorTransform(const ColorTransform& parent, const ColorTransform& child) {
+    ColorTransform out;
+    out.redMult = parent.redMult * child.redMult;
+    out.greenMult = parent.greenMult * child.greenMult;
+    out.blueMult = parent.blueMult * child.blueMult;
+    out.alphaMult = parent.alphaMult * child.alphaMult;
+    // Add terms compose as: applying child's add, THEN parent's mult+add —
+    // i.e. parent.mult scales child's already-added contribution before
+    // parent's own add is layered on top. Rounded to the nearest integer
+    // per intermediate composition (ColorTransform::*Add is a plain int32_t,
+    // matching the SWF spec's integer add-term encoding); final clamping to
+    // a displayable [0,255] channel happens later, in applyColorTransform()
+    // (swf/ShapeRecords.h) — NOT here, since a composed transform is itself
+    // a valid (possibly out-of-[0,255]-effective-range) intermediate value
+    // that may still be composed further down a deeper tree.
+    out.redAdd = static_cast<int32_t>(std::lround(parent.redMult * child.redAdd)) + parent.redAdd;
+    out.greenAdd =
+        static_cast<int32_t>(std::lround(parent.greenMult * child.greenAdd)) + parent.greenAdd;
+    out.blueAdd =
+        static_cast<int32_t>(std::lround(parent.blueMult * child.blueAdd)) + parent.blueAdd;
+    out.alphaAdd =
+        static_cast<int32_t>(std::lround(parent.alphaMult * child.alphaAdd)) + parent.alphaAdd;
+    return out;
+}
+
 namespace {
 // Converts a raw 16.16 fixed-point SB[nbits] value (already sign-extended
 // by SwfReader::readSBits) into a double.

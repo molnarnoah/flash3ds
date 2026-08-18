@@ -1,23 +1,44 @@
 # ExternalInterface
 
-**Status: not started.** Planned for Phase 7.
+**Correction (2026-08-18, compatibility-audit phase): this file was stale
+and factually wrong.** It previously read "Status: not started. Planned for
+Phase 7" — but Phase 7 actually shipped a real, working `ExternalInterface`
+back on 2026-08-18 (same calendar day, an earlier session), and this file
+was simply never updated afterward. Ground-truth-traced against the current
+source (not assumed from any doc, including this one) during the
+compatibility-audit phase: `ScriptEnvironment`'s constructor
+(`src/runtime/MovieClipInstance.cpp:189-214`) really does construct and
+install a real `ExternalInterface` object onto `_global`, with `available`
+(always `true`), `call(methodName, ...args)` (AS2 -> native, dispatches to
+`callHostFunction`/`registerHostFunction`-registered C++ functions), and
+`addCallback(methodName, instance, function)` (native -> AS2, via
+`registerCallback`/`hasCallback`/`invokeCallback`) all real and covered by
+passing tests (`tests/test_movieclip_instance.cpp`'s five
+`MovieClipInstance_ExternalInterface_*` cases).
 
-Design target (see project spec section 10 and
-`docs/shift-dx-behavior.md`'s "ExternalInterface" section for the Shift-DX
-behavioral cross-check): an abstract `HostInterface` boundary so
-`ExternalInterface.call()` / `.addCallback()` / `.removeCallback()` never
-couple directly to Nintendo 3DS code.
+**This is exactly the kind of doc-vs-code drift the compatibility-audit
+phase's charter warns about** ("Do not claim something is supported merely
+because a class/function exists... trace the actual execution path" — and
+the inverse failure mode is just as real: don't claim something is
+*unsupported* because an old doc says so, either). This file is being fixed
+rather than deleted so the drift and its correction are visible to a future
+session, matching this project's practice of documenting mistakes/fixes in
+place (see `docs/compatibility.md`, `docs/known-limitations.md`).
 
-```cpp
-class HostInterface {
-public:
-    virtual ~HostInterface() = default;
-    virtual Value externalCall(const std::string& name,
-                                const std::vector<Value>& args) = 0;
-    virtual void registerCallback(const std::string& name,
-                                   Callback callback) = 0;
-};
-```
+**For the actual, current, accurate ExternalInterface status**, see
+`docs/avm1-support.md`'s "ExternalInterface (AS2 <-> native/host) — Phase 7"
+section and `docs/compatibility-matrix.md`'s ExternalInterface row — both
+independently re-verified against source during the compatibility-audit
+phase, not just carried forward from Phase 7's original narrative.
 
-To be filled in once Phase 4/5 (AVM1 VM + object model) land, since
-ExternalInterface is implemented in terms of the AS object model.
+Known real gaps (from `docs/avm1-support.md`'s "Known Phase 7 limitations",
+re-confirmed during this phase's audit): `invokeCallback()` runs with no
+`HostBindings` bound (scene-graph-affecting actions called directly inside
+an `addCallback`-registered function's body are silent no-ops); no
+argument-count/type marshalling beyond the bare minimum; no linkage-based
+multi-instance routing (not meaningful here — one `ScriptEnvironment` already
+is one loaded movie's whole bridge). None of these were exercised against
+the exact Hobo-style pattern (`ExternalInterface.addCallback("SetUnlockedBonusIndex",
+this, SetUnlockedBonusIndex)`, `ExternalInterface.call("OnBonusCancel")`,
+etc.) with a real content SWF yet — see `docs/test-results.md`'s
+ExternalInterface section for what's actually been run.

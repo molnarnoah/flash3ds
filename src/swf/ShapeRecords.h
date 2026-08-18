@@ -23,6 +23,19 @@ struct RgbaColor {
     uint8_t r = 0, g = 0, b = 0, a = 255;
 };
 
+// Applies a (possibly parent-composed, see swf::concatColorTransform)
+// ColorTransform to a concrete color: output = input * mult + add, per
+// channel, rounded and clamped to a displayable [0,255] byte. Matches the
+// SWF spec's CXFORM/CXFORMWITHALPHA semantics.
+//
+// Added 2026-08-18 (compatibility-audit phase, priority #1 fix): see
+// docs/known-limitations.md — ColorTransform (incl. AVM1 `_alpha`) was
+// parsed/stored/script-mutable but never actually applied to a rendered
+// pixel before this. Used by SceneRenderer at the point each tessellated
+// polygon/stroke/glyph color is resolved, immediately before handing it to
+// IRenderer::fillPolygon/strokePolyline.
+RgbaColor applyColorTransform(const RgbaColor& color, const ColorTransform& ct);
+
 struct GradientRecord {
     uint8_t ratio = 0;
     RgbaColor color;

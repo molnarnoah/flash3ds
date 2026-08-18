@@ -136,6 +136,97 @@ TEST_CASE(SceneRenderer_NestedSprite_ComposesWorldTransform) {
     CHECK_EQ(notComposed.b, 255);
 }
 
+// --- Compatibility-audit phase (2026-08-18): ColorTransform/_alpha was
+// parsed/stored/script-mutable but never applied to a single rendered
+// pixel (see docs/known-limitations.md, priority #1 finding). Regression
+// coverage for the fix: swf::concatColorTransform + swf::applyColorTransform,
+// threaded through every SceneRenderer leaf-render call. -------------------
+
+TEST_CASE(SceneRenderer_MovieClipInstanceAlpha_BlendsRenderedColorWithBackground) {
+    auto bytes = buildNestedSpriteMovie();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    // The sprite (character id=20) is placed at depth=1 on the root's
+    // display list — find its live MovieClipInstance child and set its
+    // AVM1-visible `_alpha` to 50% via the exact same C++ setter
+    // `SetProperty`/`.member` assignment on `_alpha` compiles down to (see
+    // MovieClipInstance::setAlpha(), which writes colorTransform_.alphaMult
+    // directly — this is deliberately exercised at the same layer real AS2
+    // `_alpha = 50;` would hit, not a lower-level shortcut).
+    auto childIt = root->children().find(1);
+    CHECK(childIt != root->children().end());
+    CHECK(childIt->second != nullptr);
+    childIt->second->setAlpha(50.0);
+    CHECK_EQ(childIt->second->alpha(), 50.0);
+
+    int width = static_cast<int>(movie->frameSize.widthPixels());
+    int height = static_cast<int>(movie->frameSize.heightPixels());
+
+    SoftwareRenderer renderer(width, height);
+    SceneRenderer scene(*movie, characters);
+    scene.render(*root, renderer, width, height);
+
+    // Before this fix: _alpha had zero effect on rendering, so this pixel
+    // would come out exactly (0,0,255) — full opaque blue — identical to
+    // SceneRenderer_NestedSprite_ComposesWorldTransform's un-alpha'd case.
+    // With a real 50%-alpha composite over the white background (standard
+    // "over" blend, see SoftwareRenderer::blendChannel): the shape's
+    // r/g channels (0 in the source color, 255 in the white background)
+    // must land partway between the two, not at either extreme.
+    auto blended = renderer.pixelAt(45, 45);
+    CHECK(blended.r > 0);
+    CHECK(blended.r < 255);
+    CHECK(blended.g > 0);
+    CHECK(blended.g < 255);
+    // Blue channel is 255 in BOTH the source color and the white
+    // background, so it must stay saturated at 255 regardless of alpha —
+    // confirms the blend is real per-channel math, not an accidental flat
+    // dimming of every channel.
+    CHECK_EQ(blended.b, 255);
+
+    // Fully outside the shape's footprint: still untouched background.
+    auto outside = renderer.pixelAt(5, 5);
+    CHECK_EQ(outside.r, 255);
+    CHECK_EQ(outside.g, 255);
+    CHECK_EQ(outside.b, 255);
+}
+
+TEST_CASE(SceneRenderer_MovieClipInstanceAlphaZero_RendersFullyTransparent) {
+    // alpha=0 is the sharpest possible signal: the shape must become
+    // completely invisible (pixel identical to background), not merely
+    // "dimmer" — this catches an off-by-one/inverted-mult bug that a
+    // middling 50% test alone might not.
+    auto bytes = buildNestedSpriteMovie();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto childIt = root->children().find(1);
+    CHECK(childIt != root->children().end());
+    childIt->second->setAlpha(0.0);
+
+    int width = static_cast<int>(movie->frameSize.widthPixels());
+    int height = static_cast<int>(movie->frameSize.heightPixels());
+    SoftwareRenderer renderer(width, height);
+    SceneRenderer scene(*movie, characters);
+    scene.render(*root, renderer, width, height);
+
+    auto invisible = renderer.pixelAt(45, 45);
+    CHECK_EQ(invisible.r, 255);
+    CHECK_EQ(invisible.g, 255);
+    CHECK_EQ(invisible.b, 255);
+}
+
 // --- Phase 8: text / button / edit-text rendering ------------------------
 
 TEST_CASE(SceneRenderer_DefineText_DrawsGlyphAtScaledPosition) {

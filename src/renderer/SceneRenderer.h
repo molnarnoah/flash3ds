@@ -26,6 +26,16 @@
 // only rendered when it embeds a font AND that font has a code table, i.e.
 // a DefineFont2 font; no word-wrap/scrolling/alignment, see
 // renderEditTextCharacter()).
+//
+// Compatibility-audit phase (2026-08-18): every render entry point now also
+// threads an EFFECTIVE (world-composed, via swf::concatColorTransform)
+// swf::ColorTransform alongside worldMatrix, applied (via
+// swf::applyColorTransform) to each leaf's actual fill/stroke/glyph color
+// immediately before handing it to IRenderer. Before this, ColorTransform
+// (including AVM1 `_alpha`) was parsed, stored per-MovieClipInstance, and
+// script-mutable, but never once read by the renderer — a real, confirmed
+// gap found by tracing execution (not assuming from prior docs); see
+// docs/known-limitations.md.
 
 #pragma once
 
@@ -55,34 +65,41 @@ public:
 
 private:
     void renderClip(const runtime::MovieClipInstance& clip, const swf::Matrix& worldMatrix,
-                     IRenderer& target, double pixelsPerTwipX, double pixelsPerTwipY, int depth);
+                     const swf::ColorTransform& worldColorTransform, IRenderer& target,
+                     double pixelsPerTwipX, double pixelsPerTwipY, int depth);
 
     // Resolves `characterId` and dispatches to the right leaf renderer
     // below based on which CharacterDef alternative it is; a SpriteDef here
     // means renderClip() should have handled it via a MovieClipInstance
     // child instead (see renderClip()'s doc comment), so it's a no-op, same
     // as an unresolved/still-unsupported (bitmap) character ID.
-    void renderCharacter(uint16_t characterId, const swf::Matrix& worldMatrix, IRenderer& target,
+    void renderCharacter(uint16_t characterId, const swf::Matrix& worldMatrix,
+                          const swf::ColorTransform& worldColorTransform, IRenderer& target,
                           double pixelsPerTwipX, double pixelsPerTwipY, int depth);
 
     void renderShapeCharacter(const swf::ShapeDef& shapeDef, const swf::Matrix& worldMatrix,
-                               IRenderer& target, double pixelsPerTwipX, double pixelsPerTwipY);
+                               const swf::ColorTransform& worldColorTransform, IRenderer& target,
+                               double pixelsPerTwipX, double pixelsPerTwipY);
 
     void renderTextCharacter(const swf::TextDef& textDef, const swf::Matrix& worldMatrix,
-                              IRenderer& target, double pixelsPerTwipX, double pixelsPerTwipY);
+                              const swf::ColorTransform& worldColorTransform, IRenderer& target,
+                              double pixelsPerTwipX, double pixelsPerTwipY);
 
     void renderEditTextCharacter(const swf::EditTextDef& editTextDef,
-                                  const swf::Matrix& worldMatrix, IRenderer& target,
+                                  const swf::Matrix& worldMatrix,
+                                  const swf::ColorTransform& worldColorTransform, IRenderer& target,
                                   double pixelsPerTwipX, double pixelsPerTwipY);
 
     // Draws one glyph outline (`glyphShape`, in the font's raw 1024-
-    // units-per-em space — see swf/DefineFontTag.h) filled with `color`,
-    // scaled by `scale` (== textHeightTwips / 1024.0), translated by
-    // (offsetXTwips, offsetYTwips) in the SAME local space `worldMatrix`
-    // expects (i.e. already-scaled glyph units, not yet transformed).
+    // units-per-em space — see swf/DefineFontTag.h) filled with `color`
+    // (after `worldColorTransform` is applied to it), scaled by `scale`
+    // (== textHeightTwips / 1024.0), translated by (offsetXTwips,
+    // offsetYTwips) in the SAME local space `worldMatrix` expects (i.e.
+    // already-scaled glyph units, not yet transformed).
     void renderGlyph(const swf::Shape& glyphShape, const swf::RgbaColor& color, double scale,
                       int32_t offsetXTwips, int32_t offsetYTwips, const swf::Matrix& worldMatrix,
-                      IRenderer& target, double pixelsPerTwipX, double pixelsPerTwipY);
+                      const swf::ColorTransform& worldColorTransform, IRenderer& target,
+                      double pixelsPerTwipX, double pixelsPerTwipY);
 
     const runtime::Movie* movie_;
     const runtime::CharacterDictionary* characters_;
