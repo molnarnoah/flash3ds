@@ -201,13 +201,44 @@ phase, building + testing + documenting at the end of each one.
 5. `git add -A && git commit` with a clear summary of what shipped in that
    phase.
 
-## Next phase (Phase 10)
+## Phase 10 complete (with an important caveat)
 
-Nintendo 3DS backend — the final phase per the original 10-phase plan: a
-real `IRenderer` implementation over citro3d, real input (3DS buttons/
-circle pad mapped into `InputState`), and a real `IAudioBackend`, replacing
-the desktop `SoftwareRenderer`/`NullAudioBackend` test doubles without
-touching the platform-independent SWF/AVM1 core above them.
+Nintendo 3DS backend — the final phase per the original 10-phase plan. All
+of the code exists and is real: `Nintendo3DSRenderer` (`IRenderer` over a
+wrapped `SoftwareRenderer`, blitting to the real LCD framebuffer via
+libctru `gfxGetFramebuffer`, top screen only), `Nintendo3DSInput` (polls
+libctru `hid`, feeds `InputState` — touch->mouse, D-Pad/Circle Pad->arrow
+keys, face buttons->reasonable-effort key stand-ins), and
+`Nintendo3DSAudioBackend` (real `ndsp` channel reservation/play/stop
+plumbing — still can't play actual audio, same root cause as
+`NullAudioBackend`: no codec-decode step exists anywhere yet), plus a real
+3DS entry point (`src/platform/nintendo3ds_main.cpp`) playing an embedded
+demo movie.
+
+**The caveat:** this project's environment could not reach devkitPro's own
+package servers, so Phase 10 first had to bootstrap a devkitARM-equivalent
+toolchain entirely from source (Ubuntu's generic ARM cross-compiler +
+libctru/citro3d/devkitarm-crtls built straight from their public GitHub
+repos) — see `docs/3ds-toolchain.md` for the complete writeup, every issue
+hit, and exactly how each was fixed. That toolchain was validated
+end-to-end in this session: `flash3ds_core` (unmodified) plus all the new
+3DS code cross-compiles and links with zero undefined non-weak symbols
+into a structurally valid `.3dsx`. What was **not** possible in this
+environment is running that `.3dsx` on real 3DS hardware or an emulator —
+no such device was available. So Phase 10 is "code-complete and
+toolchain-verified" but **not** "hardware-verified" — see
+`docs/3ds-toolchain.md`'s "What's verified vs. not" section for the exact
+boundary, and treat "boot it on real hardware/Citra and confirm the demo
+square renders correctly" as the natural next step for a session that has
+access to one.
+
+Two genuine (if narrow) portability bugs in the platform-independent core
+were found and fixed while bringing up the cross-compile — `uint32_t` is
+not the same type as `unsigned int`/`int` on this ARM target the way it
+happens to be on x86_64 desktop, which silently-but-incorrectly compiled
+in two `std::clamp`/`std::min`/`std::max` call sites
+(`Timeline.cpp`/`SoftwareRenderer.cpp`) — both now explicit about their
+types on every platform. All 187 desktop tests still pass.
 
 Phase 9 (Hobo compatibility testing) is not "done" in the same sense the
 numbered phases are — its own charter is ongoing real-content testing, and
@@ -222,9 +253,15 @@ title needs one of these sooner than its "natural" later phase:
 - `Sound.attachSound(name: String)` — the real AS2 linkage-name form —
   needs `ExportAssets` tag parsing (currently unimplemented; only numeric
   `attachSound(id)` resolves).
-- Audio codec decode (ADPCM/MP3/etc.) — needed by any real
-  `IAudioBackend` implementation; `NullAudioBackend` doesn't need it since
-  it never actually plays anything.
+- Audio codec decode (ADPCM/MP3/etc.) — needed for actual sound output;
+  neither `NullAudioBackend` nor Phase 10's `Nintendo3DSAudioBackend`
+  (real `ndsp` channel plumbing, but nothing to queue into it) can play
+  anything without this. The single highest-value carry-over if a target
+  title needs audible sound.
+- 3DS hardware/emulator verification (see `docs/3ds-toolchain.md`'s "What's
+  verified vs. not") — Phase 10's code is real and toolchain-verified but
+  has never actually run on a 3DS or Citra; this environment had access to
+  neither.
 - Mouse/keyboard `onClipEvent`s (`press`, `release`, `rollOver`, `mouseDown`,
   `keyDown`, ...) and button `on()` handlers — `DefineButton`/`DefineButton2`
   parsing exists now (Phase 8) and captures the action bytecode, but
@@ -264,4 +301,15 @@ regression test for every bug, build phase-by-phase.
 cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
+```
+
+For the Nintendo 3DS cross-compile, see `docs/3ds-toolchain.md` for the
+toolchain bootstrap; once built:
+
+```sh
+cmake -S . -B build_3ds \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/Toolchain-3DS.cmake \
+    -DFLASH3DS_3DS_TOOLCHAIN_ROOT=/path/to/3ds-toolchain
+cmake --build build_3ds -j
+# -> build_3ds/flash3ds_3ds.3dsx
 ```

@@ -1,1 +1,5 @@
 build/
+build_3ds/
+dist/
+__pycache__/
+*.pyc

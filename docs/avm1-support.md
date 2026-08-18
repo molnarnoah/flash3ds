@@ -756,12 +756,22 @@ See `tests/test_movieclip_instance.cpp`'s four
   plausibly correct behavior (a real Flash Player would also no-op calling
   a method on an unresolved path), not confirmed either way.
 
-## Next (Phase 10)
+## Phase 10
 
-Nintendo 3DS backend, per the project's original 10-phase plan — the final
-phase. `docs/compatibility.md`'s "Not yet tested" list (the rest of the
-Hobo series, Extreme Pamplona, and `hobo.swf`'s own gameplay frames beyond
-the title screen) is also still open and can continue in parallel with, or
-ahead of, Phase 10 — Phase 9's own charter (run against real content,
-prioritize fixes by what's actually needed) doesn't have a hard "done"
-line the way the numbered phases do.
+The AVM1 interpreter/VM itself (`src/avm1/`) was not touched in Phase 10 —
+it's part of `flash3ds_core`, which cross-compiles for the 3DS unchanged.
+One genuine portability bug adjacent to it was found and fixed:
+`Timeline::gotoAndStop()`/`gotoAndPlay()` (which `MovieClipInstance`'s
+native OOP methods, added in Phase 9, call into) used a bare `1u` literal
+in a `std::clamp` call that silently relied on `uint32_t` and `unsigned
+int` being the same type — true on x86_64 desktop, not true on the ARM
+target `-march=armv6k` compiles for. Fixed with an explicit cast; see
+`docs/3ds-toolchain.md` for the full story. No AVM1 opcode/behavior
+changed.
+
+`docs/compatibility.md`'s "Not yet tested" list (the rest of the Hobo
+series, Extreme Pamplona, and `hobo.swf`'s own gameplay frames beyond the
+title screen) is still open — Phase 9's own charter (run against real
+content, prioritize fixes by what's actually needed) doesn't have a hard
+"done" line the way the numbered phases do, and can continue independently
+of Phase 10 being complete.

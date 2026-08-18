@@ -52,17 +52,23 @@ Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 d
                                           hasCallback/invokeCallback)
     |
     v
-Top / Bottom Screen                   <-- not yet implemented (Phase 10)
-    |
-    v
-Nintendo 3DS
+Top / Bottom Screen                   <-- Phase 10: Nintendo3DSRenderer targets the top
+    |                                      screen only so far (GFX_TOP); bottom-screen
+    v                                      use is an explicit follow-up, not implemented
+Nintendo 3DS                          <-- Phase 10: real IRenderer/input-feed/IAudioBackend
+                                          implementations (src/renderer/Nintendo3DSRenderer.*,
+                                          src/platform/Nintendo3DSInput.*,
+                                          src/audio/Nintendo3DSAudioBackend.*) + entry point
+                                          (src/platform/nintendo3ds_main.cpp), cross-compiled
+                                          and linked via a from-source toolchain bootstrap
+                                          (docs/3ds-toolchain.md) -- NOT hardware/emulator-run
 ```
 
 The runtime is deliberately modular so the renderer, audio, input, and
 platform layers can be swapped for Nintendo 3DS-specific implementations
 later without touching the SWF/AVM1 core.
 
-## Current status: Phase 8 complete; Phase 9 (Hobo compatibility testing) underway
+## Current status: Phase 8 complete; Phase 9 (Hobo compatibility testing) and Phase 10 (Nintendo 3DS backend) underway
 
 Phase 1 built **SWF Loader → SWF Parser** (flat tag list). Phase 2 added
 **Timeline → Display List**: `PlaceObject`/`PlaceObject2`/`RemoveObject`/
@@ -178,6 +184,33 @@ still-open findings (`DefineMorphShape` not resolved into
 `CharacterDictionary`, a handful of `DefineSprite`s missing a trailing
 `ShowFrame`, and more of the Hobo series/Extreme Pamplona not yet tested).
 
+Phase 10 (Nintendo 3DS backend, the final phase) built real
+`IRenderer`/`InputState`-feeding/`IAudioBackend` implementations over
+libctru/citro3d (`src/renderer/Nintendo3DSRenderer.*`,
+`src/platform/Nintendo3DSInput.*`, `src/audio/Nintendo3DSAudioBackend.*`)
+and a real entry point (`src/platform/nintendo3ds_main.cpp`), and — since
+devkitPro's own servers aren't reachable from this project's build
+environment — bootstrapped a devkitARM-equivalent toolchain entirely from
+source (Ubuntu's generic `gcc-arm-none-eabi` cross-compiler + libctru/
+citro3d/devkitarm-crtls built straight from their public GitHub repos). See
+[3ds-toolchain.md](3ds-toolchain.md) for the full bootstrap writeup,
+including every build issue hit and how each was resolved. The result was
+validated end-to-end in this session: `flash3ds_core` (the same
+platform-independent library the desktop build uses, completely
+unmodified) plus the new 3DS backend and entry point cross-compile and
+link with zero undefined non-weak symbols, package into a structurally
+valid `.3dsx` via a from-source-built `3dsxtool`, and the desktop build
+(187 tests) keeps passing throughout — but this was **not** run on real
+3DS hardware or an emulator in this session (no such device was available
+here), so "boots and renders correctly on an actual 3DS" remains
+unverified; see 3ds-toolchain.md's "What's verified vs. not" section for
+the precise boundary. Two small, genuine portability bugs in the
+platform-independent core were found and fixed along the way (`uint32_t`
+is not the same type as `unsigned int`/`int` on this ARM target, unlike on
+x86_64 desktop, which broke two `std::clamp`/`std::min`/`std::max` calls in
+`Timeline.cpp`/`SoftwareRenderer.cpp` — both now explicit about their
+types on every platform).
+
 ## Module layout
 
 ```
@@ -235,6 +268,21 @@ src/
               InputState.h/.cpp           — Phase 6: host-settable keyboard/
                                              mouse state; no avm1/runtime
                                              dependency either way
+  platform/   Nintendo3DSInput.h/.cpp     — Phase 10: polls libctru hid,
+                                             feeds InputState (touch->mouse,
+                                             D-Pad/Circle Pad->arrow keys,
+                                             face buttons->reasonable-effort
+                                             stand-ins — see file header for
+                                             the mapping rationale). 3DS-only
+                                             (__3DS__), not linked into
+                                             flash3ds_core
+              nintendo3ds_main.cpp        — Phase 10: 3DS entry point; plays
+                                             an EMBEDDED demo movie (real SD-
+                                             card loading is an explicit
+                                             follow-up — see file header and
+                                             docs/3ds-toolchain.md)
+              EmbeddedDemoSwf.h           — GENERATED (tools/gen_3ds_demo_swf.py)
+                                             clean-room demo SWF byte array
   renderer/   IRenderer.h                 — abstract pixel-output interface
               SoftwareRenderer.h/.cpp     — RGBA8 framebuffer, scanline fill,
                                              PPM output (desktop/testing)
@@ -247,10 +295,26 @@ src/
                                              dispatches Text/EditText glyph
                                              runs (renderGlyph()) and
                                              Button "Up"-state rendering
+              Nintendo3DSRenderer.h/.cpp  — Phase 10: IRenderer wrapping a
+                                             SoftwareRenderer, blitting to the
+                                             real LCD framebuffer via
+                                             gfxGetFramebuffer(); see
+                                             docs/renderer.md's Phase 10 note
+                                             for the rotated-framebuffer
+                                             indexing confidence level.
+                                             3DS-only (__3DS__), not linked
+                                             into flash3ds_core
   audio/      IAudioBackend.h             — Phase 6: abstract sound-output
                                              interface, mirrors IRenderer.h
               NullAudioBackend.h/.cpp     — Phase 6: logs, plays nothing —
                                              ScriptEnvironment's default
+              Nintendo3DSAudioBackend.h/  — Phase 10: real ndsp channel
+              .cpp                          reservation/pause/stop; codec
+                                             decode still doesn't exist (Phase
+                                             6 limitation), so nothing is
+                                             actually audible yet — see file
+                                             header. 3DS-only (__3DS__), not
+                                             linked into flash3ds_core
   avm1/       Value.h/.cpp                — dynamic Value/Object type model,
                                              prototype chain, Array semantics,
                                              native property hooks (Phase 5),
@@ -277,10 +341,18 @@ src/
                                              AS2 Function value directly
 tools/
   flash_runtime/main.cpp                  — CLI SWF inspector (+ --timeline, --render)
+  gen_3ds_demo_swf.py                     — Phase 10: generates src/platform/EmbeddedDemoSwf.h
+                                             (not part of the CMake build; regenerate manually)
 tests/
   TestFramework.h, TestMain.cpp           — tiny dependency-free test harness
   SwfTestFixtures.h/.cpp                  — programmatic SWF fixture builder
   test_*.cpp                              — unit tests
+cmake/
+  Toolchain-3DS.cmake                     — Phase 10: 3DS cross-compile toolchain file
+third_party/
+  3ds-support/                            — Phase 10: vendored devkitarm-crtls crt0/linker-
+                                             script/specs (MPL-2.0, verbatim) — see its own
+                                             README.md for provenance
 docs/                                     — this directory
 ```
 
@@ -314,4 +386,16 @@ cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ./build/flash_runtime path/to/file.swf [--debug|--quiet]
+```
+
+For the Nintendo 3DS cross-compile (Phase 10), see
+[3ds-toolchain.md](3ds-toolchain.md) for the full toolchain bootstrap; once
+built:
+
+```
+cmake -S . -B build_3ds \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/Toolchain-3DS.cmake \
+    -DFLASH3DS_3DS_TOOLCHAIN_ROOT=/path/to/3ds-toolchain
+cmake --build build_3ds -j
+# -> build_3ds/flash3ds_3ds.3dsx
 ```

@@ -61,11 +61,16 @@ void SoftwareRenderer::fillPolygon(const std::vector<PointTwips>& devicePoints,
                                     swf::RgbaColor color) {
     if (devicePoints.size() < 3) return;
 
-    int minY = devicePoints[0].y;
-    int maxY = devicePoints[0].y;
+    int minY = static_cast<int>(devicePoints[0].y);
+    int maxY = static_cast<int>(devicePoints[0].y);
     for (const auto& p : devicePoints) {
-        minY = std::min(minY, p.y);
-        maxY = std::max(maxY, p.y);
+        // Explicit cast: PointTwips::y is int32_t, which is NOT guaranteed
+        // to be the same type as `int` (they coincide on x86_64 desktop
+        // builds but not on this project's ARM/newlib cross-compile
+        // target -- see Timeline.cpp's gotoAndStop() for the same class of
+        // portability issue with std::clamp).
+        minY = std::min(minY, static_cast<int>(p.y));
+        maxY = std::max(maxY, static_cast<int>(p.y));
     }
     minY = std::max(minY, 0);
     maxY = std::min(maxY, height_ - 1);

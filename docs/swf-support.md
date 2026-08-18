@@ -260,3 +260,22 @@ real-content-confirmed gap, natural next-phase scope); a handful of
 gracefully, likely a benign encoder quirk); the file uses `DefineFont2`,
 not `DefineFont3` as the old spec-derived table in `compatibility.md`
 claimed before this phase corrected it against the real file.
+
+## Phase 10 (Nintendo 3DS backend)
+
+No SWF tag/record parsing changed — `src/swf/` is entirely part of
+`flash3ds_core`, cross-compiled unchanged for the 3DS. This phase's SWF-
+format-adjacent work was all in `tools/gen_3ds_demo_swf.py`, a from-scratch
+clean-room generator (hand-authored `DefineShape3`/`PlaceObject2`/
+`SetBackgroundColor`/`ShowFrame`/`End` byte construction against the public
+spec) used to embed a small demo movie into the 3DS build. Two encoding
+bugs were found and fixed in that generator while independently verifying
+its output against this project's own desktop rendering pipeline (not
+against the parser it's testing — see `docs/3ds-toolchain.md` for the full
+story): a bogus `HasTranslate` bit in the hand-rolled `MATRIX` encoder
+(the real SWF spec's `MATRIX` record has no such flag — translate fields
+are unconditional, only scale/rotate are flag-gated) and a wrong
+`PlaceObject2` flags-byte bit assignment for `HasMatrix` (`0x08` used
+instead of the correct `0x04`, cross-checked against this project's own
+`src/swf/PlaceObjectTag.cpp` parser to fix). Both are generator-side bugs,
+not parser bugs — no `src/swf/` code changed.

@@ -3,8 +3,33 @@
 **Status: Phase 3 basic renderer implemented; Phase 5 wired it to a real
 MovieClipInstance tree (independent per-instance playheads); Phase 8 added
 static text, non-interactive button, and edit-text glyph rendering; Phase 9
-fixed a shape-parsing bug (see below) found by rendering real content.**
-Phase 10 (Nintendo 3DS backend, dual-screen) is still not started.
+fixed a shape-parsing bug (see below) found by rendering real content;
+Phase 10 added a real Nintendo 3DS `IRenderer` (top screen only — see
+below).**
+
+**Phase 10 — Nintendo3DSRenderer.** `src/renderer/Nintendo3DSRenderer.h/.cpp`
+implements `IRenderer` by composition: it owns a `SoftwareRenderer` sized to
+the logical (non-rotated) stage dimensions and forwards
+`beginFrame`/`fillPolygon`/`strokePolyline` to it completely unchanged
+(reusing the exact same, already-tested CPU rasterizer the desktop build
+uses), then in `endFrame()` reads every pixel back out via
+`SoftwareRenderer::pixelAt()` and blits it into the real 3DS LCD
+framebuffer obtained via libctru's `gfxGetFramebuffer(GFX_TOP, ...)`. Only
+the top screen is targeted (`GFX_TOP`); bottom-screen use (e.g. a touch
+UI/debug overlay) is an explicit, unimplemented follow-up.
+
+The rotated/column-major framebuffer indexing formula
+(`(x * fbWidth + (fbWidth - 1 - y)) * bytesPerPixel`) was cross-checked
+against libctru's own `source/gfx.c` in this session (not assumed from
+general homebrew folklore) — see `Nintendo3DSRenderer.h`'s header comment
+for the exact reasoning and the `GSP_SCREEN_WIDTH`/`GSP_SCREEN_HEIGHT_TOP`
+constants involved. What this session could NOT do is confirm the formula
+against actual displayed pixels on real hardware or an emulator (none was
+available) — the renderer links and produces a structurally valid `.3dsx`
+(see [3ds-toolchain.md](3ds-toolchain.md)), but "the demo square visibly
+appears in the right place on a real screen" is unverified. Default pixel
+format assumed is `GSP_BGR8_OES` (3 bytes/pixel, B-G-R order), per
+`gfxInitDefault()`'s own documented default.
 
 **Phase 9 validation.** Rendered a real `hobo.swf`'s title screen
 end-to-end for the first time and found the output recognizably correct —

@@ -109,7 +109,16 @@ void Timeline::applyFrame(uint32_t frameIndex) {
 
 void Timeline::gotoAndStop(uint32_t frameIndex) {
     if (frameCount() == 0) return;
-    frameIndex = std::clamp(frameIndex, 1u, frameCount());
+    // Phase 10 portability fix: the bare `1u` literal is `unsigned int`,
+    // which is NOT guaranteed to be the same type as `uint32_t` (they
+    // happen to coincide on x86_64 desktop builds, but not on this
+    // project's ARM/newlib cross-compile target, where uint32_t is
+    // `long unsigned int` -- a distinct type as far as std::clamp's single-
+    // type template deduction is concerned, so the desktop build silently
+    // compiled something that was never actually portable). Cast to
+    // uint32_t explicitly so all three std::clamp arguments share one type
+    // on every platform.
+    frameIndex = std::clamp(frameIndex, static_cast<uint32_t>(1), frameCount());
     applyFrame(frameIndex);
     currentFrame_ = frameIndex;
     playing_ = false;
@@ -117,7 +126,8 @@ void Timeline::gotoAndStop(uint32_t frameIndex) {
 
 void Timeline::gotoAndPlay(uint32_t frameIndex) {
     if (frameCount() == 0) return;
-    frameIndex = std::clamp(frameIndex, 1u, frameCount());
+    // See gotoAndStop()'s comment above -- same Phase 10 portability fix.
+    frameIndex = std::clamp(frameIndex, static_cast<uint32_t>(1), frameCount());
     applyFrame(frameIndex);
     currentFrame_ = frameIndex;
     playing_ = true;
