@@ -17,13 +17,170 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
+// Registers one Key.* named constant. A small helper rather than 17
+// near-identical setOwnProperty calls.
+void setKeyConstant(avm1::Object& keyObj, const char* name, int code) {
+    keyObj.setOwnProperty(name, avm1::Value::number(code));
+}
+
 }  // namespace
 
 // ===========================================================================
 // ScriptEnvironment
 // ===========================================================================
 
-ScriptEnvironment::ScriptEnvironment() : global_(avm1::GlobalObject::create()) {}
+ScriptEnvironment::ScriptEnvironment() : global_(avm1::GlobalObject::create()) {
+    // --- Key (Phase 6) ------------------------------------------------------
+    // A plain object used AS2-statically (Key.isDown(...), never `new
+    // Key()`) — isDown()/getCode() close over `this` (ScriptEnvironment) by
+    // raw pointer, matching the "ScriptEnvironment outlives everything built
+    // from it" convention already used by MovieClipInstance's own movie_/
+    // characters_/env_ members.
+    auto keyObj = std::make_shared<avm1::Object>();
+    keyObj->setOwnProperty(
+        "isDown", avm1::Value::object(avm1::makeNativeFunction(
+                      "isDown", [this](avm1::ExecutionContext&, const avm1::Value&,
+                                        const std::vector<avm1::Value>& args) {
+                          int code = args.empty() ? 0 : static_cast<int>(args[0].toNumber());
+                          return avm1::Value::boolean(inputState_.isKeyDown(code));
+                      })));
+    keyObj->setOwnProperty(
+        "getCode", avm1::Value::object(avm1::makeNativeFunction(
+                       "getCode", [this](avm1::ExecutionContext&, const avm1::Value&,
+                                          const std::vector<avm1::Value>&) {
+                           return avm1::Value::number(inputState_.lastKeyCode());
+                       })));
+    setKeyConstant(*keyObj, "BACKSPACE", InputState::kBackspace);
+    setKeyConstant(*keyObj, "CAPSLOCK", InputState::kCapsLock);
+    setKeyConstant(*keyObj, "CONTROL", InputState::kControl);
+    setKeyConstant(*keyObj, "DELETEKEY", InputState::kDelete);
+    setKeyConstant(*keyObj, "DOWN", InputState::kDown);
+    setKeyConstant(*keyObj, "END", InputState::kEnd);
+    setKeyConstant(*keyObj, "ENTER", InputState::kEnter);
+    setKeyConstant(*keyObj, "ESCAPE", InputState::kEscape);
+    setKeyConstant(*keyObj, "HOME", InputState::kHome);
+    setKeyConstant(*keyObj, "INSERT", InputState::kInsert);
+    setKeyConstant(*keyObj, "LEFT", InputState::kLeft);
+    setKeyConstant(*keyObj, "PGDN", InputState::kPageDown);
+    setKeyConstant(*keyObj, "PGUP", InputState::kPageUp);
+    setKeyConstant(*keyObj, "RIGHT", InputState::kRight);
+    setKeyConstant(*keyObj, "SHIFT", InputState::kShift);
+    setKeyConstant(*keyObj, "SPACE", InputState::kSpace);
+    setKeyConstant(*keyObj, "TAB", InputState::kTab);
+    setKeyConstant(*keyObj, "UP", InputState::kUp);
+    global_->setOwnProperty("Key", avm1::Value::object(keyObj));
+
+    // --- Mouse (Phase 6) -----------------------------------------------------
+    // show()/hide() are recognized no-ops: this runtime has no cursor
+    // rendering model (headless-first, 3DS-bound — see docs/renderer.md).
+    auto mouseObj = std::make_shared<avm1::Object>();
+    mouseObj->setOwnProperty(
+        "show", avm1::Value::object(avm1::makeNativeFunction(
+                    "show", [](avm1::ExecutionContext&, const avm1::Value&,
+                               const std::vector<avm1::Value>&) {
+                        LOG_DEBUG("MOVIECLIP", "Mouse.show() — no cursor rendering model");
+                        return avm1::Value::undefined();
+                    })));
+    mouseObj->setOwnProperty(
+        "hide", avm1::Value::object(avm1::makeNativeFunction(
+                    "hide", [](avm1::ExecutionContext&, const avm1::Value&,
+                               const std::vector<avm1::Value>&) {
+                        LOG_DEBUG("MOVIECLIP", "Mouse.hide() — no cursor rendering model");
+                        return avm1::Value::undefined();
+                    })));
+    global_->setOwnProperty("Mouse", avm1::Value::object(mouseObj));
+
+    // --- Sound (Phase 6) ------------------------------------------------------
+    // See the "Sound" bullet in MovieClipInstance.h's DOCUMENTED
+    // LIMITATIONS for exactly what's and isn't resolvable here.
+    auto soundProto = std::make_shared<avm1::Object>();
+    soundProto->setOwnProperty(
+        "attachSound",
+        avm1::Value::object(avm1::makeNativeFunction(
+            "attachSound", [this](avm1::ExecutionContext&, const avm1::Value& thisVal,
+                                   const std::vector<avm1::Value>& args) {
+                if (!thisVal.isObject() || !thisVal.asObject() || args.empty()) {
+                    return avm1::Value::undefined();
+                }
+                if (!args[0].isNumber()) {
+                    LOG_WARN("MOVIECLIP",
+                              "Sound.attachSound('%s'): linkage-name resolution not "
+                              "implemented (needs ExportAssets — later phase)",
+                              args[0].toString().c_str());
+                    return avm1::Value::undefined();
+                }
+                uint16_t id = static_cast<uint16_t>(args[0].toNumber());
+                const CharacterDef* def = characters_ ? characters_->find(id) : nullptr;
+                if (!def || !std::holds_alternative<swf::SoundDef>(*def)) {
+                    LOG_WARN("MOVIECLIP",
+                              "Sound.attachSound(%u): no DefineSound character with that id",
+                              id);
+                }
+                thisVal.asObject()->setOwnProperty("_soundId", avm1::Value::number(id));
+                return avm1::Value::undefined();
+            })));
+    soundProto->setOwnProperty(
+        "start", avm1::Value::object(avm1::makeNativeFunction(
+                     "start", [this](avm1::ExecutionContext&, const avm1::Value& thisVal,
+                                      const std::vector<avm1::Value>& args) {
+                         if (!thisVal.isObject() || !thisVal.asObject()) return avm1::Value::undefined();
+                         avm1::Value idVal = thisVal.asObject()->getOwnProperty("_soundId");
+                         if (!idVal.isNumber()) {
+                             LOG_WARN("MOVIECLIP", "Sound.start(): no resolvable sound attached");
+                             return avm1::Value::undefined();
+                         }
+                         int loopCount =
+                             args.size() > 1 ? std::max(1, static_cast<int>(args[1].toNumber())) : 1;
+                         audioBackend_->playSound(static_cast<uint16_t>(idVal.toNumber()), loopCount);
+                         return avm1::Value::undefined();
+                     })));
+    soundProto->setOwnProperty(
+        "stop", avm1::Value::object(avm1::makeNativeFunction(
+                    "stop", [this](avm1::ExecutionContext&, const avm1::Value& thisVal,
+                                    const std::vector<avm1::Value>&) {
+                        avm1::Value idVal = (thisVal.isObject() && thisVal.asObject())
+                                                 ? thisVal.asObject()->getOwnProperty("_soundId")
+                                                 : avm1::Value::undefined();
+                        if (idVal.isNumber()) {
+                            audioBackend_->stopSound(static_cast<uint16_t>(idVal.toNumber()));
+                        } else {
+                            audioBackend_->stopAllSounds();
+                        }
+                        return avm1::Value::undefined();
+                    })));
+    soundProto->setOwnProperty(
+        "setVolume",
+        avm1::Value::object(avm1::makeNativeFunction(
+            "setVolume", [](avm1::ExecutionContext&, const avm1::Value& thisVal,
+                             const std::vector<avm1::Value>& args) {
+                if (thisVal.isObject() && thisVal.asObject()) {
+                    double vol = args.empty() ? 100.0 : args[0].toNumber();
+                    thisVal.asObject()->setOwnProperty("_volume", avm1::Value::number(vol));
+                }
+                return avm1::Value::undefined();
+            })));
+    soundProto->setOwnProperty(
+        "getVolume", avm1::Value::object(avm1::makeNativeFunction(
+                         "getVolume", [](avm1::ExecutionContext&, const avm1::Value& thisVal,
+                                          const std::vector<avm1::Value>&) {
+                             if (thisVal.isObject() && thisVal.asObject()) {
+                                 avm1::Value v = thisVal.asObject()->getOwnProperty("_volume");
+                                 if (v.isNumber()) return v;
+                             }
+                             return avm1::Value::number(100.0);
+                         })));
+
+    auto soundCtor = avm1::makeNativeFunction(
+        "Sound", [](avm1::ExecutionContext&, const avm1::Value& thisVal,
+                     const std::vector<avm1::Value>& args) {
+            if (thisVal.isObject() && thisVal.asObject() && !args.empty() && args[0].isObject()) {
+                thisVal.asObject()->setOwnProperty("_target", args[0]);
+            }
+            return avm1::Value::undefined();
+        });
+    soundCtor->setOwnProperty("prototype", avm1::Value::object(soundProto));
+    global_->setOwnProperty("Sound", avm1::Value::object(soundCtor));
+}
 
 void ScriptEnvironment::scanInitActions(const Movie& movie) {
     for (const auto& tag : movie.tags) {
@@ -43,13 +200,48 @@ const std::vector<uint8_t>* ScriptEnvironment::takeInitActionsOnce(uint16_t char
     return &it->second;
 }
 
+void ScriptEnvironment::startDrag(MovieClipInstance* clip,
+                                    const avm1::HostBindings::DragOptions& options) {
+    if (!clip) return;
+    dragTarget_ = clip;
+    dragOptions_ = options;
+    // Non-lockCenter drag preserves the offset between the clip's origin
+    // and the mouse at the moment the drag started (matches real Flash:
+    // the clip doesn't jump to snap its origin under the cursor unless
+    // LockCenter was requested).
+    dragGrabOffsetX_ = clip->x() - inputState_.mouseX();
+    dragGrabOffsetY_ = clip->y() - inputState_.mouseY();
+}
+
+void ScriptEnvironment::endDrag() { dragTarget_ = nullptr; }
+
+void ScriptEnvironment::updateDrag() {
+    if (!dragTarget_) return;
+    double x = inputState_.mouseX();
+    double y = inputState_.mouseY();
+    if (!dragOptions_.lockCenter) {
+        x += dragGrabOffsetX_;
+        y += dragGrabOffsetY_;
+    }
+    if (dragOptions_.hasConstraint) {
+        double lo = std::min(dragOptions_.left, dragOptions_.right);
+        double hi = std::max(dragOptions_.left, dragOptions_.right);
+        x = std::clamp(x, lo, hi);
+        lo = std::min(dragOptions_.top, dragOptions_.bottom);
+        hi = std::max(dragOptions_.top, dragOptions_.bottom);
+        y = std::clamp(y, lo, hi);
+    }
+    dragTarget_->setX(x);
+    dragTarget_->setY(y);
+}
+
 avm1::Value ScriptEnvironment::run(MovieClipInstance& target, const uint8_t* code, size_t length) {
     // MovieClipHostBindings is defined below (this translation unit only —
     // AVM1 code only ever sees it through the abstract HostBindings seam).
     class MovieClipHostBindings : public avm1::HostBindings {
     public:
-        explicit MovieClipHostBindings(MovieClipInstance& natural)
-            : natural_(&natural), current_(&natural) {}
+        MovieClipHostBindings(MovieClipInstance& natural, ScriptEnvironment& env)
+            : natural_(&natural), current_(&natural), env_(&env) {}
 
         MovieClipInstance* resolve(const std::string& target) {
             if (target.empty()) return current_;
@@ -98,6 +290,8 @@ avm1::Value ScriptEnvironment::run(MovieClipInstance& target, const uint8_t* cod
                 case 13: return avm1::Value::string(mc->name());
                 case 14: return avm1::Value::string("");  // _droptarget — no drag model yet
                 case 15: return avm1::Value::string("");  // _url
+                case 20: return avm1::Value::number(env_->inputState().mouseX());  // _xmouse
+                case 21: return avm1::Value::number(env_->inputState().mouseY());  // _ymouse
                 default:
                     LOG_DEBUG("MOVIECLIP", "GetProperty: index %d not modeled — undefined",
                               propertyIndex);
@@ -137,13 +331,12 @@ avm1::Value ScriptEnvironment::run(MovieClipInstance& target, const uint8_t* cod
             if (!mc) return;
             mc->removeFromParent();
         }
-        void startDrag(const std::string& targetPath) override {
-            (void)targetPath;
-            LOG_DEBUG("MOVIECLIP", "StartDrag — no input model yet (Phase 6)");
+        void startDrag(const std::string& targetPath, const DragOptions& options) override {
+            MovieClipInstance* mc = resolve(targetPath);
+            if (!mc) return;
+            env_->startDrag(mc, options);
         }
-        void endDrag() override {
-            LOG_DEBUG("MOVIECLIP", "EndDrag — no input model yet (Phase 6)");
-        }
+        void endDrag() override { env_->endDrag(); }
 
         void setTarget(const std::string& targetPath) override {
             if (targetPath.empty()) {
@@ -162,9 +355,10 @@ avm1::Value ScriptEnvironment::run(MovieClipInstance& target, const uint8_t* cod
     private:
         MovieClipInstance* natural_;
         MovieClipInstance* current_;
+        ScriptEnvironment* env_;
     };
 
-    MovieClipHostBindings host(target);
+    MovieClipHostBindings host(target, *this);
 
     avm1::Scope scope = avm1::Scope::topLevel(global_).pushed(target.scriptObject());
     avm1::ExecutionContext ctx(scope, global_);
@@ -197,6 +391,7 @@ std::shared_ptr<MovieClipInstance> MovieClipInstance::createRoot(
     if (!timeline || timeline->frameCount() == 0) return nullptr;
 
     env.scanInitActions(movie);
+    env.bindCharacters(characters);
 
     std::shared_ptr<MovieClipInstance> root(new MovieClipInstance(
         movie, characters, env, nullptr, "", 0, std::move(timeline)));
@@ -207,6 +402,7 @@ std::shared_ptr<MovieClipInstance> MovieClipInstance::createRoot(
     // referencing a clip placed on the SAME frame (`mc._x = 10;`) sees it.
     root->syncChildren();
     root->runCurrentFrameScripts();
+    root->runCurrentFrameSounds();
     return root;
 }
 
@@ -248,6 +444,8 @@ bool MovieClipInstance::handleNativeGet(const std::string& name, avm1::Value& ou
     if (name == "_target") { out = avm1::Value::string(targetPath()); return true; }
     if (name == "_droptarget" || name == "_url") { out = avm1::Value::string(""); return true; }
     if (name == "_width" || name == "_height") { out = avm1::Value::number(0); return true; }
+    if (name == "_xmouse") { out = avm1::Value::number(env_->inputState().mouseX()); return true; }
+    if (name == "_ymouse") { out = avm1::Value::number(env_->inputState().mouseY()); return true; }
     if (name == "_parent") {
         out = parent_ ? avm1::Value::object(parent_->scriptObject_) : avm1::Value::undefined();
         return true;
@@ -281,7 +479,7 @@ bool MovieClipInstance::handleNativeSet(const std::string& name, const avm1::Val
     static const char* kReadOnly[] = {
         "_currentframe", "_totalframes", "_framesloaded", "_name",  "_target",
         "_droptarget",   "_url",         "_width",        "_height", "_parent",
-        "_root",         "_global",
+        "_root",         "_global",      "_xmouse",       "_ymouse",
     };
     for (const char* ro : kReadOnly) {
         if (name == ro) {
@@ -293,17 +491,44 @@ bool MovieClipInstance::handleNativeSet(const std::string& name, const avm1::Val
 }
 
 void MovieClipInstance::initializeNewlyCreated() {
+    // onClipEvent(load) fires when the instance is placed, before its own
+    // DoInitAction/frame-1 scripts run (matches real Flash's documented
+    // clip-event ordering: load, then the character's own init/frame
+    // actions).
+    runClipEvent(swf::ClipEventFlag::kLoad);
     if (const std::vector<uint8_t>* init = env_->takeInitActionsOnce(characterId_)) {
         env_->run(*this, init->data(), init->size());
     }
     // Same place-before-script ordering as createRoot() — see its comment.
     syncChildren();
     runCurrentFrameScripts();
+    runCurrentFrameSounds();
 }
 
 void MovieClipInstance::runCurrentFrameScripts() {
     for (const auto& bytes : timeline_->currentFrameDoActionBodies()) {
         env_->run(*this, bytes.data(), bytes.size());
+    }
+}
+
+void MovieClipInstance::runCurrentFrameSounds() {
+    for (const auto& event : timeline_->currentFrameStartSoundEvents()) {
+        if (event.info.syncStop) {
+            env_->audioBackend().stopSound(event.soundId);
+            continue;
+        }
+        int loopCount = event.info.hasLoops && event.info.loopCount
+                             ? std::max<int>(1, *event.info.loopCount)
+                             : 1;
+        env_->audioBackend().playSound(event.soundId, loopCount);
+    }
+}
+
+void MovieClipInstance::runClipEvent(swf::ClipEventFlag flag) {
+    for (const auto& rec : clipActions_) {
+        if (rec.eventFlags & static_cast<uint32_t>(flag)) {
+            env_->run(*this, rec.actionBytes.data(), rec.actionBytes.size());
+        }
     }
 }
 
@@ -317,6 +542,13 @@ void MovieClipInstance::syncChildren() {
         const DisplayListEntry* entry = dl.find(it->first);
         bool stillValid = entry && entry->characterId == it->second->characterId_;
         if (!stillValid) {
+            // A display-list-driven removal/replacement (not an explicit
+            // AVM1 RemoveSprite — that path is MovieClipInstance::
+            // removeFromParent(), which already does this) — still fires
+            // onClipEvent(unload) and clears a stale drag target for the
+            // same reason removeFromParent() does.
+            it->second->runClipEvent(swf::ClipEventFlag::kUnload);
+            env_->notifyRemoved(it->second.get());
             for (auto nameIt = childNameToDepth_.begin(); nameIt != childNameToDepth_.end();) {
                 if (nameIt->second == it->first) nameIt = childNameToDepth_.erase(nameIt);
                 else ++nameIt;
@@ -356,6 +588,7 @@ void MovieClipInstance::syncChildren() {
         child->characterId_ = entry.characterId;
         child->matrix_ = entry.matrix;
         child->colorTransform_ = entry.colorTransform;
+        child->clipActions_ = entry.clipActions;
         child->childrenSyncDepth_ = childrenSyncDepth_ + 1;
         child->wireScriptObject();
 
@@ -372,7 +605,17 @@ void MovieClipInstance::advanceFrame() {
     }
     // Place-before-script ordering — see createRoot()'s comment.
     syncChildren();
+    runClipEvent(swf::ClipEventFlag::kEnterFrame);
     runCurrentFrameScripts();
+    runCurrentFrameSounds();
+    // StartDrag/EndDrag reposition their target once per FULL-TREE tick —
+    // only the root's own advanceFrame() call actually drives it (every
+    // child's advanceFrame() below is part of the same tick, so calling
+    // updateDrag() there too would just reapply the same mouse position
+    // redundantly, harmlessly but wastefully).
+    if (!parent_) {
+        env_->updateDrag();
+    }
     // Copy the child list before recursing: a script that ran just above
     // (via runCurrentFrameScripts/syncChildren) could have removed a child
     // via RemoveSprite, and a child's own advanceFrame() could in turn
@@ -555,6 +798,8 @@ void MovieClipInstance::removeFromParent() {
         LOG_WARN("MOVIECLIP", "RemoveSprite: the root clip cannot be removed");
         return;
     }
+    runClipEvent(swf::ClipEventFlag::kUnload);
+    env_->notifyRemoved(this);
     parent_->timeline_->mutableDisplayListForScripting().remove(depthInParent_);
     for (auto nameIt = parent_->childNameToDepth_.begin();
          nameIt != parent_->childNameToDepth_.end();) {

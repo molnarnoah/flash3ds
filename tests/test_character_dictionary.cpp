@@ -4,6 +4,7 @@
 #include "TestFramework.h"
 #include "runtime/CharacterDictionary.h"
 #include "swf/DefineShapeTag.h"
+#include "swf/DefineSoundTag.h"
 #include "swf/PlaceObjectTag.h"
 #include "swf/SwfLoader.h"
 #include "swf/TagCode.h"
@@ -13,6 +14,7 @@ using flash3ds::runtime::CharacterDictionary;
 using flash3ds::runtime::SpriteDef;
 using flash3ds::swf::parsePlaceObject;
 using flash3ds::swf::ShapeDef;
+using flash3ds::swf::SoundDef;
 using flash3ds::swf::SwfLoader;
 using flash3ds::swf::SwfReader;
 using flash3ds::swf::TagCode;
@@ -153,4 +155,31 @@ TEST_CASE(CharacterDictionary_SpriteNestedTags_HaveAbsoluteOffsetsIntoMovieData)
     CHECK_EQ(record->depth, static_cast<int32_t>(1));
     CHECK(record->characterId.has_value());
     CHECK_EQ(*record->characterId, static_cast<uint16_t>(10));
+}
+
+// --- Phase 6: DefineSound character resolution --------------------------
+
+TEST_CASE(CharacterDictionary_Build_ResolvesDefineSound) {
+    auto soundBody = fixtures::buildDefineSoundBytes(/*soundId=*/5, /*format=*/1 /*ADPCM*/,
+                                                       /*rate=*/2 /*22050Hz*/, /*is16Bit=*/true,
+                                                       /*stereo=*/false, /*sampleCount=*/22050);
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSound), soundBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto dict = CharacterDictionary::build(*movie);
+
+    const auto* soundCharacter = dict.find(5);
+    CHECK(soundCharacter != nullptr);
+    CHECK(std::holds_alternative<SoundDef>(*soundCharacter));
+    const auto& sound = std::get<SoundDef>(*soundCharacter);
+    CHECK_EQ(sound.soundId, static_cast<uint16_t>(5));
+    CHECK(sound.is16Bit);
+    CHECK(!sound.stereo);
+    CHECK_EQ(sound.sampleCount, 22050u);
 }

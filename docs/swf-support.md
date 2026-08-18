@@ -60,7 +60,7 @@ can be parsed on demand via `Movie::tagBodyReader()`.
 |---|---|
 | `ShowFrame` (1) | ✅ (frame-boundary marker, drives Timeline frame grouping) |
 | `PlaceObject` (4) | ✅ CharacterId/Depth/Matrix/optional ColorTransform |
-| `PlaceObject2` (26) | ✅ full flag set (HasCharacter/HasMatrix/HasColorTransform/HasRatio/HasName/HasClipDepth); `HasClipActions` bytes are present in the tag but intentionally left unparsed (AVM1 event handlers are Phase 4+) |
+| `PlaceObject2` (26) | ✅ full flag set (HasCharacter/HasMatrix/HasColorTransform/HasRatio/HasName/HasClipDepth); `HasClipActions`' `ClipActionRecord`s are now parsed too (Phase 6 — see `docs/avm1-support.md`'s Input section) |
 | `RemoveObject` (5) | ✅ |
 | `RemoveObject2` (28) | ✅ |
 | `FrameLabel` (43) | ✅ name only (used for `Timeline::gotoAndStop("label")`) |
@@ -156,13 +156,27 @@ for the renderer architecture and known limitations.
 | `_root` / `_parent` / named child clip access (`this.childName`) | ✅ Phase 5 — via `avm1::Object`'s native property hooks (`src/avm1/Value.h`) |
 | `_x`/`_y`/`_xscale`/`_yscale`/`_rotation`/`_alpha`/`_visible`/`_currentframe`/`_totalframes`/`_name`/`_target` | ✅ Phase 5, both via `GetProperty`/`SetProperty` and via `.member` access |
 | `_width`/`_height` | ❌ not computed — always returns 0 (would need full recursive subtree bounding-box computation) |
-| `StartDrag`/`EndDrag` | ❌ recognized/forwarded, no-op — needs an input model (Phase 6) |
-| `onClipEvent`/button `on()` handlers | ❌ Phase 6+ — needs `PlaceObject2`'s optional `ClipActionRecord` section parsed (not done) and, for most useful triggers, an input model |
+| `StartDrag`/`EndDrag` | ✅ Phase 6 — real drag tracking with `lockCenter`/constraint-rectangle support, driven by `InputState`'s mouse position once per tick |
+| `_xmouse`/`_ymouse` | ✅ Phase 6 — via `GetProperty`(20/21) and bare `.member` access, both reading `InputState` |
+| `Key.isDown()`/`Key.getCode()`/named constants | ✅ Phase 6 — native `Key` object backed by `InputState` |
+| `Mouse.show()`/`Mouse.hide()` | ✅ Phase 6 — recognized no-ops (no cursor rendering model) |
+| `Sound` object (`attachSound`/`start`/`stop`/`setVolume`/`getVolume`) | ⚠️ Phase 6 — wired to `IAudioBackend`, but `attachSound()` only resolves a numeric character ID, not the real AS2 `String` linkage-name form (needs `ExportAssets`, not implemented) |
+| `onClipEvent`/button `on()` handlers | ⚠️ Phase 6 — `ClipActionRecord` parsing done; only `Load`/`Unload`/`EnterFrame` are dispatched (Mouse*/Press/Release/RollOver*/DragOver*/KeyDown/KeyUp need hit-testing infrastructure that doesn't exist yet; button `on()` needs `DefineButton`/`2`, Phase 8+) |
+
+### Sound (Phase 6 — see `docs/avm1-support.md` for the AVM1-facing side)
+
+| Tag / feature | Status |
+|---|---|
+| `DefineSound` (14) | ✅ structural header fields only (format/rate/16-bit/stereo/sample count) — no codec decode |
+| `StartSound` (15) / `SOUNDINFO` | ✅ fully parsed (in/out points, loop count, sync flags, envelope points) and dispatched per-frame to `IAudioBackend` |
+| `SoundStreamHead`/`2` (18/45) / `SoundStreamBlock` (19) | ❌ not implemented — streaming sound is a later-phase concern if a target title needs it |
+| `DefineButtonSound` (17) | ❌ not implemented — no `DefineButton`/`2` parsing to attach it to yet (Phase 8+) |
+| `IAudioBackend` abstraction (`src/audio/IAudioBackend.h`) | ✅ mirrors `IRenderer`'s design; `NullAudioBackend` (logs, plays nothing) is the only implementation so far — a real desktop/3DS backend is a later addition that needs zero changes to `runtime/`/`avm1/` |
 
 ### Not yet implemented (by design — later phases)
 
 - Bitmap / Text / Button rendering, `LineStyle2`/`DefineShape4`, real gradient rendering, `ColorTransform` application (Phase 8, or earlier if a target title needs it)
-- `_width`/`_height`, `onClipEvent`/button `on()` handlers (see the AVM1/MovieClip API table above)
-- Sound / Input (Phase 6)
+- `_width`/`_height`, most `onClipEvent`/button `on()` triggers (see the AVM1/MovieClip API table above)
+- Audio codec decode, streaming sound, `ExportAssets`-based `Sound.attachSound(name)` (see the Sound table above)
 - ExternalInterface (Phase 7)
 - Nintendo 3DS backend (Phase 10)

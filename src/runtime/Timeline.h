@@ -25,6 +25,7 @@
 
 #include "runtime/DisplayList.h"
 #include "runtime/Movie.h"
+#include "swf/StartSoundTag.h"
 
 namespace flash3ds::runtime {
 
@@ -97,6 +98,14 @@ public:
     // AVM1 dependency and never executes these bytes; this just exposes
     // them for a caller (runtime::MovieClipInstance, Phase 5) that does.
     std::vector<std::vector<uint8_t>> currentFrameDoActionBodies() const;
+
+    // StartSound (tag 15) records belonging to the CURRENT frame, in
+    // tag-stream order — same "read fresh on each call, not cached" design
+    // as currentFrameDoActionBodies() above, and for the same reason
+    // (Timeline has no audio dependency and never plays anything itself;
+    // this just exposes the parsed records for a caller — MovieClipInstance,
+    // Phase 6 — that dispatches them to an IAudioBackend).
+    std::vector<swf::StartSoundRecord> currentFrameStartSoundEvents() const;
 
     // Escape hatch for AVM1's CloneSprite/RemoveSprite actions (Phase 5):
     // lets a script insert or remove a display-list entry OUTSIDE of the

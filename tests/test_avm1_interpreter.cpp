@@ -698,3 +698,64 @@ TEST_CASE(Interpreter_PushTypes_AllRoundTrip) {
     CHECK(std::fabs(ctx.scope.getVariable("d").toNumber() - 3.14159265358979) < 1e-9);
     CHECK_EQ(ctx.scope.getVariable("i").toNumber(), -7.0);
 }
+
+// --- Phase 6: native (C++-backed) functions ---------------------------
+
+TEST_CASE(Interpreter_NativeFunction_CallFunction_InvokesCppCodeWithArgs) {
+    auto ctx = makeContext();
+    int callCount = 0;
+    ctx.globalObject->setOwnProperty(
+        "nativeAdd",
+        Value::object(makeNativeFunction(
+            "nativeAdd", [&callCount](ExecutionContext&, const Value&, const std::vector<Value>& args) {
+                ++callCount;
+                double a = args.size() > 0 ? args[0].toNumber() : 0.0;
+                double b = args.size() > 1 ? args[1].toNumber() : 0.0;
+                return Value::number(a + b);
+            })));
+
+    // ActionCallFunction pops (in order): name, numArgs, then `numArgs`
+    // args — so push order (bottom to top) is: args..., numArgs, name.
+    Asm a;
+    a.pushString("result");
+    a.pushInt(3);
+    a.pushInt(4);
+    a.pushInt(2);  // numArgs
+    a.pushString("nativeAdd");
+    a.op(op(AC::CallFunction));
+    a.op(op(AC::SetVariable));
+
+    run(ctx, a.build());
+
+    CHECK_EQ(callCount, 1);
+    CHECK_EQ(ctx.scope.getVariable("result").toNumber(), 7.0);
+}
+
+TEST_CASE(Interpreter_NativeFunction_CallMethod_SeesThisValue) {
+    auto ctx = makeContext();
+    auto obj = std::make_shared<Object>();
+    obj->setOwnProperty("tag", Value::string("marker"));
+    obj->setOwnProperty(
+        "describe", Value::object(makeNativeFunction(
+                        "describe", [](ExecutionContext&, const Value& thisVal,
+                                        const std::vector<Value>&) {
+                            if (!thisVal.isObject() || !thisVal.asObject()) return Value::string("?");
+                            return thisVal.asObject()->getOwnProperty("tag");
+                        })));
+    ctx.globalObject->setOwnProperty("obj", Value::object(obj));
+
+    // ActionCallMethod pops (in order): methodName, object, numArgs, then
+    // `numArgs` args — so the push order (bottom to top) must be: args...,
+    // numArgs, object, methodName.
+    Asm a;
+    a.pushString("result");
+    a.pushInt(0);  // numArgs
+    a.pushString("obj");
+    a.op(op(AC::GetVariable));
+    a.pushString("describe");
+    a.op(op(AC::CallMethod));
+    a.op(op(AC::SetVariable));
+
+    run(ctx, a.build());
+    CHECK_EQ(ctx.scope.getVariable("result").toString(), "marker");
+}

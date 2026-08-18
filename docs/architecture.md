@@ -21,13 +21,14 @@ SWF Parser         (src/swf/SwfReader.*, TagDispatcher.*, TagCode.*)
    +-------------------+
    |                    |
    v                    v
-Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 done, Phase 5 wired in
-   |                    |
+Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 done, Phase 5 wired in,
+   |                    |                Phase 6 added native Key/Mouse/Sound + real StartDrag/EndDrag
    +---------+----------+
              |
              v
     MovieClipInstance tree            <-- Phase 5 done (per-instance Timeline + scripting Object;
-             |                            wraps Display List, runs DoAction/DoInitAction)
+             |                            wraps Display List, runs DoAction/DoInitAction); Phase 6
+             |                            added ClipActionRecord (onClipEvent Load/Unload/EnterFrame)
     +--------+--------+
     |        |         |
     v        v         v
@@ -36,6 +37,12 @@ Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 d
     v
  Renderer                             <-- Phase 3 done (SoftwareRenderer, desktop/testing);
                                           Phase 5 rewired to walk MovieClipInstance
+
+ Audio                                <-- Phase 6: IAudioBackend seam (src/audio/), StartSound tag +
+                                          AVM1 Sound object dispatch; NullAudioBackend only so far
+
+ Input                                <-- Phase 6: InputState (src/runtime/InputState.*) backs
+                                          Key.isDown()/_xmouse/_ymouse/StartDrag
     |
     v
 Top / Bottom Screen                   <-- not yet implemented (Phase 10)
@@ -48,7 +55,7 @@ The runtime is deliberately modular so the renderer, audio, input, and
 platform layers can be swapped for Nintendo 3DS-specific implementations
 later without touching the SWF/AVM1 core.
 
-## Current status: Phase 5
+## Current status: Phase 6
 
 Phase 1 built **SWF Loader → SWF Parser** (flat tag list). Phase 2 added
 **Timeline → Display List**: `PlaceObject`/`PlaceObject2`/`RemoveObject`/
@@ -82,13 +89,33 @@ tree instead of a raw `Timeline`, so script-driven transform/visibility
 changes actually render. Along the way, Phase 5 also fixed a real Phase 3
 bug: `CharacterDictionary` only scanned the movie's top-level tags, so a
 character defined nested inside a `DefineSprite`'s own tag stream (legal
-per spec) silently never resolved — it's now a recursive scan. Text/bitmap/
-button rendering, `_width`/`_height`, `onClipEvent`/button `on()` handlers,
-and color-transform application at render time still don't exist — see
+per spec) silently never resolved — it's now a recursive scan.
+
+Phase 6 added **Sound / Input** without changing the AVM1 interpreter's
+dispatch loop at all: `Object::FunctionDef` gained an optional `nativeImpl`
+slot (a `std::function`) that `invokeFunction()` calls directly when set,
+letting `ScriptEnvironment` populate `_global` with C++-backed `Key`/
+`Mouse`/`Sound` built-ins through the exact same `NewObject`/`CallMethod`/
+`CallFunction` paths a scripted function already uses. `InputState`
+(`src/runtime/InputState.h/.cpp`) is a small host-settable keyboard/mouse
+bag with no dependency on `avm1`/`runtime` in either direction, backing
+`Key.isDown()`/`_xmouse`/`_ymouse`/real `StartDrag`-`EndDrag` (with
+`lockCenter` and constraint-rectangle support). `DefineSound`/`StartSound`
+tag parsing is structural (header fields only, no codec decode) and
+dispatches to a new `audio::IAudioBackend` seam (`src/audio/`, mirroring
+`IRenderer`'s design — `NullAudioBackend` is the only implementation so
+far). `PlaceObject2`'s `ClipActionRecord` section is now parsed, and
+`onClipEvent`'s `Load`/`Unload`/`EnterFrame` handlers dispatch for real;
+the mouse/keyboard-related clip events and button `on()` handlers are
+still not dispatched (need hit-testing/bounds and `DefineButton`
+respectively — see `docs/avm1-support.md`'s Known Phase 6 limitations).
+
+Text/bitmap/button rendering, `_width`/`_height`, and color-transform
+application at render time still don't exist — see
 [swf-support.md](swf-support.md) for the exact feature matrix,
 [renderer.md](renderer.md) for the renderer's specific limitations, and
 [avm1-support.md](avm1-support.md) for the AVM1 opcode support matrix,
-documented confidence levels, and known Phase 5 limitations.
+documented confidence levels, and known Phase 6 limitations.
 
 ## Module layout
 
@@ -121,6 +148,13 @@ src/
                                              scene-graph integration point;
                                              the only module allowed to
                                              depend on both runtime/ and avm1/
+                                             (Phase 6: + InputState/
+                                             IAudioBackend/drag state,
+                                             native Key/Mouse/Sound globals,
+                                             ClipActionRecord dispatch)
+              InputState.h/.cpp           — Phase 6: host-settable keyboard/
+                                             mouse state; no avm1/runtime
+                                             dependency either way
   renderer/   IRenderer.h                 — abstract pixel-output interface
               SoftwareRenderer.h/.cpp     — RGBA8 framebuffer, scanline fill,
                                              PPM output (desktop/testing)
@@ -129,9 +163,16 @@ src/
                                              IRenderer, recursive sprite
                                              rendering with per-instance
                                              transform/visibility (Phase 5)
+  audio/      IAudioBackend.h             — Phase 6: abstract sound-output
+                                             interface, mirrors IRenderer.h
+              NullAudioBackend.h/.cpp     — Phase 6: logs, plays nothing —
+                                             ScriptEnvironment's default
   avm1/       Value.h/.cpp                — dynamic Value/Object type model,
                                              prototype chain, Array semantics,
-                                             native property hooks (Phase 5)
+                                             native property hooks (Phase 5),
+                                             native (C++-backed) FunctionDef::
+                                             nativeImpl + makeNativeFunction()
+                                             (Phase 6)
               Stack.h                     — AVM1 operand stack
               Scope.h/.cpp                — scope chain (variable lookup)
               GlobalObject.h/.cpp         — global object construction
@@ -139,7 +180,9 @@ src/
               HostBindings.h              — abstract seam to MovieClip/
                                              Timeline actions (implemented by
                                              runtime/MovieClipInstance.cpp's
-                                             MovieClipHostBindings, Phase 5)
+                                             MovieClipHostBindings, Phase 5;
+                                             Phase 6 added StartDrag's
+                                             DragOptions struct)
               ExecutionContext.h/.cpp     — stack+scope+registers+constant
                                              pool+globals for one call frame
               Interpreter.h/.cpp          — tree-walking bytecode dispatch
@@ -166,9 +209,11 @@ docs/                                     — this directory
   side by side (Phase 10).
 - **Platform-independent core.** `flash3ds_core` links only against zlib.
   Renderer/audio/input backends sit behind abstract interfaces (`IRenderer`
-  done in Phase 3; `AudioManager`/`InputManager` still Phase 6), so a
-  `SoftwareRenderer`/`Nintendo3DSRenderer` pair (etc.) can share the same
-  core without the core depending on either.
+  done in Phase 3; `IAudioBackend` done in Phase 6; input is a plain
+  host-settable data struct, `InputState`, rather than an interface — see
+  its own file header for why that's the right shape for input
+  specifically), so a `SoftwareRenderer`/`Nintendo3DSRenderer` pair (etc.)
+  can share the same core without the core depending on either.
 - **Defensive resource limits.** CWS decompression is capped (128 MiB) to
   avoid unbounded memory growth on a corrupt/malicious "zip-bomb" SWF.
 

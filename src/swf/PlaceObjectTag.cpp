@@ -1,10 +1,53 @@
 #include "swf/PlaceObjectTag.h"
 
+#include <utility>
+
 #include "swf/TagCode.h"
 
 namespace flash3ds::swf {
 
-std::optional<PlaceObjectRecord> parsePlaceObject(SwfReader& reader, uint16_t tagCode) {
+namespace {
+
+// Parses the CLIPACTIONS structure that follows a PlaceObject2 body when
+// HasClipActions is set: UI16 Reserved, CLIPEVENTFLAGS AllEventFlags, then
+// CLIPACTIONRECORDs until a zero-flags terminator record. See
+// PlaceObjectTag.h's ClipEventFlag/ClipActionRecord doc comments for the
+// bit-layout confidence note.
+std::vector<ClipActionRecord> parseClipActions(SwfReader& reader, uint8_t swfVersion) {
+    std::vector<ClipActionRecord> result;
+    bool wideFlags = swfVersion >= 6;
+    auto readFlags = [&]() -> uint32_t {
+        return wideFlags ? reader.readU32() : static_cast<uint32_t>(reader.readU16());
+    };
+
+    reader.readU16();  // Reserved — always 0, not otherwise meaningful
+    readFlags();        // AllEventFlags — a summary OR of every record below;
+                         // not needed since we just read every record directly.
+
+    while (!reader.failed()) {
+        uint32_t eventFlags = readFlags();
+        if (eventFlags == 0) break;  // CLIPACTIONEND terminator
+
+        uint32_t actionRecordSize = reader.readU32();
+        if (reader.failed()) break;
+        size_t recordEnd = reader.position() + actionRecordSize;
+
+        ClipActionRecord rec;
+        rec.eventFlags = eventFlags;
+        if (eventFlags & static_cast<uint32_t>(ClipEventFlag::kKeyPress)) {
+            rec.keyCode = reader.readU8();
+        }
+        size_t remaining = recordEnd > reader.position() ? recordEnd - reader.position() : 0;
+        rec.actionBytes = reader.readBytes(remaining);
+        result.push_back(std::move(rec));
+    }
+    return result;
+}
+
+}  // namespace
+
+std::optional<PlaceObjectRecord> parsePlaceObject(SwfReader& reader, uint16_t tagCode,
+                                                    uint8_t swfVersion) {
     PlaceObjectRecord rec;
 
     if (static_cast<TagCode>(tagCode) == TagCode::PlaceObject) {
@@ -64,11 +107,15 @@ std::optional<PlaceObjectRecord> parsePlaceObject(SwfReader& reader, uint16_t ta
         if (hasClipDepth) {
             rec.clipDepth = static_cast<int32_t>(reader.readU16());
         }
-        // ClipActionRecords (hasClipActions) are not parsed in Phase 2 —
-        // that's AVM1 event-handler territory (Phase 4+). We simply don't
-        // read them; the caller only ever looks at the bytes via a reader
-        // scoped to this tag's body, so leaving a tail unread is harmless.
-        (void)hasClipActions;
+        // Phase 6: ClipActionRecords are now parsed (onClipEvent/button
+        // on() handler bytecode) — see parseClipActions() above. The
+        // caller only ever looks at bytes via a reader scoped to this
+        // tag's body, so even if this parse is wrong/incomplete for some
+        // exotic content, leaving a tail unread stays harmless (matches
+        // this parser's existing graceful-degradation philosophy).
+        if (hasClipActions) {
+            rec.clipActions = parseClipActions(reader, swfVersion);
+        }
 
         if (reader.failed()) return std::nullopt;
         return rec;

@@ -91,3 +91,53 @@ TEST_CASE(FrameLabel_ParsesName) {
     CHECK(label.has_value());
     CHECK_EQ(*label, std::string("start"));
 }
+
+// --- Phase 6: PlaceObject2 ClipActionRecord parsing --------------------
+
+TEST_CASE(PlaceObject2_ClipActions_ParsesLoadAndEnterFrameRecords) {
+    using flash3ds::swf::ClipEventFlag;
+    std::vector<fixtures::ClipActionFixture> clipActions;
+    clipActions.push_back({static_cast<uint32_t>(ClipEventFlag::kLoad), std::nullopt,
+                            {0x00} /* single ActionEnd byte */});
+    clipActions.push_back({static_cast<uint32_t>(ClipEventFlag::kEnterFrame), std::nullopt,
+                            {0x07, 0x00} /* ActionStop, ActionEnd */});
+
+    auto bytes = fixtures::buildPlaceObject2WithClipActionsBytes(
+        /*depth=*/3, /*characterId=*/11, std::nullopt, std::nullopt, clipActions);
+    SwfReader r(bytes.data(), bytes.size());
+
+    auto rec = parsePlaceObject(r, static_cast<uint16_t>(TagCode::PlaceObject2), /*swfVersion=*/6);
+    CHECK(rec.has_value());
+    CHECK_EQ(rec->clipActions.size(), static_cast<size_t>(2));
+    CHECK_EQ(rec->clipActions[0].eventFlags, static_cast<uint32_t>(ClipEventFlag::kLoad));
+    CHECK(!rec->clipActions[0].keyCode.has_value());
+    CHECK_EQ(rec->clipActions[0].actionBytes.size(), static_cast<size_t>(1));
+    CHECK_EQ(rec->clipActions[1].eventFlags, static_cast<uint32_t>(ClipEventFlag::kEnterFrame));
+    CHECK_EQ(rec->clipActions[1].actionBytes.size(), static_cast<size_t>(2));
+}
+
+TEST_CASE(PlaceObject2_ClipActions_KeyPressRecordCapturesKeyCode) {
+    using flash3ds::swf::ClipEventFlag;
+    std::vector<fixtures::ClipActionFixture> clipActions;
+    clipActions.push_back({static_cast<uint32_t>(ClipEventFlag::kKeyPress), uint8_t{65} /* 'A' */,
+                            {0x00}});
+
+    auto bytes = fixtures::buildPlaceObject2WithClipActionsBytes(
+        /*depth=*/3, /*characterId=*/11, std::nullopt, std::nullopt, clipActions);
+    SwfReader r(bytes.data(), bytes.size());
+
+    auto rec = parsePlaceObject(r, static_cast<uint16_t>(TagCode::PlaceObject2), /*swfVersion=*/6);
+    CHECK(rec.has_value());
+    CHECK_EQ(rec->clipActions.size(), static_cast<size_t>(1));
+    CHECK(rec->clipActions[0].keyCode.has_value());
+    CHECK_EQ(*rec->clipActions[0].keyCode, static_cast<uint8_t>(65));
+}
+
+TEST_CASE(PlaceObject2_NoClipActions_EmptyClipActionsList) {
+    auto bytes = fixtures::buildPlaceObject2Bytes(/*depth=*/5, /*move=*/false,
+                                                    /*characterId=*/42, std::nullopt);
+    SwfReader r(bytes.data(), bytes.size());
+    auto rec = parsePlaceObject(r, static_cast<uint16_t>(TagCode::PlaceObject2));
+    CHECK(rec.has_value());
+    CHECK(rec->clipActions.empty());
+}

@@ -1,8 +1,11 @@
 # AVM1 (ActionScript 2) Support Status
 
 **Status: Phase 4 VM core implemented; Phase 5 wired it into the scene
-graph.** `DoAction`/`DoInitAction` now actually execute against a real
-`MovieClip` tree, with per-instance playheads and a real `HostBindings`.
+graph; Phase 6 added Sound/Input.** `DoAction`/`DoInitAction` now actually
+execute against a real `MovieClip` tree, with per-instance playheads and a
+real `HostBindings`, native (C++-backed) `Key`/`Mouse`/`Sound` built-ins,
+real `StartDrag`/`EndDrag`, and `onClipEvent`'s `Load`/`Unload`/`EnterFrame`
+handlers.
 
 Phase 4 built a complete, standalone AVM1 bytecode interpreter
 (`src/avm1/`) that runs against a raw bytecode buffer and an
@@ -26,6 +29,16 @@ one place in the codebase allowed to depend on BOTH `runtime/` and
   `nativeEnumerate` hooks (see "Value model" below) — so both `GetProperty`/
   `SetProperty` bytecode AND plain `.member`/bare-variable bytecode resolve
   the same intrinsic properties consistently.
+
+Phase 6 added Sound/Input on top of that wiring without touching the
+interpreter's dispatch loop at all (see "Native (C++-backed) functions"
+below): `ScriptEnvironment` now owns an `InputState` (host-settable
+keyboard/mouse), an `audio::IAudioBackend*` (defaults to a no-op
+`NullAudioBackend`), and populates its `_global` object with `Key`/`Mouse`/
+`Sound` built-ins backed by native C++ closures over those two. `StartDrag`/
+`EndDrag` are real (`ScriptEnvironment::startDrag/endDrag/updateDrag()`),
+and `PlaceObject2`'s `ClipActionRecord` section is now parsed and partially
+dispatched (`Load`/`Unload`/`EnterFrame` — see "Known Phase 6 limitations").
 
 ## Module layout
 
@@ -51,11 +64,25 @@ src/runtime/MovieClipInstance.h/.cpp   (Phase 5 — depends on BOTH avm1/ and
                                          runtime/; the scene-graph/AVM1
                                          integration point)
   ScriptEnvironment    — owns the shared `_global` object + DoInitAction
-                         bookkeeping for one loaded movie's whole clip tree
+                         bookkeeping for one loaded movie's whole clip tree;
+                         Phase 6 also: InputState, IAudioBackend*, drag
+                         state, and populates `_global` with native
+                         Key/Mouse/Sound
   MovieClipInstance    — one placed MovieClip (root or a sprite instance):
-                         owns its own Timeline, a scripting Object, and
+                         owns its own Timeline, a scripting Object, its
+                         parsed ClipActionRecords (Phase 6), and
                          (privately) the real MovieClipHostBindings
                          implementation
+
+src/runtime/InputState.h/.cpp          (Phase 6 — host-settable keyboard/
+                                         mouse state; no avm1/runtime
+                                         dependency in either direction)
+
+src/audio/IAudioBackend.h              (Phase 6 — abstract sound-output
+src/audio/NullAudioBackend.h/.cpp       seam, mirrors renderer/IRenderer.h;
+                                         NullAudioBackend is the only
+                                         implementation so far — logs, plays
+                                         nothing)
 ```
 
 ## Value model
@@ -93,6 +120,20 @@ is the only thing that ever installs these hooks (see
 `MovieClipInstance::wireScriptObject()`), same seam philosophy as
 `HostBindings`. A native property always shadows a same-named plain
 property, matching real AS2 (you cannot override `_x` by assignment).
+
+**Native (C++-backed) functions (Phase 6):** `Object::FunctionDef` gained an
+optional `nativeImpl` (`std::function<Value(ExecutionContext&, const Value&
+thisVal, const std::vector<Value>& args)>`). `invokeFunction()` (a static
+helper in `Interpreter.cpp`) checks it FIRST and, if set, calls it directly
+instead of interpreting `body` (which is empty for a native function) —
+`NewObject`/`CallFunction`/`CallMethod`/`NewMethod` needed ZERO changes to
+support this, since they already resolve to a generic `Function` `Object`
+via `Scope::getVariable`/`Object::getMember` and always call it through
+`invokeFunction()`. `avm1::makeNativeFunction(name, fn)` builds one. This is
+how `Key`/`Mouse`/`Sound` (Phase 6, populated by `ScriptEnvironment`'s
+constructor) exist without teaching `avm1/` anything about MovieClips,
+input, or audio — same seam philosophy as `HostBindings`/native property
+hooks.
 
 ## Opcode status
 
@@ -249,10 +290,65 @@ and are no-ops, exactly like Phase 4 — `avm1/` itself hasn't changed.
   `MovieClipInstance::resolvePath()`) and change which clip subsequent
   target-less actions in the SAME script run affect.
 
-`StartDrag`/`EndDrag` are still recognized/forwarded but remain no-ops (no
-input/pointer model yet — Phase 6). See `src/avm1/HostBindings.h` for the
-exact interface and `docs/swf-support.md`/`docs/renderer.md` for what
-`MovieClipInstance` does and doesn't model.
+`StartDrag`/`EndDrag` are real as of Phase 6: `HostBindings::startDrag()`
+now takes a `DragOptions{lockCenter, hasConstraint, left, top, right,
+bottom}` struct (previously the interpreter popped and discarded
+`LockCenter`/`Constrain`/`L,T,R,B` — see the pop-order confidence note in
+`Interpreter.cpp`, same "documented-but-unverified" caveat as `Extends`'
+operand order). `MovieClipHostBindings::startDrag/endDrag` forward to
+`ScriptEnvironment::startDrag/endDrag`, which tracks at most one dragged
+clip; `ScriptEnvironment::updateDrag()` repositions it from `InputState`'s
+current mouse position once per full-tree tick (called only from the ROOT
+`MovieClipInstance::advanceFrame()`, so children ticking underneath don't
+reapply it redundantly). Non-`lockCenter` drags preserve the grab offset
+captured at `startDrag()` time; a constraint rectangle clamps the result.
+
+### Input (`Key`/`Mouse`/`_xmouse`/`_ymouse`) — Phase 6
+
+`ScriptEnvironment`'s constructor populates `_global` with:
+
+- **`Key`** — a plain object (used AS2-statically, never `new Key()`):
+  native `isDown(code)`/`getCode()` backed by `runtime::InputState`, plus
+  the standard named constants (`Key.LEFT`, `Key.SPACE`, `Key.ENTER`, ...)
+  as plain numeric properties. `Key.getAscii()` is NOT modeled (see "Known
+  Phase 6 limitations").
+- **`Mouse`** — `show()`/`hide()` are recognized no-ops (this runtime has no
+  cursor rendering model — headless-first, 3DS-bound).
+- `_xmouse`/`_ymouse` — wired both via `GetProperty`(20/21) and as bare
+  `MovieClipInstance` native-get properties, both reading `InputState::
+  mouseX()/mouseY()`.
+
+`InputState` (`src/runtime/InputState.h/.cpp`) is a small host-settable bag
+with no `avm1`/`runtime` dependency in either direction — a test harness or
+the eventual desktop/3DS input backend calls `ScriptEnvironment::
+inputState().setKeyDown(...)`/`setMousePosition(...)` before ticking
+`advanceFrame()`.
+
+### Sound (`Sound` object, `StartSound`/`DefineSound` tags) — Phase 6
+
+`DefineSound` (14) and `StartSound` (15, via its `SOUNDINFO` record) are
+parsed structurally (`src/swf/DefineSoundTag.h`/`src/swf/StartSoundTag.h`)
+— header fields only (format/rate/size/type/sample count, loop count,
+sync flags, in/out points, envelope points), no audio codec decode.
+`CharacterDictionary` resolves `DefineSound` into its `CharacterDef`
+variant exactly like `ShapeDef`/`SpriteDef`. `Timeline::
+currentFrameStartSoundEvents()` exposes the current frame's `StartSound`
+records; `MovieClipInstance::runCurrentFrameSounds()` dispatches each one
+to `ScriptEnvironment::audioBackend()` (an `audio::IAudioBackend&` — see
+`docs/architecture.md`'s module layout) — `playSound(soundId, loopCount)`
+normally, or `stopSound(soundId)` if the record's `SyncStop` flag is set.
+
+AVM1's `Sound` object (`new Sound()`, prototype methods `attachSound`/
+`start`/`stop`/`setVolume`/`getVolume`) is wired the same way, with one
+resolution gap: `attachSound(id)` only resolves when `id` is a **Number**
+(treated directly as a `DefineSound` character ID — validated against
+`CharacterDictionary` if bound, warned-and-still-stored if not found). Real
+AS2's actual form, `attachSound(linkageName: String)`, can't be resolved
+without `ExportAssets` tag parsing, which doesn't exist yet — calling it
+with a String logs a warning and does nothing. `setVolume`/`getVolume`
+round-trip through an own `_volume` property on the `Sound` instance (no
+backend effect, since `NullAudioBackend` doesn't do anything with it
+either way).
 
 `WaitForFrame`/`WaitForFrame2`: simplified to "always considered loaded"
 (never takes the skip branch) — correct once a real `Timeline` always has
@@ -267,8 +363,12 @@ against yet).
 `GetURL`/`GetURL2`: parsed and logged; browser navigation is out of scope
 entirely for a Nintendo 3DS runtime (no browser to navigate).
 
-`ToggleQuality`/`StopSounds`: recognized no-ops (rendering-quality control
-isn't modeled; audio isn't wired until Phase 6).
+`ToggleQuality`: recognized no-op (rendering-quality control isn't
+modeled). `StopSounds` (the legacy global "stop all sounds" action,
+distinct from `Sound.stop()`) is still recognized/logged only — it isn't
+wired to `IAudioBackend::stopAllSounds()` (low-priority: `Sound.stop()`
+already covers the common per-instance case, and this action is rare in
+practice).
 
 ## Push's DOUBLE encoding — confidence note
 
@@ -324,7 +424,33 @@ real SWF output.
   test: a character defined NESTED inside a `DefineSprite`'s own tag stream
   (legal per spec — the character dictionary is global across the file, not
   scoped per-sprite) now resolves correctly; this was a real bug caught
-  while building the Phase 5 manual/CLI smoke test, not a hypothetical.
+  while building the Phase 5 manual/CLI smoke test, not a hypothetical. Its
+  Phase 6 addition: `DefineSound` resolves into the `CharacterDef` variant.
+- `tests/test_avm1_interpreter.cpp` (Phase 6 additions) — a native function
+  invoked via `CallFunction` (with args) and via `CallMethod` (verifying
+  `thisVal` is the calling object), both using `avm1::makeNativeFunction()`
+  directly against a raw `ExecutionContext` (no `MovieClipInstance`
+  involved) to prove the interpreter-level mechanism in isolation.
+- `tests/test_place_object_tag.cpp` (Phase 6 additions) — `ClipActionRecord`
+  parsing: `Load`+`EnterFrame` records, a `KeyPress` record's `KeyCode`
+  byte, and confirming `clipActions` stays empty when `HasClipActions` is
+  unset.
+- `tests/test_define_sound_tag.cpp` (Phase 6, new) — `DefineSound` header
+  field parsing (format/rate/16-bit/stereo/sample count/data offset+length)
+  and `SOUNDINFO` parsing (all optional fields, `SyncStop`).
+- `tests/test_input_state.cpp` (Phase 6, new) — `InputState` in isolation:
+  independent per-key down/up tracking, `lastKeyCode()`, mouse position and
+  button state round-tripping.
+- `tests/test_movieclip_instance.cpp` (Phase 6 additions) — `Key.isDown()`
+  reading `InputState`; `_xmouse`/`_ymouse` via both `GetProperty` and bare
+  `.member` access; `StartDrag` (`lockCenter` following the mouse each
+  tick, stopping after `EndDrag`) and its constraint-rectangle clamping;
+  `onClipEvent(load)` firing once at creation, `onClipEvent(enterFrame)`
+  firing once per tick, `onClipEvent(unload)` firing on `removeFromParent()`
+  (all via a `PlaceObject2` fixture built with `ClipActionRecord`s);
+  `StartSound` tag dispatch (including `SyncStop`) and the AVM1 `Sound`
+  object's numeric `attachSound`/`start` path, both verified against a spy
+  `IAudioBackend` implementation local to the test file.
 
 ## Known Phase 5 limitations
 
@@ -340,11 +466,6 @@ real SWF output.
   for the full reasoning.
 - **`_width`/`_height` are not computed** — always return 0 (would need a
   full recursive subtree bounding-box computation).
-- **`onClipEvent`/button `on()` handlers are not implemented** — most
-  useful triggers (`mouseDown`, `press`, ...) need an input model that
-  doesn't exist yet (Phase 6), and `onClipEvent` itself requires parsing
-  `PlaceObject2`'s optional `ClipActionRecord` section, which isn't parsed
-  yet either. `DoAction`/`DoInitAction` frame scripts ARE fully wired.
 - **A clip removed via `RemoveSprite`/`removeMovieClip` mid-script leaves
   any `MovieClipHostBindings::current_`/raw pointers referencing it
   dangling** if the SAME script keeps running target-less actions
@@ -356,11 +477,38 @@ real SWF output.
   actually produced by `_xscale`/`_yscale`/`_rotation` themselves, an
   approximation for a hand-authored skewed matrix (rare in practice).
 
-## Next (Phase 6)
+## Known Phase 6 limitations
 
-Sound / Input, per the project's phase-by-phase plan (see
-`docs/architecture.md`). Relevant carry-overs into that phase from the
-AVM1/MovieClip side: `StartDrag`/`EndDrag` need a real pointer/input model
-before they can do anything; `onClipEvent`/button `on()` handlers need both
-an input model AND `PlaceObject2`'s `ClipActionRecord` parsing (currently
-skipped entirely).
+- **`onClipEvent` only dispatches `Load`/`Unload`/`EnterFrame`.**
+  `ClipActionRecord`s are fully parsed (`swf::ClipEventFlag`, all 19
+  documented bits — see the confidence note on `swf/PlaceObjectTag.h`) and
+  stored per-`MovieClipInstance` (`clipActions_`), but `Mouse*`/`Press`/
+  `Release`/`ReleaseOutside`/`RollOver`/`RollOut`/`DragOver`/`DragOut`/
+  `KeyDown`/`KeyUp`/`Data`/`Initialize`/`Construct` are never fired — the
+  mouse-related ones need hit-testing/bounds (which needs `_width`/
+  `_height`, above), and none of button `on()`'s handlers exist since
+  `DefineButton`/`DefineButton2` aren't parsed (Phase 8+).
+- **`ClipActionRecord`'s bit layout is spec-derived, not independently
+  verified** — same confidence caveat as `Extends`'/`StartDrag`'s operand
+  order elsewhere in this doc: getting a rare handler's bit wrong would
+  misfire/miss just that one handler type, never corrupt anything else
+  (each flag is checked independently).
+- **`Sound.attachSound()` only resolves a numeric ID** — the real AS2
+  `String` linkage-name form needs `ExportAssets` tag parsing, which
+  doesn't exist yet (see the Sound section above).
+- **No audio codec decode** — `DefineSound`'s compressed sample data is
+  never touched; `IAudioBackend` implementations decide entirely for
+  themselves whether/how to play a given `soundId`. `NullAudioBackend` (the
+  only implementation so far) always no-ops.
+- **`Key.getAscii()` is not modeled** — only `isDown()`/`getCode()`/the
+  named constants exist.
+- **CloneSprite-created clips never carry `ClipActionRecord`s** —
+  `MovieClipInstance::cloneSprite()` builds a synthetic `PlaceObjectRecord`
+  with no `clipActions`, unlike real Flash (which clones the source
+  character's handlers too). Low-priority: script-driven clones with
+  `onClipEvent` handlers are an uncommon pattern.
+
+## Next (Phase 7)
+
+ExternalInterface, per the project's phase-by-phase plan (see
+`docs/architecture.md`).

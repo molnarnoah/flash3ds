@@ -19,6 +19,8 @@ add_executable(flash3ds_tests
     test_avm1_scope.cpp
     test_avm1_interpreter.cpp
     test_movieclip_instance.cpp
+    test_define_sound_tag.cpp
+    test_input_state.cpp
 )
 
 target_include_directories(flash3ds_tests PRIVATE

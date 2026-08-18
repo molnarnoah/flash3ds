@@ -81,7 +81,7 @@ void Timeline::applyFrame(uint32_t frameIndex) {
 
             if (code == swf::TagCode::PlaceObject || code == swf::TagCode::PlaceObject2) {
                 swf::SwfReader reader = movie_->tagBodyReader(tag);
-                auto record = swf::parsePlaceObject(reader, tag.code);
+                auto record = swf::parsePlaceObject(reader, tag.code, movie_->version);
                 if (record) {
                     displayList_.applyPlaceObject(*record);
                 } else {
@@ -164,6 +164,24 @@ std::vector<std::vector<uint8_t>> Timeline::currentFrameDoActionBodies() const {
         if (static_cast<swf::TagCode>(tag.code) == swf::TagCode::DoAction) {
             swf::SwfReader reader = movie_->tagBodyReader(tag);
             result.push_back(reader.readBytes(reader.size()));
+        }
+    }
+    return result;
+}
+
+std::vector<swf::StartSoundRecord> Timeline::currentFrameStartSoundEvents() const {
+    std::vector<swf::StartSoundRecord> result;
+    if (currentFrame_ == 0 || currentFrame_ > frameCount()) return result;
+    for (size_t tagIndex : frames_[currentFrame_ - 1].tagIndices) {
+        const swf::TagRecord& tag = tags_[tagIndex];
+        if (static_cast<swf::TagCode>(tag.code) == swf::TagCode::StartSound) {
+            swf::SwfReader reader = movie_->tagBodyReader(tag);
+            auto rec = swf::parseStartSound(reader);
+            if (rec) {
+                result.push_back(*rec);
+            } else {
+                LOG_WARN("TIMELINE", "Failed to parse StartSound at offset=%zu", tag.bodyOffset);
+            }
         }
     }
     return result;

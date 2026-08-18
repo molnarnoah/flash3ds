@@ -34,6 +34,7 @@ struct DisplayListEntry {
     std::optional<uint16_t> ratio;
     std::optional<std::string> name;
     std::optional<int32_t> clipDepth;
+    std::vector<swf::ClipActionRecord> clipActions;  // Phase 6 — onClipEvent handlers, if any
 };
 
 class DisplayList {

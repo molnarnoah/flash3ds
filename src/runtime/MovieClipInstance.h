@@ -29,18 +29,31 @@
 //     stomped back to the placement transform every single tick).
 //   - _width/_height are not computed (would require full recursive
 //     subtree bounding-box computation); they always return 0.
-//   - onClipEvent/button `on()` handlers are not implemented — most useful
-//     triggers (mouseDown, press, ...) need an input model that doesn't
-//     exist yet (Phase 6), and `onClipEvent` itself requires parsing
-//     PlaceObject2's optional ClipActionRecord section, which isn't parsed
-//     yet either. DoAction/DoInitAction frame scripts ARE fully wired.
-//   - StartDrag/EndDrag are recognized and forwarded but are no-ops (no
-//     input/pointer model yet — Phase 6).
+//   - onClipEvent handlers (Phase 6): Load/Unload/EnterFrame are wired
+//     (see runClipEvent()/initializeNewlyCreated()/removeFromParent()/
+//     advanceFrame()). Mouse*/Press/Release/RollOver*/DragOver*/KeyDown/
+//     KeyUp are parsed (ClipActionRecord — swf/PlaceObjectTag.h) but NOT
+//     dispatched yet: those need hit-testing/bounds computation (which
+//     needs _width/_height, above) that doesn't exist yet. Button `on()`
+//     handlers need DefineButton/2 parsing, which doesn't exist either
+//     (Phase 8+). DoAction/DoInitAction frame scripts ARE fully wired.
+//   - StartDrag/EndDrag (Phase 6) are real: ScriptEnvironment tracks at
+//     most one dragged clip and repositions it from InputState's mouse
+//     position once per tick (see ScriptEnvironment::updateDrag()).
+//     Constraint-rectangle clamping is applied; LockCenter is honored.
 //   - _xscale/_yscale/_rotation use a standard decomposition of the
 //     placement MATRIX that assumes no independent (non-rotational) skew —
 //     exactly correct for any transform actually produced by _xscale/
 //     _yscale/_rotation themselves, an approximation for a hand-authored
 //     skewed matrix (rare in practice).
+//   - Sound (Phase 6): DefineSound/StartSound tag parsing is structural
+//     only (header fields, no codec decode — see swf/DefineSoundTag.h).
+//     StartSound TAG dispatch (numeric SoundId, straight from the tag
+//     stream) is fully wired to IAudioBackend. AVM1's `Sound` object only
+//     resolves attachSound() when given a NUMBER (treated directly as a
+//     character ID); the real AS2 form — a String linkage identifier —
+//     can't be resolved without ExportAssets parsing, which doesn't exist
+//     yet, and logs a warning instead of silently doing nothing.
 
 #pragma once
 
@@ -52,9 +65,13 @@
 #include <unordered_set>
 #include <vector>
 
+#include "audio/IAudioBackend.h"
+#include "audio/NullAudioBackend.h"
+#include "avm1/HostBindings.h"
 #include "avm1/Value.h"
 #include "runtime/CharacterDictionary.h"
 #include "runtime/DisplayList.h"
+#include "runtime/InputState.h"
 #include "runtime/Movie.h"
 #include "runtime/Timeline.h"
 #include "swf/SwfRecords.h"
@@ -94,10 +111,69 @@ public:
     // character, or it already ran).
     const std::vector<uint8_t>* takeInitActionsOnce(uint16_t characterId);
 
+    // --- Phase 6: input / audio / drag ------------------------------------
+
+    // Host-settable keyboard/mouse state — set this from whatever's driving
+    // the runtime (a desktop test harness, later a 3DS input poll) BEFORE
+    // calling MovieClipInstance::advanceFrame() for a tick, so Key.isDown()/
+    // _xmouse/_ymouse/StartDrag all see up-to-date values during that tick.
+    InputState& inputState() { return inputState_; }
+    const InputState& inputState() const { return inputState_; }
+
+    // Defaults to a NullAudioBackend (logs, plays nothing) so every
+    // existing/new test and the CLI work with zero setup — see
+    // audio/NullAudioBackend.h. Call setAudioBackend() to point sound
+    // dispatch (StartSound tags, AVM1 Sound.start()/stop()) at a real
+    // implementation instead. Non-owning: the caller must keep `backend`
+    // alive for as long as this ScriptEnvironment (and anything built from
+    // it) is used — same "outlives everything" convention as `movie`/
+    // `characters` elsewhere in this file.
+    void setAudioBackend(audio::IAudioBackend* backend) {
+        audioBackend_ = backend ? backend : &nullAudioBackend_;
+    }
+    audio::IAudioBackend& audioBackend() { return *audioBackend_; }
+
+    // Lets AVM1's native Sound object resolve a numeric attachSound() ID
+    // against real DefineSound character data (see Phase 6 limitations
+    // note on MovieClipInstance's class header: attachSound(name:String) —
+    // real AS2's actual linkage-name form — is NOT resolvable without
+    // ExportAssets parsing, which doesn't exist yet). Called once by
+    // MovieClipInstance::createRoot(); non-owning, same lifetime
+    // assumption as everything else here.
+    void bindCharacters(const CharacterDictionary& characters) { characters_ = &characters; }
+    const CharacterDictionary* characters() const { return characters_; }
+
+    // ActionStartDrag/ActionEndDrag's real (Phase 6) implementation: tracks
+    // at most one dragged clip at a time (matches real Flash — starting a
+    // new drag implicitly ends any previous one), and updateDrag() (called
+    // once per full-tree tick, from the ROOT MovieClipInstance's
+    // advanceFrame() only — see its implementation) repositions the
+    // dragged clip from the current mouse position.
+    void startDrag(MovieClipInstance* clip, const avm1::HostBindings::DragOptions& options);
+    void endDrag();
+    void updateDrag();
+
+    // Called by MovieClipInstance::removeFromParent() so a removed clip
+    // never lingers as a dangling drag target — a no-op unless `clip` is
+    // the currently-dragged one.
+    void notifyRemoved(MovieClipInstance* clip) {
+        if (dragTarget_ == clip) dragTarget_ = nullptr;
+    }
+
 private:
     std::shared_ptr<avm1::Object> global_;
     std::unordered_map<uint16_t, std::vector<uint8_t>> initActionsByCharacter_;
     std::unordered_set<uint16_t> initializedCharacters_;
+
+    InputState inputState_;
+    audio::NullAudioBackend nullAudioBackend_;
+    audio::IAudioBackend* audioBackend_ = &nullAudioBackend_;
+    const CharacterDictionary* characters_ = nullptr;
+
+    MovieClipInstance* dragTarget_ = nullptr;
+    avm1::HostBindings::DragOptions dragOptions_;
+    double dragGrabOffsetX_ = 0.0;  // clip._x minus mouseX at drag start (non-lockCenter mode)
+    double dragGrabOffsetY_ = 0.0;
 };
 
 class MovieClipInstance : public std::enable_shared_from_this<MovieClipInstance> {
@@ -188,7 +264,13 @@ private:
 
     void initializeNewlyCreated();
     void runCurrentFrameScripts();
+    void runCurrentFrameSounds();
     void syncChildren();
+
+    // Runs every ClipActionRecord in clipActions_ whose eventFlags include
+    // `flag` (Phase 6 — see the class header's onClipEvent limitations
+    // note for which flags are actually fired anywhere in this file).
+    void runClipEvent(swf::ClipEventFlag flag);
 
     const Movie* movie_;
     const CharacterDictionary* characters_;
@@ -201,6 +283,7 @@ private:
     std::unique_ptr<Timeline> timeline_;
     std::map<int32_t, std::shared_ptr<MovieClipInstance>> children_;
     std::unordered_map<std::string, int32_t> childNameToDepth_;
+    std::vector<swf::ClipActionRecord> clipActions_;  // Phase 6, copied from the placing DisplayListEntry
 
     swf::Matrix matrix_ = swf::Matrix::identity();
     swf::ColorTransform colorTransform_ = swf::ColorTransform::identity();

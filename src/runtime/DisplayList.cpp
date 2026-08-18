@@ -25,6 +25,7 @@ void DisplayList::applyPlaceObject(const swf::PlaceObjectRecord& record) {
         if (record.ratio) entry.ratio = record.ratio;
         if (record.name) entry.name = record.name;
         if (record.clipDepth) entry.clipDepth = record.clipDepth;
+        if (!record.clipActions.empty()) entry.clipActions = record.clipActions;
         return;
     }
 
@@ -50,6 +51,7 @@ void DisplayList::applyPlaceObject(const swf::PlaceObjectRecord& record) {
     entry.ratio = record.ratio;
     entry.name = record.name;
     entry.clipDepth = record.clipDepth;
+    entry.clipActions = record.clipActions;
 
     entries_[record.depth] = std::move(entry);
 }

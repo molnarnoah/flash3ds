@@ -1,10 +1,12 @@
 // CharacterDictionary.h
 //
 // Resolves SWF character IDs (as referenced by DisplayListEntry::characterId)
-// to their definitions. Phase 3 supports two character kinds: shapes
+// to their definitions. Phase 3 added two character kinds: shapes
 // (DefineShape/2/3) and sprites (DefineSprite — a nested, independently
-// timed mini-movie). Bitmap/Text/Button characters are recognized by tag
-// but not parsed yet (Phase 8+; see docs/swf-support.md).
+// timed mini-movie). Phase 6 added a third: sounds (DefineSound — see
+// swf/DefineSoundTag.h; structural header fields only, no codec decode).
+// Bitmap/Text/Button characters are recognized by tag but not parsed yet
+// (Phase 8+; see docs/swf-support.md).
 //
 // DefineSprite's body is CharacterId, FrameCount, then a *nested* tag
 // stream (its own ShowFrame/PlaceObject*/RemoveObject*/DoAction/... control
@@ -25,6 +27,7 @@
 
 #include "runtime/Movie.h"
 #include "swf/DefineShapeTag.h"
+#include "swf/DefineSoundTag.h"
 #include "swf/TagDispatcher.h"
 
 namespace flash3ds::runtime {
@@ -35,7 +38,7 @@ struct SpriteDef {
     std::vector<swf::TagRecord> tags;  // nested control tags; bodyOffset is absolute into Movie::data
 };
 
-using CharacterDef = std::variant<swf::ShapeDef, SpriteDef>;
+using CharacterDef = std::variant<swf::ShapeDef, SpriteDef, swf::SoundDef>;
 
 class CharacterDictionary {
 public:

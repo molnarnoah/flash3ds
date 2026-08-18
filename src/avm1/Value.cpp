@@ -221,4 +221,12 @@ void Object::setMember(const std::string& name, Value value) {
     properties_[name] = std::move(value);
 }
 
+std::shared_ptr<Object> makeNativeFunction(std::string name, Object::FunctionDef::NativeFn fn) {
+    auto obj = std::make_shared<Object>(Object::Kind::kFunction);
+    obj->function = std::make_unique<Object::FunctionDef>();
+    obj->function->name = std::move(name);
+    obj->function->nativeImpl = std::move(fn);
+    return obj;
+}
+
 }  // namespace flash3ds::avm1

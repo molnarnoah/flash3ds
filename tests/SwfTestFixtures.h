@@ -119,4 +119,44 @@ std::vector<uint8_t> buildDefineShapeBytes(int shapeVersion, uint16_t characterI
 std::vector<uint8_t> buildDefineSpriteBytes(uint16_t characterId, uint16_t frameCount,
                                              const std::vector<FixtureTag>& nestedTags);
 
+// ---------------------------------------------------------------------
+// Phase 6: sound tag / ClipActionRecord builders, independently encoded
+// from the same public SWF spec the production parsers (DefineSoundTag/
+// StartSoundTag/PlaceObjectTag) implement.
+// ---------------------------------------------------------------------
+
+// DefineSound (14) tag body: SoundId, the bit-packed format/rate/size/type
+// byte, SampleCount, then `sampleDataBytes` verbatim (opaque — never
+// decoded by production code either, see swf/DefineSoundTag.h).
+std::vector<uint8_t> buildDefineSoundBytes(uint16_t soundId, uint8_t format, uint8_t rate,
+                                            bool is16Bit, bool stereo, uint32_t sampleCount,
+                                            const std::vector<uint8_t>& sampleDataBytes = {});
+
+// A standalone SOUNDINFO record.
+std::vector<uint8_t> buildSoundInfoBytes(bool syncStop, bool syncNoMultiple,
+                                          std::optional<uint32_t> inPointSamples,
+                                          std::optional<uint32_t> outPointSamples,
+                                          std::optional<uint16_t> loopCount);
+
+// StartSound (15) tag body: SoundId then a SOUNDINFO record.
+std::vector<uint8_t> buildStartSoundBytes(uint16_t soundId,
+                                           const std::vector<uint8_t>& soundInfoBytes);
+
+// One CLIPACTIONRECORD for buildPlaceObject2WithClipActionsBytes below.
+struct ClipActionFixture {
+    uint32_t eventFlags = 0;
+    std::optional<uint8_t> keyCode;
+    std::vector<uint8_t> actionBytes;
+};
+
+// PlaceObject2 (tag 26) body with HasClipActions set, using the SWF6+
+// (32-bit CLIPEVENTFLAGS) CLIPACTIONS encoding — matches parsePlaceObject's
+// default `swfVersion` of 6. Pass std::nullopt for characterId/matrixBytes/
+// name to omit those optional fields, same convention as
+// buildPlaceObject2Bytes.
+std::vector<uint8_t> buildPlaceObject2WithClipActionsBytes(
+    uint16_t depth, std::optional<uint16_t> characterId,
+    std::optional<std::vector<uint8_t>> matrixBytes, std::optional<std::string> name,
+    const std::vector<ClipActionFixture>& clipActions);
+
 }  // namespace flash3ds::test::fixtures

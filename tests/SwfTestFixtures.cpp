@@ -376,4 +376,88 @@ std::vector<uint8_t> buildDefineSpriteBytes(uint16_t characterId, uint16_t frame
     return out;
 }
 
+// --- Phase 6: sound / clip-action builders ------------------------------
+
+std::vector<uint8_t> buildDefineSoundBytes(uint16_t soundId, uint8_t format, uint8_t rate,
+                                            bool is16Bit, bool stereo, uint32_t sampleCount,
+                                            const std::vector<uint8_t>& sampleDataBytes) {
+    std::vector<uint8_t> out;
+    writeU16(out, soundId);
+    uint8_t flags = static_cast<uint8_t>(((format & 0x0F) << 4) | ((rate & 0x03) << 2) |
+                                          (is16Bit ? 0x02 : 0) | (stereo ? 0x01 : 0));
+    writeU8(out, flags);
+    writeU32(out, sampleCount);
+    out.insert(out.end(), sampleDataBytes.begin(), sampleDataBytes.end());
+    return out;
+}
+
+std::vector<uint8_t> buildSoundInfoBytes(bool syncStop, bool syncNoMultiple,
+                                          std::optional<uint32_t> inPointSamples,
+                                          std::optional<uint32_t> outPointSamples,
+                                          std::optional<uint16_t> loopCount) {
+    bool hasInPoint = inPointSamples.has_value();
+    bool hasOutPoint = outPointSamples.has_value();
+    bool hasLoops = loopCount.has_value();
+
+    std::vector<uint8_t> out;
+    uint8_t flags = static_cast<uint8_t>((syncStop ? 0x20 : 0) | (syncNoMultiple ? 0x10 : 0) |
+                                          (hasLoops ? 0x04 : 0) | (hasOutPoint ? 0x02 : 0) |
+                                          (hasInPoint ? 0x01 : 0));
+    writeU8(out, flags);
+    if (hasInPoint) writeU32(out, *inPointSamples);
+    if (hasOutPoint) writeU32(out, *outPointSamples);
+    if (hasLoops) writeU16(out, *loopCount);
+    // HasEnvelope always 0 here — no fixture currently needs envelope
+    // points; add a parameter if a future test does.
+    return out;
+}
+
+std::vector<uint8_t> buildStartSoundBytes(uint16_t soundId,
+                                           const std::vector<uint8_t>& soundInfoBytes) {
+    std::vector<uint8_t> out;
+    writeU16(out, soundId);
+    out.insert(out.end(), soundInfoBytes.begin(), soundInfoBytes.end());
+    return out;
+}
+
+std::vector<uint8_t> buildPlaceObject2WithClipActionsBytes(
+    uint16_t depth, std::optional<uint16_t> characterId,
+    std::optional<std::vector<uint8_t>> matrixBytes, std::optional<std::string> name,
+    const std::vector<ClipActionFixture>& clipActions) {
+    bool hasCharacter = characterId.has_value();
+    bool hasMatrix = matrixBytes.has_value();
+    bool hasName = name.has_value();
+
+    // Move=0: this helper is for a brand-new placement (the common case for
+    // a fixture exercising onClipEvent(load) etc.), not an in-place update.
+    uint8_t flags = static_cast<uint8_t>(0x80 /* HasClipActions */ | (hasName ? 0x20 : 0) |
+                                          (hasMatrix ? 0x04 : 0) | (hasCharacter ? 0x02 : 0));
+
+    std::vector<uint8_t> out;
+    writeU8(out, flags);
+    writeU16(out, depth);
+    if (hasCharacter) writeU16(out, *characterId);
+    if (hasMatrix) out.insert(out.end(), matrixBytes->begin(), matrixBytes->end());
+    if (hasName) {
+        out.insert(out.end(), name->begin(), name->end());
+        out.push_back(0);
+    }
+
+    // CLIPACTIONS, SWF6+ (32-bit CLIPEVENTFLAGS) encoding.
+    writeU16(out, 0);  // Reserved
+    uint32_t allFlags = 0;
+    for (const auto& rec : clipActions) allFlags |= rec.eventFlags;
+    writeU32(out, allFlags);
+    for (const auto& rec : clipActions) {
+        writeU32(out, rec.eventFlags);
+        uint32_t recordSize = static_cast<uint32_t>((rec.keyCode ? 1 : 0) + rec.actionBytes.size());
+        writeU32(out, recordSize);
+        if (rec.keyCode) writeU8(out, *rec.keyCode);
+        out.insert(out.end(), rec.actionBytes.begin(), rec.actionBytes.end());
+    }
+    writeU32(out, 0);  // terminator record (zero EventFlags)
+
+    return out;
+}
+
 }  // namespace flash3ds::test::fixtures

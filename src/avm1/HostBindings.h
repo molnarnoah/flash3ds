@@ -64,7 +64,24 @@ public:
         (void)depth;
     }
     virtual void removeSprite(const std::string& target) { (void)target; }
-    virtual void startDrag(const std::string& target) { (void)target; }
+
+    // ActionStartDrag's full operand set (Phase 6 — previously only the
+    // Target string was forwarded, LockCenter/Constrain/L/T/R/B were popped
+    // and discarded). `left/top/right/bottom` are in pixels (the same unit
+    // _x/_y use), not twips — matching how AS2 authors think about
+    // MovieClip.startDrag()'s constraint rectangle.
+    struct DragOptions {
+        bool lockCenter = false;
+        bool hasConstraint = false;
+        double left = 0.0;
+        double top = 0.0;
+        double right = 0.0;
+        double bottom = 0.0;
+    };
+    virtual void startDrag(const std::string& target, const DragOptions& options) {
+        (void)target;
+        (void)options;
+    }
     virtual void endDrag() {}
 
     // Target path (SetTarget/SetTarget2 actions — changes which MovieClip

@@ -184,6 +184,20 @@ Value invokeFunction(ExecutionContext& callerCtx, const std::shared_ptr<Object>&
     ++*depthCounter;
 
     const Object::FunctionDef& def = *funcObj->function;
+
+    // Phase 6: native (C++-backed) functions short-circuit here — no
+    // scope/activation/register setup, just a direct call. This is the
+    // ONLY change needed anywhere in the interpreter to support native AS2
+    // built-ins (Key/Mouse/Sound, ...); NewObject/CallFunction/CallMethod
+    // above are untouched because they already resolve to a generic
+    // Function object via Scope::getVariable/Object::getMember and always
+    // route through invokeFunction() to actually call it.
+    if (def.nativeImpl) {
+        Value result = def.nativeImpl(callerCtx, thisVal, args);
+        --*depthCounter;
+        return result;
+    }
+
     auto closureScopePtr = std::static_pointer_cast<Scope>(def.capturedScope);
     Scope baseScope = closureScopePtr ? *closureScopePtr : callerCtx.scope;
 
@@ -430,15 +444,22 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
             }
             case ActionCode::StartDrag: {
                 Value targetVal = ctx.stack.pop();
-                ctx.stack.pop();  // LockCenter
-                bool constrain = ctx.stack.pop().toBoolean();
-                if (constrain) {
-                    ctx.stack.pop();
-                    ctx.stack.pop();
-                    ctx.stack.pop();
-                    ctx.stack.pop();  // L, T, R, B
+                HostBindings::DragOptions options;
+                options.lockCenter = ctx.stack.pop().toBoolean();  // LockCenter
+                options.hasConstraint = ctx.stack.pop().toBoolean();  // Constrain
+                if (options.hasConstraint) {
+                    // Pop order preserved from the pre-Phase-6 code (which
+                    // discarded these into the void): L, T, R, B. NOT
+                    // independently verified against real Flash-compiled
+                    // output — see docs/avm1-support.md. A wrong L/T/R/B
+                    // order only affects StartDrag's constraint rectangle,
+                    // never crashes or corrupts other state.
+                    options.left = ctx.stack.pop().toNumber();
+                    options.top = ctx.stack.pop().toNumber();
+                    options.right = ctx.stack.pop().toNumber();
+                    options.bottom = ctx.stack.pop().toNumber();
                 }
-                if (ctx.host) ctx.host->startDrag(targetVal.toString());
+                if (ctx.host) ctx.host->startDrag(targetVal.toString(), options);
                 else LOG_DEBUG("AVM1", "StartDrag — no HostBindings wired");
                 break;
             }

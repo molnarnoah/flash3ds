@@ -78,6 +78,14 @@ void scanTagsForCharacters(const Movie& movie, const std::vector<swf::TagRecord>
             SpriteDef spriteDef = parseSpriteNestedTags(movie, tag, characterId, frameCount);
             scanTagsForCharacters(movie, spriteDef.tags, characters);
             characters[characterId] = std::move(spriteDef);
+        } else if (code == swf::TagCode::DefineSound) {
+            swf::SwfReader reader = movie.tagBodyReader(tag);
+            auto soundDef = swf::parseDefineSound(reader, tag.bodyOffset);
+            if (soundDef) {
+                characters[soundDef->soundId] = *soundDef;
+            } else {
+                LOG_WARN("CHARDICT", "Failed to parse DefineSound at offset=%zu", tag.bodyOffset);
+            }
         }
         // Other character-defining tags (DefineBits*, DefineText*,
         // DefineFont*, DefineButton*) are recognized by TagCode elsewhere

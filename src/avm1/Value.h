@@ -30,6 +30,7 @@
 namespace flash3ds::avm1 {
 
 class Object;
+class ExecutionContext;
 
 enum class ValueType {
     kUndefined,
@@ -232,6 +233,20 @@ public:
         // (ExecutionContext.h depends on Value.h, not the other way
         // around). Stored type-erased and cast back in Interpreter.cpp.
         std::shared_ptr<void> capturedScope;
+
+        // Phase 6: optional native (C++-backed) implementation. When set,
+        // `body` is empty and invokeFunction() (Interpreter.cpp) calls this
+        // directly instead of interpreting bytecode. This is how host code
+        // adds AS2 built-ins (Key, Mouse, Sound, ...) WITHOUT teaching
+        // avm1/'s interpreter dispatch (NewObject/CallMethod/CallFunction)
+        // anything about them: those already resolve constructors/methods
+        // generically via Scope::getVariable/Object::getMember, so a native
+        // FunctionDef just plugs into the exact same call path a scripted
+        // one does. See makeNativeFunction() below for the usual way to
+        // build one.
+        using NativeFn =
+            std::function<Value(ExecutionContext&, const Value& thisVal, const std::vector<Value>& args)>;
+        NativeFn nativeImpl;
     };
     std::unique_ptr<FunctionDef> function;  // set iff kind_ == kFunction
 
@@ -242,5 +257,13 @@ private:
     // Guards against a malformed/cyclic prototype chain during getMember().
     static constexpr int kMaxPrototypeChainDepth = 64;
 };
+
+// Builds a Kind::kFunction Object whose call implementation is native C++
+// code rather than interpreted bytecode (Phase 6) — see FunctionDef::
+// nativeImpl's doc comment above. `name` is cosmetic (shows up in
+// Function::toString()-style contexts); pass "" for an anonymous native
+// method (the common case: an object's own property doesn't need its
+// function's internal name to match).
+std::shared_ptr<Object> makeNativeFunction(std::string name, Object::FunctionDef::NativeFn fn);
 
 }  // namespace flash3ds::avm1

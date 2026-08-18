@@ -26,15 +26,19 @@ add_library(flash3ds_core
     src/swf/PlaceObjectTag.cpp
     src/swf/ShapeRecords.cpp
     src/swf/DefineShapeTag.cpp
+    src/swf/DefineSoundTag.cpp
+    src/swf/StartSoundTag.cpp
     src/swf/SwfLoader.cpp
     src/runtime/Movie.cpp
     src/runtime/DisplayList.cpp
     src/runtime/Timeline.cpp
     src/runtime/CharacterDictionary.cpp
+    src/runtime/InputState.cpp
     src/runtime/MovieClipInstance.cpp
     src/renderer/ShapeTessellator.cpp
     src/renderer/SoftwareRenderer.cpp
     src/renderer/SceneRenderer.cpp
+    src/audio/NullAudioBackend.cpp
     src/avm1/Value.cpp
     src/avm1/ActionCode.cpp
     src/avm1/Scope.cpp
