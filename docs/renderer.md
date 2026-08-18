@@ -14,22 +14,54 @@ the logical (non-rotated) stage dimensions and forwards
 (reusing the exact same, already-tested CPU rasterizer the desktop build
 uses), then in `endFrame()` reads every pixel back out via
 `SoftwareRenderer::pixelAt()` and blits it into the real 3DS LCD
-framebuffer obtained via libctru's `gfxGetFramebuffer(GFX_TOP, ...)`. Only
-the top screen is targeted (`GFX_TOP`); bottom-screen use (e.g. a touch
-UI/debug overlay) is an explicit, unimplemented follow-up.
+framebuffer obtained via libctru's `gfxGetFramebuffer(...)`.
 
 The rotated/column-major framebuffer indexing formula
 (`(x * fbWidth + (fbWidth - 1 - y)) * bytesPerPixel`) was cross-checked
-against libctru's own `source/gfx.c` in this session (not assumed from
-general homebrew folklore) — see `Nintendo3DSRenderer.h`'s header comment
-for the exact reasoning and the `GSP_SCREEN_WIDTH`/`GSP_SCREEN_HEIGHT_TOP`
-constants involved. What this session could NOT do is confirm the formula
-against actual displayed pixels on real hardware or an emulator (none was
-available) — the renderer links and produces a structurally valid `.3dsx`
-(see [3ds-toolchain.md](3ds-toolchain.md)), but "the demo square visibly
-appears in the right place on a real screen" is unverified. Default pixel
-format assumed is `GSP_BGR8_OES` (3 bytes/pixel, B-G-R order), per
-`gfxInitDefault()`'s own documented default.
+against libctru's own `source/gfx.c` (not assumed from general homebrew
+folklore) — see `Nintendo3DSRenderer.h`'s header comment for the exact
+reasoning and the `GSP_SCREEN_WIDTH`/`GSP_SCREEN_HEIGHT_TOP`/
+`GSP_SCREEN_HEIGHT_BOTTOM` constants involved (the formula is identical for
+both screens — only the logical width/height and `gfxScreen_t` argument
+differ). Default pixel format assumed is `GSP_BGR8_OES` (3 bytes/pixel,
+B-G-R order), per `gfxInitDefault()`'s own documented default. The user
+confirmed the Phase 10 `.3dsx` boots and runs in Azahar; pixel-exact
+visual confirmation of the framebuffer orientation specifically (right
+side up, no off-by-one row/column) has not been separately reported.
+
+**Dual-screen support and the `presentFrame()` fix.** The test app
+(`nintendo3ds_main.cpp`) now drives both screens every frame — one
+`Nintendo3DSRenderer` instance per screen (`GFX_TOP` at 400x240, `GFX_BOTTOM`
+at 320x240). This surfaced a real finding while integrating it: libctru's
+`gfxFlushBuffers()`/`gfxSwapBuffers()` are **global, both-screens**
+operations (confirmed directly in `source/gfx.c` — `gfxSwapBuffers()`
+unconditionally calls `gfxScreenSwapBuffers()` for both `GFX_TOP` and
+`GFX_BOTTOM`), not per-screen. `endFrame()` originally called both once per
+invocation, which was correct by coincidence when only one screen (one
+`endFrame()` call per real frame) existed, but double-swaps each screen's
+buffer index once a second screen is added — showing stale/flickering
+content instead of the frame just drawn. Fixed by moving both calls out of
+`endFrame()` (which now only blits pixels) into a new static
+`Nintendo3DSRenderer::presentFrame()`, called exactly once per real frame
+after every active screen's `endFrame()` has run — see that method's own
+comment for the full mechanism.
+
+**Bottom-screen button/circle-pad/touch test picture.** `nintendo3ds_main.cpp`'s
+`drawButtonTestScreen()` draws a live diagnostic picture on the bottom
+screen every frame using `IRenderer::fillPolygon`/`strokePolyline` directly
+(no SWF content involved) — a labeled-by-position (no text rendering
+available; see below) box per D-Pad direction/face button/shoulder
+button/Start/Select that fills bright green while held, a bounding box +
+offset dot for the Circle Pad (raw `hidCircleRead()`), and a dot at the
+current touch position (raw `hidTouchRead()`, drawn whenever it reads
+non-`(0,0)` — see `docs/input.md`'s `KEY_TOUCH` reliability note for why
+that heuristic is used instead of the `KEY_TOUCH` bit). This exercises
+`Nintendo3DSInput`'s underlying `hid` calls plus `IRenderer`'s primitives on
+a second, differently-sized screen — a genuinely more thorough test than
+the top-screen SWF demo alone, though still not a substitute for actually
+watching it run (no font/text rendering is wired into this diagnostic
+picture, so button identity is conveyed only by screen position, not a
+label).
 
 **Phase 9 validation.** Rendered a real `hobo.swf`'s title screen
 end-to-end for the first time and found the output recognizably correct —

@@ -25,14 +25,24 @@
 // indexing formula `(x * fbWidth + (fbWidth - 1 - y)) * bytesPerPixel`. The
 // default pixel format (gfxInitDefault()) is GSP_BGR8_OES (3 bytes per
 // pixel, B-G-R byte order). This implementation follows that
-// source-cross-checked convention. It has NOT been verified against real
-// hardware or an emulator
-// in this session — the from-source toolchain bootstrap (docs/3ds-
-// toolchain.md) produces a linkable, packageable .3dsx, but no 3DS
-// hardware/emulator was available to actually run it and visually confirm
-// the framebuffer orientation/byte order. Treat this as "implemented per
-// public documentation" rather than "hardware-confirmed" until someone runs
-// it on a Citra/real-3DS and checks.
+// source-cross-checked convention. The user confirmed the Phase 10 .3dsx
+// boots and runs in Azahar (a Citra-based 3DS emulator) — the toolchain/
+// link/package pipeline is hardware-emulator-confirmed working end to end.
+// Pixel-exact confirmation of THIS formula specifically (right orientation,
+// right colors, no off-by-one row/column) for the newer dual-screen/
+// button/sound test content below has not been separately reported yet —
+// treat that specific claim as "implemented per public documentation,
+// booted successfully" rather than "visually pixel-confirmed" until
+// explicitly checked against what's on screen.
+//
+// Multi-screen note: as of the dual-screen test app, more than one
+// Nintendo3DSRenderer instance may be active per real frame (one per
+// screen). gfxFlushBuffers()/gfxSwapBuffers() are GLOBAL, both-screens
+// operations in libctru (confirmed via source/gfx.c) — endFrame() only
+// blits pixels into the framebuffer; the caller MUST call the static
+// presentFrame() exactly once per real frame, after every active
+// renderer's endFrame() has run, or screens will flicker/show stale
+// content (see presentFrame()'s own comment for the mechanism).
 
 #pragma once
 
@@ -50,16 +60,17 @@
 namespace flash3ds::renderer {
 
 // Which physical LCD screen to render to. The 3DS has a wide top screen and
-// a narrower touch-enabled bottom screen; flash3ds-runtime's Phase 10 scope
-// targets the top screen only (bottom-screen use — e.g. a virtual keyboard
-// or debug overlay — is an explicit follow-up, not implemented here).
+// a narrower touch-enabled bottom screen; instantiate one Nintendo3DSRenderer
+// per screen (GFX_TOP / GFX_BOTTOM) to drive both at once — see
+// nintendo3ds_main.cpp for the dual-screen test app doing exactly this.
 class Nintendo3DSRenderer : public IRenderer {
 public:
     // widthPixels/heightPixels describe the LOGICAL (SWF stage) render
     // surface, in the usual non-rotated width-by-height sense — e.g. 400x240
-    // for the 3DS top screen's native resolution. The SoftwareRenderer used
-    // internally is sized to exactly this; endFrame() handles the
-    // rotated-framebuffer transposition when blitting to the real screen.
+    // for the 3DS top screen's native resolution, or 320x240 for the bottom
+    // screen. The SoftwareRenderer used internally is sized to exactly
+    // this; endFrame() handles the rotated-framebuffer transposition when
+    // blitting to the real screen.
     Nintendo3DSRenderer(int widthPixels, int heightPixels, gfxScreen_t screen = GFX_TOP);
 
     void beginFrame(swf::RgbaColor backgroundColor) override;
@@ -71,6 +82,13 @@ public:
 
     int width() const { return software_.width(); }
     int height() const { return software_.height(); }
+
+    // Presents everything blitted into every active screen's framebuffer
+    // since the last call. Call exactly ONCE per real frame, after every
+    // active Nintendo3DSRenderer's endFrame() has already run this frame
+    // — see the file header's "Multi-screen note" for why this is static/
+    // global rather than a per-instance operation.
+    static void presentFrame();
 
 private:
     SoftwareRenderer software_;

@@ -40,6 +40,26 @@ channel/hardware plumbing now genuinely exists and is real-toolchain-
 verified to compile and link against libctru, ready for whichever future
 phase adds codec decode.
 
+**`playTestTone()` — diagnostic-only, proves the pipeline is actually
+audible.** Since `playSound()` has nothing real to play, a separate method,
+`Nintendo3DSAudioBackend::playTestTone(frequencyHz, durationSeconds)`,
+synthesizes a mono PCM16 sine wave (with a short linear fade-out to avoid
+an end-of-buffer click) directly into libctru's "linear" heap
+(`linearAlloc` — required for DSP-DMA-accessible memory; a plain
+heap-allocated buffer is not guaranteed reachable the same way), flushes
+the data cache (`DSP_FlushDataCache` — the ARM11 side writes through cache,
+but the DSP reads physical memory directly via DMA), and queues it via
+`ndspChnWaveBufAdd` on a dedicated channel reserved separately from the
+per-`soundId` channel pool (so it never collides with real SWF-sound
+bookkeeping). This is **not** part of the SWF audio pipeline — it's not
+reachable from `playSound()`/`StartSound`/AS2 `Sound.*` — it exists purely
+so the dual-screen test app (`nintendo3ds_main.cpp`) can trigger a real,
+audible tone on A/B/X/Y press and prove the ndsp integration actually
+works end to end, independent of the still-missing codec-decode step. When
+that future phase does add codec decode, the real fix goes into
+`playSound()` itself; `playTestTone()` stays a diagnostic, not something
+SWF content ever triggers.
+
 See `docs/shift-dx-behavior.md`'s "Open items" section for what Shift-DX RE
 could and couldn't confirm about its own sound-tag handling, and
 `docs/avm1-support.md`'s carry-over list for `Sound.attachSound(name:

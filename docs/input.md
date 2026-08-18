@@ -40,8 +40,37 @@ never designed for a handheld's button layout):
   confirm/cancel convention), **X/Y -> printable ASCII `'X'`/`'Y'`** (no
   natural AS2 equivalent exists for these buttons at all).
 
-None of this has been exercised against real 3DS button input in this
-session (no hardware/emulator available) — it's real code that compiles
-and links against libctru (see [3ds-toolchain.md](3ds-toolchain.md)), with
-a documented, reasonable-effort mapping a target title can override if its
-own control needs differ.
+The user confirmed the Phase 10 `.3dsx` boots and runs in Azahar (a
+Citra-based 3DS emulator); this specific mapping's real-input behavior has
+not been separately reported.
+
+## Bottom-screen button/circle-pad/touch test picture
+
+`nintendo3ds_main.cpp`'s `drawButtonTestScreen()` (see `docs/renderer.md`'s
+matching section for the drawing-side details) draws a live diagnostic
+picture on the bottom screen every frame: a box per D-Pad direction (the
+raw `KEY_DUP`/`KEY_DDOWN`/`KEY_DLEFT`/`KEY_DRIGHT` bits, deliberately NOT
+the merged `KEY_LEFT`/etc. aliases `InputState`'s own mapping uses, so the
+Circle Pad and D-Pad can be told apart on screen), face button, shoulder
+button, and Start/Select, each filling bright green while held; a bounding
+box + offset dot for the Circle Pad driven by raw `hidCircleRead()`
+(independent of `InputState`'s D-Pad-merged `Key.LEFT`/etc — this is a
+genuinely separate, more precise analog readout); and a dot at the current
+touch position via raw `hidTouchRead()`.
+
+This is a real, exercised hardware-input smoke test — distinct from (and
+running alongside) `Nintendo3DSInput`'s own `InputState`-feeding poll, which
+continues to drive the embedded SWF's AS2 `Key`/`Mouse` side exactly as
+before. Both read from the same underlying `hidScanInput()` snapshot each
+frame without interfering with each other.
+
+**Quit control changed:** START alone used to quit the app; it now takes
+**START+SELECT held together** (the standard homebrew convention) instead,
+specifically so START's own indicator box is visible/testable on the
+button-test screen rather than exiting the instant it's pressed.
+
+None of this has been exercised against real 3DS button/touch/circle-pad
+input on a physical console in this session (no hardware was available,
+only Azahar) — it's real code that compiles and links against libctru (see
+[3ds-toolchain.md](3ds-toolchain.md)), with a documented, reasonable-effort
+mapping a target title can override if its own control needs differ.

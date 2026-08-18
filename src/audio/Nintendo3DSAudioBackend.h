@@ -19,6 +19,13 @@
 // straight into ndspChnWaveBufAdd() here without touching runtime/ or
 // avm1/.
 //
+// playTestTone() (below) is a separate, DIAGNOSTIC-ONLY addition — a
+// synthesized sine wave, not an SWF sound — added so the dual-screen test
+// app (nintendo3ds_main.cpp) can prove the ndsp audio pipeline is actually
+// audible on real hardware/an emulator, independent of the still-missing
+// codec-decode step. It is not part of the SWF audio pipeline and is not
+// reached from playSound()/StartSound/AS2 Sound.*.
+//
 // This file is only compiled for the 3DS target (guarded by __3DS__).
 
 #pragma once
@@ -55,8 +62,22 @@ public:
     void stopSound(uint16_t soundId) override;
     void stopAllSounds() override;
 
+    // DIAGNOSTIC ONLY (see header note above) — synthesizes `durationSeconds`
+    // of a mono PCM16 sine wave at `frequencyHz` and queues it on a
+    // dedicated ndsp channel (kTestToneChannel, reserved separately from
+    // the SWF soundId channel pool so it never collides with real playback
+    // bookkeeping). Replaces any previously-playing test tone. No-op if
+    // ndspInit() failed.
+    void playTestTone(double frequencyHz, double durationSeconds);
+
 private:
-    static constexpr int kNumChannels = 24;  // ndsp's fixed channel count (0..23)
+    // ndsp has 24 hardware channels (0..23). One (kTestToneChannel) is
+    // reserved exclusively for playTestTone() and never handed out by
+    // channelFor(); real SWF-sound bookkeeping only ever uses the other
+    // kNumSoundChannels.
+    static constexpr int kNumChannels = 24;
+    static constexpr int kTestToneChannel = kNumChannels - 1;
+    static constexpr int kNumSoundChannels = kNumChannels - 1;
 
     // Assigns (or reuses, if soundId is already bound to a channel) an
     // ndsp channel for soundId. Returns -1 if all channels are in use.
@@ -65,6 +86,15 @@ private:
     bool initialized_ = false;
     std::unordered_map<uint16_t, int> soundIdToChannel_;
     std::array<bool, kNumChannels> channelInUse_{};
+
+    // Test-tone playback state. The sample buffer must live in libctru's
+    // "linear" heap (DSP-DMA-accessible memory — a plain std::vector's
+    // regular-heap allocation is not guaranteed reachable the same way) and
+    // must stay alive for as long as ndsp might still be reading it, hence
+    // owned here (freed on the next playTestTone() call or in the
+    // destructor) rather than as a local in playTestTone() itself.
+    int16_t* testToneBuffer_ = nullptr;
+    ndspWaveBuf testToneWaveBuf_{};
 };
 
 }  // namespace flash3ds::audio

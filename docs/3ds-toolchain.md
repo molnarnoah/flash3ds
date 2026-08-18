@@ -397,6 +397,50 @@ re-verified passing immediately afterward, in the same session, to
 confirm Phase 10 didn't regress anything above it (per this project's
 own phase-completion rule).
 
+## Dual-screen / button / sound test app (post-initial-delivery)
+
+After the first Phase 10 `.3dsx` was delivered, the user confirmed it
+**boots and runs in Azahar** (a Citra-based 3DS emulator) — the first
+actual hardware-emulator confirmation this project has had. Building on
+that, the test app was extended to exercise more of the platform surface
+at once:
+
+- **Both screens, every frame.** `nintendo3ds_main.cpp` now instantiates
+  one `Nintendo3DSRenderer` per screen (`GFX_TOP` 400x240, `GFX_BOTTOM`
+  320x240) instead of one. This surfaced a real bug in the original
+  single-screen design: `gfxFlushBuffers()`/`gfxSwapBuffers()` are
+  **global, both-screens** libctru calls (confirmed in `source/gfx.c` —
+  `gfxSwapBuffers()` unconditionally swaps both `GFX_TOP` and
+  `GFX_BOTTOM`), not per-screen. The original `endFrame()` called both
+  once per invocation, which happened to be correct with exactly one
+  screen active (one `endFrame()` == one real frame), but calling it twice
+  per real frame once a second screen exists double-swaps each screen's
+  buffer index, showing stale content instead of what was just drawn.
+  Fixed by moving both calls out of `endFrame()` (now blit-only) into a
+  new static `Nintendo3DSRenderer::presentFrame()`, called exactly once
+  per real frame after every active screen has been blitted. See
+  `docs/renderer.md`'s matching section for more detail.
+- **Bottom-screen input test picture.** `drawButtonTestScreen()` draws a
+  live diagnostic picture using `IRenderer::fillPolygon`/`strokePolyline`
+  directly (no SWF content) — a box per D-Pad direction/face button/
+  shoulder button/Start/Select that lights up while held, a Circle Pad
+  bounding box + offset dot (raw `hidCircleRead()`), and a touch-position
+  dot (raw `hidTouchRead()`). See `docs/input.md`'s matching section.
+- **Audible sound test.** `Nintendo3DSAudioBackend::playTestTone()` (new,
+  diagnostic-only — see `docs/audio.md`) synthesizes a short sine-wave tone
+  into libctru's linear heap and queues it via `ndspChnWaveBufAdd` on a
+  dedicated channel; A/B/X/Y each trigger a distinctly-pitched tone on
+  press. This is a real, audible exercise of the `ndsp` pipeline,
+  independent of the still-missing SWF audio codec decode.
+- **Quit control changed** from START alone to START+SELECT held together,
+  so START's own indicator is visible/testable on the button screen
+  instead of exiting the instant it's pressed.
+
+This dual-screen/input/sound test build was compiled and linked cleanly on
+the first attempt after these changes (zero new build/link issues beyond
+what Steps 1-10 above already resolved) — `arm-none-eabi-nm -u` again
+reports only the same 8 weak, harmless undefined symbols.
+
 ## What's verified vs. not
 
 **Verified in this session, with evidence:**
@@ -406,34 +450,44 @@ own phase-completion rule).
   copy of `flash3ds_core` plus the new Phase 10 backend code, producing a
   structurally valid `.3dsx` (correct magic bytes, correct ELF header,
   zero undefined *non-weak* symbols).
+- The `.3dsx` **boots and runs in Azahar** — confirmed directly by the
+  user in this session, for the initial (top-screen-only) build. The
+  dual-screen/button/sound follow-up build was not separately re-confirmed
+  running by the user as of this writing.
 - The embedded demo SWF's *content* is correct — independently confirmed
   via this project's own desktop rendering pipeline (which is the same
   `SceneRenderer`/`ShapeTessellator`/`Timeline` code the 3DS build also
   cross-compiles unchanged, so this is meaningful evidence, not a
   tautology).
 - The desktop build and all 187 tests are unaffected (rebuilt and
-  re-tested in this session after every Phase 10 code change).
+  re-tested in this session after every Phase 10 code change, including
+  the dual-screen/button/sound follow-up).
 - The rotated-framebuffer blit formula matches libctru's own source
-  (`source/gfx.c`), not just general folklore.
+  (`source/gfx.c`), not just general folklore, and is identical for both
+  screens (only logical width/height and the `gfxScreen_t` argument
+  differ).
+- The `gfxFlushBuffers()`/`gfxSwapBuffers()`-are-global finding above is
+  confirmed directly from libctru's own source, not inferred from
+  symptoms.
 
-**NOT verified in this session (no 3DS hardware or emulator was available
-in this environment):**
+**NOT verified in this session:**
 
-- Whether the `.3dsx` actually **boots** on real hardware or Citra/other
-  emulator.
-- Whether the rendered output actually **appears correctly** on a real
+- Whether the rendered output actually **appears pixel-correct** on
   screen (right orientation, right colors, no off-by-one row/column in the
-  framebuffer blit).
-- Whether `Nintendo3DSInput`'s touch/button mapping behaves as intended
-  against real HID input (in particular the `KEY_TOUCH` "not actually
-  provided by HID" open question noted in `docs/input.md`).
-- Whether `Nintendo3DSAudioBackend`'s `ndsp` channel plumbing behaves
-  correctly at runtime (it has nothing to actually play yet regardless —
-  see `docs/audio.md`).
-- Real-world timing/performance (frame pacing, `gspWaitForVBlank`
-  behavior, ndsp audio latency) — none of this can be assessed without
-  running on the target.
+  framebuffer blit, bottom screen specifically) — booting successfully in
+  Azahar is strong evidence the pipeline works end to end, but is not the
+  same as a reported visual check of what's actually on screen.
+- Whether `Nintendo3DSInput`'s touch/button mapping and the new
+  `drawButtonTestScreen()` picture behave as intended against real input
+  (in particular the `KEY_TOUCH`/touch-position-`(0,0)` heuristics noted in
+  `docs/input.md`) — not separately reported.
+- Whether `Nintendo3DSAudioBackend::playTestTone()` is actually audible —
+  the code compiles/links and follows the documented ndsp API sequence
+  correctly, but no audio output has been separately confirmed by ear.
+- Real-world timing/performance (frame pacing with two screens now being
+  drawn, `gspWaitForVBlank` behavior, ndsp audio latency) — none of this
+  can be assessed without running on the target and reporting back.
 
-A future session with access to real hardware or an emulator (e.g. Citra)
-should treat "does it boot and render the demo square correctly" as the
-very next thing to check before building further on top of this.
+Running the latest `.3dsx` and reporting back on all four of these
+(top-screen render, bottom-screen button/circle-pad/touch picture, sound
+on A/B/X/Y, and START+SELECT quit) is the natural next step.

@@ -71,6 +71,28 @@ void Nintendo3DSRenderer::endFrame() {
         }
     }
 
+    // NOTE: deliberately does NOT call gfxFlushBuffers()/gfxSwapBuffers()
+    // here — see presentFrame()'s comment below for why (both are GLOBAL,
+    // both-screens operations in libctru, not per-screen; calling them once
+    // per Nintendo3DSRenderer::endFrame() was correct back when only the
+    // top screen was in use, one screen == one real frame, but breaks once
+    // a second screen is active — confirmed by reading libctru's own
+    // source/gfx.c while adding bottom-screen support).
+}
+
+void Nintendo3DSRenderer::presentFrame() {
+    // gfxFlushBuffers() flushes the CPU data cache for BOTH screens'
+    // current framebuffers (harmless/idempotent for a screen that wasn't
+    // actually touched this frame — it just flushes unchanged cache
+    // lines), and gfxSwapBuffers() calls gfxScreenSwapBuffers() for BOTH
+    // GFX_TOP and GFX_BOTTOM unconditionally (verified directly in
+    // libctru's source/gfx.c, not assumed). Calling either once per screen
+    // per frame — i.e. once per Nintendo3DSRenderer::endFrame() — would
+    // double-flip each screen's current/back buffer index every real
+    // frame once two screens are both drawn per frame, which shows the
+    // PREVIOUS frame's content (or worse, an interleaved mix) instead of
+    // the one just rendered. Call this exactly once per real frame, after
+    // every active Nintendo3DSRenderer's endFrame() has already run.
     gfxFlushBuffers();
     gfxSwapBuffers();
 }
