@@ -147,6 +147,25 @@ created — see `tests/swf/README.md`).
 - Full writeup: `docs/known-limitations.md`'s "Sub-fix 3/N", full audit +
   model + semantics in `docs/input.md`'s "Input-transitions phase" section.
 
+## Interactivity phase (2026-08-19) — bounding-box hit-testing
+
+- **237/237 tests passing** (up from 217) — 12 new tests in
+  `tests/test_movieclip_instance.cpp` (point inside/outside a shape,
+  inclusive-boundary corners, overlapping-shapes topmost-wins,
+  invisible-clip exclusion, degenerate-`_xscale` exclusion, script-
+  mutated-transform awareness, two-level nested-`MovieClip` recursion, and
+  5 `hitTest()`-specific cases) + 8 new tests in `tests/test_swf_records.cpp`
+  (`invertMatrix()`/`transformPoint()`/`rectContainsPoint()` in isolation).
+  All passing, zero regressions elsewhere.
+- `hobo.swf` (real stage: 600x450) frames 1-5 rendered before/after this
+  phase, byte-for-byte identical (`md5sum` match) — expected, since this
+  phase adds pure query APIs and touches zero rendering code.
+- 3DS build (`build_3ds`) rebuilds clean; new `.3dsx` (392032 bytes, up
+  from 390048 — confirms the new code linked in) not yet tested on
+  Azahar/hardware.
+- Full writeup: `docs/known-limitations.md`'s "Sub-fix 4/N", implementation
+  summary + AS2-vs-internal-primitive distinction in `docs/hit-testing.md`.
+
 ## Not yet tested (carried over from `docs/compatibility.md`, still open)
 
 - `hobo 2 - prison brawl.swf` through `hobo 7 - heaven.swf` (sequels).

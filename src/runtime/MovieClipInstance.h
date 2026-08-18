@@ -66,6 +66,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -328,6 +329,69 @@ public:
     double stageMouseX() const;
     double stageMouseY() const;
 
+    // --- hit-testing (interactivity phase, 2026-08-19; design:
+    // docs/hit-testing.md) --------------------------------------------------
+
+    // This instance's own matrix_ composed with every ancestor's, exactly
+    // matching how SceneRenderer computes a child's world transform while
+    // rendering (concatMatrix(parentWorld, child.localMatrix()) at every
+    // level, with the ROOT's OWN matrix_ as the base — see
+    // SceneRenderer::render()'s `renderClip(root, root.localMatrix(), ...)`
+    // entry call). Kept in lockstep with rendering deliberately, so
+    // hit-testing always agrees with what's actually drawn (the same
+    // guarantee `_width`/`_height`/`computeBoundsInOwnSpace()` already
+    // provide one level up, via matrix_ alone).
+    swf::Matrix worldMatrix() const;
+
+    // The result of a successful hitTestPoint() query — deliberately
+    // returns MORE than just "yes/no" (matching docs/hit-testing.md's
+    // planned algorithm, which returns "(clip, characterId, depth)"): a
+    // future button/mouse-event-dispatch phase needs to know not just
+    // THAT something was hit but WHICH clip directly owns the hit content
+    // (the clip whose onClipEvent/on() handlers should fire) and which
+    // placement (characterId/depth) was actually hit within it.
+    struct HitTestResult {
+        MovieClipInstance* clip = nullptr;
+        uint16_t characterId = 0;
+        int32_t depth = 0;
+    };
+
+    // Bounding-box hit test: given a point in STAGE-PIXEL space (the same
+    // coordinate space _xmouse/_ymouse/_x/_y already use — see
+    // stageMouseX()/stageMouseY()), walks this clip's own display-list
+    // subtree in TOPMOST-FIRST (reverse depth) order and returns the
+    // frontmost placed character whose (parent-space, matrix-transformed)
+    // bounding box contains the point, or std::nullopt if nothing in this
+    // subtree was hit. Invisible clips (visible() == false) never match,
+    // and neither does anything nested inside them (matches real Flash:
+    // invisible objects don't receive mouse input). A MovieClip child is
+    // hit-tested via recursion into ITS OWN content — NOT via a shortcut
+    // test against its own aggregate bounding box — so clicking a fully
+    // transparent/empty area of a nested clip correctly finds whatever's
+    // underneath (or nothing), matching real Flash's content-based (not
+    // purely bbox-based) recursive hit-test behavior for MovieClips.
+    //
+    // Bounding-box only for this first pass (per the task charter that
+    // commissioned docs/hit-testing.md's design — exact vector-shape hit
+    // testing is a documented future upgrade, not implemented here; see
+    // that doc's "Why bounding-box, not exact shape" section). Not yet
+    // wired to any event dispatch — this is purely a query primitive.
+    std::optional<HitTestResult> hitTestPoint(double stageXPixels, double stageYPixels) const;
+
+    // AS2-visible `MovieClip.hitTest(x, y)` (2-argument form only — see
+    // handleNativeGet()'s OOP-callable-method dispatch). Distinct from
+    // hitTestPoint() above on purpose, matching real Flash Player
+    // semantics exactly: this tests whether (x, y) [stage pixels] falls
+    // within THIS clip's own full aggregate bounding box
+    // (computeBoundsInOwnSpace(), transformed by worldMatrix()) —
+    // regardless of visibility (real `MovieClip.hitTest()` tests geometry,
+    // NOT rendered visibility — a genuinely surprising-but-real Flash
+    // behavior, unlike hitTestPoint() above, which deliberately DOES
+    // respect visible() since it models "what could receive a real click,"
+    // a different question). Does not recurse looking for the topmost
+    // nested object; a hit anywhere in the aggregate bounds counts.
+    bool hitTestBounds(double stageXPixels, double stageYPixels) const;
+
     // --- AVM1 lifecycle actions (CloneSprite/RemoveSprite), applied
     // eagerly/synchronously — used by the internal HostBindings
     // implementation, exposed here so tests can drive them directly too.
@@ -355,6 +419,14 @@ private:
     // intended to be reused as-is by a future hit-testing pass (see
     // docs/hit-testing.md) rather than duplicated.
     swf::Rect computeBoundsInOwnSpace() const;
+
+    // Recursive worker behind hitTestPoint() (see its public doc comment
+    // for the full contract): `localPoint` is already in THIS instance's
+    // own local space (same "before matrix_ is applied" convention as
+    // computeBoundsInOwnSpace()) — the public entry point is responsible
+    // for converting a stage-pixel point into that space via
+    // worldMatrix()'s inverse before the first call.
+    std::optional<HitTestResult> hitTestPointInOwnSpace(const swf::Point& localPoint) const;
 
     // Runs every ClipActionRecord in clipActions_ whose eventFlags include
     // `flag` (Phase 6 — see the class header's onClipEvent limitations

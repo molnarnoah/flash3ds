@@ -354,24 +354,28 @@ docs" section — don't just assume this is resolved.
    hold until this one reaches a stable state.** Sub-fix 1/N
    (`_width`/`_height`, previously hardcoded to 0), Sub-fix 2/N (the
    `_xmouse`/`_ymouse` device-pixel -> stage-pixel coordinate conversion),
-   and Sub-fix 3/N (edge-detected input state — `InputState::
-   commitFrame()`/`isKeyPressed()`/`isKeyReleased()`/`isMousePressed()`/
-   `isMouseReleased()`/`isTouchPressed()`/`isTouchReleased()`, previously
-   `InputState` only ever tracked "current" level, no press/release
-   transitions) are **all done** — see `docs/known-limitations.md`'s
-   STEP 1-10 writeups for all three, `docs/interactivity-audit.md` (full
-   8-part trace, kept up to date as each sub-fix lands), `docs/input.md`
-   (coordinate-flow diagram + edge-detection model/semantics),
-   `docs/hit-testing.md`/`docs/events.md` (design docs for later sub-fixes,
-   not yet implemented), `docs/onclipevent-compatibility.md` (all 19 flags
-   individually tabulated). **Next sub-fix, not yet started:**
-   bounding-box hit-testing itself (design: `docs/hit-testing.md`) — now
-   unblocked on both fronts it needed (correct stage coordinates AND
-   edge-detected press/release). After that: a per-placement Button
-   "instance" object (buttons currently have NO runtime object of their
-   own at all — a bigger gap than expected, see
-   `docs/interactivity-audit.md` §3), a generic event dispatcher, then
-   `onClipEvent`'s remaining 15 mouse/key flags + button `on()` dispatch.
+   Sub-fix 3/N (edge-detected input state — `InputState::commitFrame()`/
+   `isKeyPressed()`/`isKeyReleased()`/`isMousePressed()`/`isMouseReleased()`/
+   `isTouchPressed()`/`isTouchReleased()`), and Sub-fix 4/N (bounding-box
+   hit-testing — `MovieClipInstance::hitTestPoint()`, an internal
+   topmost-object-under-a-point primitive, plus real AS2-visible
+   `MovieClip.hitTest(x, y)`) are **all done** — see
+   `docs/known-limitations.md`'s STEP 1-10 writeups for all four,
+   `docs/interactivity-audit.md` (full 8-part trace, kept up to date as
+   each sub-fix lands), `docs/input.md` (coordinate-flow diagram +
+   edge-detection model/semantics), `docs/hit-testing.md` (design +
+   implementation summary — the original design held up unchanged),
+   `docs/events.md` (design doc for the next sub-fix, not yet
+   implemented), `docs/onclipevent-compatibility.md` (all 19 flags
+   individually tabulated). **Next sub-fix, not yet started:** a
+   per-placement Button "instance" object — buttons currently have NO
+   runtime object of their own at all (the biggest remaining structural
+   gap, see `docs/interactivity-audit.md` §3) — needed to hold Up/Over/
+   Down state and an AS2-visible scripting object before a generic event
+   dispatcher (design: `docs/events.md`) can wire `onRelease`/`onPress`/
+   `onClipEvent(press)` to the `hitTestPoint()` + edge-detection
+   primitives that now both exist. After that: `onClipEvent`'s remaining
+   15 mouse/key flags + button `on()` dispatch.
 3. `GlobalObject` has zero named built-ins — no `Math`/`Date`/`Number()`/
    `String()`/`Boolean()` at all. **ON HOLD** per user instruction until
    priority #2 is stable.

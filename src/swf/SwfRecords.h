@@ -92,6 +92,39 @@ ColorTransform concatColorTransform(const ColorTransform& parent, const ColorTra
 // docs/known-limitations.md).
 Rect transformRect(const Matrix& m, const Rect& r);
 
+// --- hit-testing primitives (interactivity phase, 2026-08-19) -------------
+// See docs/hit-testing.md for the design these back: converting a point
+// from a PARENT's coordinate space into a CHILD's local space (the inverse
+// of the forward parent-to-child placement transform every other Matrix
+// helper in this file computes) — needed to walk a stage-space point DOWN
+// into nested MovieClip/leaf-character local spaces for hit-testing.
+
+// A plain 2D point in twips (matching Rect's translate-field convention).
+struct Point {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+// Applies `m`'s forward transform to `p` — the same per-point formula
+// transformRect() already uses internally, exposed standalone since
+// hit-testing needs to transform a single point, not a Rect's 4 corners.
+Point transformPoint(const Matrix& m, const Point& p);
+
+// Computes the inverse of `m` (standard 2x3 affine inverse) into `*out` and
+// returns true, UNLESS `m` is degenerate (determinant
+// scaleX*scaleY - rotateSkew0*rotateSkew1 is zero or too close to zero to
+// invert reliably — e.g. `_xscale = 0`), in which case `*out` is left
+// untouched and this returns false. Per docs/hit-testing.md's design: a
+// degenerate placement matrix should make that object correctly
+// un-hit-testable (matching real Flash — a zero-size object can't be
+// clicked), not crash or produce garbage coordinates.
+bool invertMatrix(const Matrix& m, Matrix* out);
+
+// True if point `p` falls within `r`'s closed bounds (inclusive on all
+// four edges — matches transformRect()'s own axis-aligned-bbox convention,
+// no separate "on the boundary" special case).
+bool rectContainsPoint(const Rect& r, const Point& p);
+
 // Reads a MATRIX record. Must be called at a byte-aligned position (or
 // right after another bit-packed record); leaves the reader byte-aligned.
 Matrix readMatrix(SwfReader& reader);

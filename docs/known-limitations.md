@@ -375,18 +375,113 @@ determine exactly which tick a click began/ended on, rather than only
 "is the mouse currently down," which was the last missing low-level
 primitive hit-testing and button dispatch both needed.
 
+### Sub-fix 4/N — Bounding-box hit-testing (`hitTestPoint()` primitive + AS2 `MovieClip.hitTest()`) — **FIXED THIS TURN**
+
+**Classification: DISPLAY LIST + AVM1 (geometry query, no event dispatch).**
+
+**STEP 1 — Audit.** `docs/hit-testing.md`'s design (written 2026-08-18,
+before either blocker existed) was re-read first — its two stated
+blockers (device-px -> stage-pixel coordinate conversion, edge-detected
+input state) were both already resolved by Sub-fix 2/N and Sub-fix 3/N.
+Confirmed the design's reusable building blocks still matched the current
+code exactly: `swf::transformRect()`, `MovieClipInstance::
+computeBoundsInOwnSpace()` (private), `characterOwnBoundsRect()` (leaf
+bounds resolution, including its Button hit-state fallback logic) — all
+present and unchanged since the `_width`/`_height` fix. Confirmed
+`SceneRenderer::renderClip()`'s exact world-transform composition
+(`concatMatrix(parentWorld, child.localMatrix())` per level, root's own
+`matrix_` as the base, ascending/back-to-front depth order, gated on
+`visible()`) to keep hit-testing's own transform composition in lockstep
+with what's actually rendered.
+
+**STEP 2-3 — Reproduction/isolation.** N/A (adding a missing capability,
+not fixing a broken one — same as Sub-fix 3/N). Isolated design decision:
+implement the design doc's pseudocode essentially verbatim as
+`MovieClipInstance::hitTestPoint()`/`hitTestPointInOwnSpace()`, plus — a
+deliberate, scoped ADDITION beyond the original design — real AS2
+`MovieClip.hitTest(x, y)` (`hitTestBounds()`), since it reuses the exact
+same new primitives at near-zero extra cost and is the only way any of
+this becomes AS2-visible/usable this turn (see `docs/hit-testing.md`'s
+"AS2 `hitTest()` vs the internal primitive" table for why these are two
+genuinely different queries, not one subsuming the other).
+
+**STEP 4-5 — Fix/implementation.** Added `swf::Point`/`transformPoint()`/
+`invertMatrix()`/`rectContainsPoint()` (`src/swf/SwfRecords.h/.cpp`) —
+standard 2x3 affine matrix inverse, returns `false` (not garbage) for a
+degenerate/zero-determinant matrix. Added `MovieClipInstance::
+worldMatrix()` (this instance's `matrix_` composed with every ancestor's,
+mirroring `SceneRenderer`'s own composition exactly). Added
+`MovieClipInstance::hitTestPoint(stageXPixels, stageYPixels) ->
+std::optional<HitTestResult>` — the topmost-hit-under-a-point primitive:
+walks a clip's display list in REVERSE (topmost-first) depth order,
+recurses into `MovieClipInstance` children via their own content (not a
+shortcut aggregate-bounds test), respects `visible()`, and correctly
+treats a degenerate matrix anywhere in the chain as un-hit-testable. Added
+`MovieClipInstance::hitTestBounds()` + AS2-visible `hitTest(x, y)`
+(2-argument form; the 1-argument `hitTest(target)` and 3-argument
+exact-shape forms are explicitly NOT implemented, flagged via `LOG_WARN`
+rather than guessed at) via the existing OOP-callable-method dispatch
+pattern (`handleNativeGet()`, same mechanism `stop()`/`getBytesLoaded()`/
+`gotoAndStop()` already use).
+
+**STEP 6 — Desktop tests.** 12 new tests in `tests/test_movieclip_instance.cpp`
+(point inside/outside a shape, inclusive-boundary corners, overlapping-
+shapes topmost-wins — both the topmost AND an under-only point, invisible-
+clip exclusion, degenerate-`_xscale` exclusion, script-mutated-transform
+awareness — a doubled `_xscale`/`_yscale` correctly changes what's
+hit-testable, two-level nested-`MovieClip` recursion with composed
+offsets, and 5 `hitTest()`-specific cases including the deliberate
+visibility-ignoring behavior and the not-implemented 1-argument form) + 8
+new tests in `tests/test_swf_records.cpp` (`invertMatrix()`/
+`transformPoint()`/`rectContainsPoint()` in isolation: identity,
+translate-only, scale+translate, rotation+skew round-trips, two flavors of
+degenerate-matrix rejection, inclusive/exclusive boundary checks).
+**237/237 tests passing** (up from 217), zero regressions.
+
+**Independent real-content check:** rendered `hobo.swf` frames 1-5 before
+and after this phase and diffed byte-for-byte — **100% identical**
+(expected: this phase adds pure query APIs, touches zero rendering code).
+
+**STEP 7-8 — 3DS build.** `cmake --build build_3ds` succeeds cleanly (only
+the same pre-existing, unrelated newlib/ABI warnings as every prior 3DS
+build). New `.3dsx` built (392032 bytes, up from 390048 — confirms the new
+code linked in). **Not yet tested on Azahar/hardware.**
+
+**STEP 9 — Regression tests.** Done — see STEP 6, all 20 permanent.
+
+**STEP 10 — What now works / what remains.** Two independent, real hit-
+testing capabilities now exist: an internal "what's the frontmost thing
+under this point" primitive (`hitTestPoint()`, not yet consumed by
+anything — ready for a future button/mouse-event-dispatch phase) and a
+real, AS2-visible `MovieClip.hitTest(x, y)` that game scripts can call
+directly today. **Both are pure geometry queries — no event dispatch,
+`ButtonDef` state machine, `onClipEvent` changes, or press/release/
+rollOver/rollOut wiring exist yet**, exactly as scoped. Bounding-box only
+(exact vector-shape hit-testing remains a documented future upgrade — the
+architecture change needed is isolated to one leaf-level check, per
+`docs/hit-testing.md`'s "Why bounding-box, not exact shape" section, and
+requires nothing else to be redesigned). `hitTest(target)` (1-arg,
+compare-two-objects' -bounds form) is NOT implemented — flagged, not
+guessed at. **Recommended next step: a per-placement Button "instance"
+object** — buttons currently have NO runtime object of their own at all
+(the biggest remaining structural gap per `docs/interactivity-audit.md`
+§3) — needed to hold Up/Over/Down state and an AS2-visible scripting
+object before a generic event dispatcher (design: `docs/events.md`) can
+wire `onRelease`/`onPress`/`onClipEvent(press)` to the new `hitTestPoint()`
++ edge-detection (`isMousePressed()`/`isMouseReleased()`) primitives that
+now both exist.
+
 ### Remaining sub-fixes for this priority (not started, in dependency order)
 
-See `docs/interactivity-audit.md` §8 for the complete list and reasoning:
-bounding-box hit-testing (design: `docs/hit-testing.md`, next pick — now
-unblocked, has both correct stage coordinates [Sub-fix 2/N] and
-edge-detected press/release [Sub-fix 3/N] to build on), a per-placement
-Button instance object, a generic event dispatcher (design:
-`docs/events.md`), then finally `onClipEvent`'s remaining 15 mouse/key
-flags (status: `docs/onclipevent-compatibility.md`) and button `on()`
-handler dispatch. The device-px -> stage-pixel coordinate mapping and
-edge-detected input state that used to head this list are both **DONE**
-— see Sub-fix 2/N and Sub-fix 3/N above.
+See `docs/interactivity-audit.md` §8 for the complete list and reasoning: a
+per-placement Button instance object (next pick — now unblocked, has
+hit-testing and edge-detected input to build on), a generic event
+dispatcher (design: `docs/events.md`), then finally `onClipEvent`'s
+remaining 15 mouse/key flags (status: `docs/onclipevent-compatibility.md`)
+and button `on()` handler dispatch. The device-px -> stage-pixel coordinate
+mapping, edge-detected input state, and bounding-box hit-testing that used
+to head this list are all **DONE** — see Sub-fix 2/N, Sub-fix 3/N, and
+Sub-fix 4/N above.
 
 
 **Classification: AVM1 + DISPLAY LIST (hit-testing needs `_width`/`_height`, itself blocked on bounding-box computation) + OBJECT MODEL.**

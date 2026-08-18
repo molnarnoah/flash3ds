@@ -656,6 +656,89 @@ double MovieClipInstance::stageMouseY() const {
     return input.mouseY() * (stageHeight / viewportHeight);
 }
 
+// --- hit-testing (interactivity phase, 2026-08-19; design: docs/hit-
+// testing.md) ---------------------------------------------------------------
+
+swf::Matrix MovieClipInstance::worldMatrix() const {
+    return parent_ ? swf::concatMatrix(parent_->worldMatrix(), matrix_) : matrix_;
+}
+
+std::optional<MovieClipInstance::HitTestResult> MovieClipInstance::hitTestPoint(
+    double stageXPixels, double stageYPixels) const {
+    swf::Matrix inverseWorld;
+    if (!swf::invertMatrix(worldMatrix(), &inverseWorld)) {
+        // Degenerate world transform (e.g. this clip or an ancestor has
+        // _xscale == 0) -- correctly un-hit-testable, matching real Flash
+        // (see swf::invertMatrix()'s own doc comment).
+        return std::nullopt;
+    }
+    swf::Point stagePoint{stageXPixels * 20.0, stageYPixels * 20.0};
+    swf::Point localPoint = swf::transformPoint(inverseWorld, stagePoint);
+    return hitTestPointInOwnSpace(localPoint);
+}
+
+std::optional<MovieClipInstance::HitTestResult> MovieClipInstance::hitTestPointInOwnSpace(
+    const swf::Point& localPoint) const {
+    if (!visible_) return std::nullopt;  // invisible objects never receive input
+
+    const auto& entries = timeline_->displayList().entries();
+    // Walk in REVERSE (descending) depth order -- topmost/frontmost first,
+    // the opposite of SceneRenderer's ascending back-to-front PAINT order
+    // -- so an overlapping higher-depth object wins the hit test, matching
+    // real Flash's front-to-back hit-test order (see docs/hit-testing.md).
+    for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+        int32_t depthValue = it->first;
+        const DisplayListEntry& entry = it->second;
+
+        auto childIt = children_.find(depthValue);
+        if (childIt != children_.end() && childIt->second) {
+            // A MovieClip child -- recurse into ITS OWN content (not a
+            // shortcut test against its own aggregate bounding box), using
+            // ITS OWN (possibly script-mutated) matrix_, exactly mirroring
+            // how SceneRenderer composes world transforms for rendering.
+            const auto& child = childIt->second;
+            swf::Matrix inverseChild;
+            if (!swf::invertMatrix(child->matrix_, &inverseChild)) continue;
+            swf::Point childLocal = swf::transformPoint(inverseChild, localPoint);
+            if (auto hit = child->hitTestPointInOwnSpace(childLocal)) {
+                return hit;
+            }
+            continue;
+        }
+
+        // Not a MovieClipInstance -- a leaf character (or an unresolved/
+        // still-unsupported one, e.g. bitmap/DefineMorphShape --
+        // characters_->find() returns nullptr for those, contributing
+        // nothing, matching how they already render as nothing and
+        // contribute nothing to computeBoundsInOwnSpace()).
+        if (!characters_) continue;
+        const CharacterDef* def = characters_->find(entry.characterId);
+        if (!def) continue;
+        swf::Rect leafBounds = characterOwnBoundsRect(*def, *characters_);
+        if (isEmptyBoundsRect(leafBounds)) continue;
+        swf::Matrix inverseEntry;
+        if (!swf::invertMatrix(entry.matrix, &inverseEntry)) continue;
+        swf::Point leafLocal = swf::transformPoint(inverseEntry, localPoint);
+        if (swf::rectContainsPoint(leafBounds, leafLocal)) {
+            return HitTestResult{const_cast<MovieClipInstance*>(this), entry.characterId,
+                                  depthValue};
+        }
+    }
+    return std::nullopt;
+}
+
+bool MovieClipInstance::hitTestBounds(double stageXPixels, double stageYPixels) const {
+    // Real MovieClip.hitTest(x, y) semantics: tests this clip's own full
+    // aggregate bounding box, regardless of visible() -- deliberately NOT
+    // the same visibility rule hitTestPoint() uses (see this method's own
+    // header doc comment for why the two intentionally differ).
+    swf::Rect ownBounds = computeBoundsInOwnSpace();
+    if (isEmptyBoundsRect(ownBounds)) return false;
+    swf::Rect worldBounds = swf::transformRect(worldMatrix(), ownBounds);
+    swf::Point stagePoint{stageXPixels * 20.0, stageYPixels * 20.0};
+    return swf::rectContainsPoint(worldBounds, stagePoint);
+}
+
 void MovieClipInstance::wireScriptObject() {
     scriptObject_ = std::make_shared<avm1::Object>();
     std::weak_ptr<MovieClipInstance> weak = shared_from_this();
@@ -768,6 +851,45 @@ bool MovieClipInstance::handleNativeGet(const std::string& name, avm1::Value& ou
                     return avm1::Value::number(mc->movie_->declaredFileLength);
                 }
                 return avm1::Value::undefined();
+            }));
+        return true;
+    }
+
+    // AS2-visible `MovieClip.hitTest(x, y)` (interactivity phase,
+    // 2026-08-19 — see hitTestBounds()'s own doc comment in
+    // MovieClipInstance.h for the exact semantics: aggregate-bounding-box
+    // test, ignores visible()). Only the 2-argument (x, y) form is
+    // implemented — real Flash's other two overloads are explicitly NOT
+    // supported yet and are flagged rather than silently misbehaving:
+    //   - `hitTest(x, y, shapeFlag)` with shapeFlag == true (exact vector-
+    //     shape test): falls back to the same bounding-box test as the
+    //     2-arg form (matches docs/hit-testing.md's own charter — "okay to
+    //     use bounding-box hit testing if exact shape hit testing doesn't
+    //     exist yet... architecture must allow it later," which
+    //     hitTestBounds()'s doc comment confirms this does).
+    //   - `hitTest(target)` (1-argument, bounding-box-vs-another-
+    //     DisplayObject form): NOT implemented at all — returns false and
+    //     logs a warning rather than guessing; a genuinely separate,
+    //     unscoped feature (see docs/hit-testing.md's "explicitly deferred
+    //     design questions").
+    if (name == "hitTest") {
+        auto* self = const_cast<MovieClipInstance*>(this);
+        std::weak_ptr<MovieClipInstance> weakSelf = self->shared_from_this();
+        out = avm1::Value::object(avm1::makeNativeFunction(
+            "hitTest",
+            [weakSelf](avm1::ExecutionContext&, const avm1::Value&,
+                       const std::vector<avm1::Value>& args) -> avm1::Value {
+                auto mc = weakSelf.lock();
+                if (!mc) return avm1::Value::boolean(false);
+                if (args.size() < 2) {
+                    LOG_WARN("MOVIECLIP",
+                              "hitTest(target) (1-argument form) is not implemented — only "
+                              "hitTest(x, y[, shapeFlag]) is supported; returning false");
+                    return avm1::Value::boolean(false);
+                }
+                double x = args[0].toNumber();
+                double y = args[1].toNumber();
+                return avm1::Value::boolean(mc->hitTestBounds(x, y));
             }));
         return true;
     }

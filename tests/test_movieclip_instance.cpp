@@ -161,6 +161,50 @@ std::vector<uint8_t> buildMovieWithNamedChildContainingShapes(
     return swf_fixtures::wrapFws(6, body);
 }
 
+// A 100x100px, 1-frame movie: root places sprite "outer" (id=20) at stage
+// offset (30,30); "outer" places sprite "inner" (id=21) at ITS local offset
+// (5,5); "inner" places a 10x10px shape (id=30) at ITS local offset (2,2).
+// So the shape's WORLD (stage) position is (30+5+2, 30+5+2) = (37,37) to
+// (47,47) — used by the hit-testing regression test that specifically
+// exercises TWO levels of MovieClipInstance-child recursion (not just the
+// one level buildMovieWithNamedChildContainingShapes's single "mc" already
+// covers), confirming offsets compose correctly across nested clips.
+std::vector<uint8_t> buildTwoLevelNestedMovieClipMovie() {
+    auto shapeBody =
+        swf_fixtures::buildDefineShapeBytes(2, /*characterId=*/30, 10 * 20, 10 * 20, 0xFF, 0x00,
+                                             0x00, 0xFF);
+
+    std::vector<swf_fixtures::FixtureTag> innerTags = {
+        {26 /* PlaceObject2 */,
+         swf_fixtures::buildPlaceObject2Bytes(1, false, 30,
+                                               swf_fixtures::buildMatrixBytes(2 * 20, 2 * 20))},
+        {1 /* ShowFrame */, {}},
+    };
+    auto innerSpriteBody = swf_fixtures::buildDefineSpriteBytes(/*characterId=*/21, 1, innerTags);
+
+    std::vector<swf_fixtures::FixtureTag> outerTags = {
+        {26 /* PlaceObject2 */,
+         swf_fixtures::buildPlaceObject2Bytes(1, false, 21,
+                                               swf_fixtures::buildMatrixBytes(5 * 20, 5 * 20),
+                                               std::string("inner"))},
+        {1 /* ShowFrame */, {}},
+    };
+    auto outerSpriteBody = swf_fixtures::buildDefineSpriteBytes(/*characterId=*/20, 1, outerTags);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineShape2), shapeBody},
+        {static_cast<uint16_t>(TagCode::DefineSprite), innerSpriteBody},
+        {static_cast<uint16_t>(TagCode::DefineSprite), outerSpriteBody},
+        {26 /* PlaceObject2 */,
+         swf_fixtures::buildPlaceObject2Bytes(1, false, 20,
+                                               swf_fixtures::buildMatrixBytes(30 * 20, 30 * 20),
+                                               std::string("outer"))},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    return swf_fixtures::wrapFws(6, body);
+}
+
 // A spy IAudioBackend recording every call it receives — Phase 6 tests use
 // this to verify StartSound tag dispatch and AVM1 Sound.start()/stop()
 // actually reach the backend seam with the right arguments, without
@@ -557,6 +601,319 @@ TEST_CASE(MovieClipInstance_WidthHeight_EmptyClip_ReturnsZero) {
     CHECK(childIt != root->children().end());
     CHECK_EQ(childIt->second->width(), 0.0);
     CHECK_EQ(childIt->second->height(), 0.0);
+}
+
+// ===========================================================================
+// Interactivity phase (2026-08-19): hit-testing (design: docs/hit-testing.md)
+// ===========================================================================
+//
+// All fixtures use buildMovieWithNamedChildContainingShapes(): a 100x100px
+// root stage containing one named child "mc" (placed at the stage origin,
+// identity matrix), which in turn contains the given shapes at the given
+// offsets. So a shape placed at ShapePlacement{40*20, 40*20, 0, 0} occupies
+// STAGE pixels (0,0)-(40,40) directly (mc's own placement adds no offset).
+
+TEST_CASE(MovieClipInstance_HitTestPoint_PointInsideShape_ReturnsHit) {
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}});
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto result = root->hitTestPoint(20.0, 20.0);  // dead center of the 40x40 shape
+    CHECK(result.has_value());
+    if (result) {
+        auto childIt = root->children().find(1);
+        CHECK(childIt != root->children().end());
+        CHECK(result->clip == childIt->second.get());
+        CHECK_EQ(result->characterId, static_cast<uint16_t>(10));  // first shape's id
+        CHECK_EQ(result->depth, static_cast<int32_t>(1));
+    }
+}
+
+TEST_CASE(MovieClipInstance_HitTestPoint_PointOutsideShape_ReturnsNullopt) {
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}});
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(!root->hitTestPoint(90.0, 90.0).has_value());
+}
+
+TEST_CASE(MovieClipInstance_HitTestPoint_TopLeftCorner_Inclusive) {
+    // rectContainsPoint()'s boundary is closed/inclusive on all 4 edges —
+    // confirm that's actually reachable through the full hitTestPoint()
+    // pipeline (coordinate conversion + matrix inversion), not just at the
+    // rectContainsPoint() unit level (test_swf_records.cpp already covers
+    // that in isolation).
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}});
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(root->hitTestPoint(0.0, 0.0).has_value());
+    CHECK(root->hitTestPoint(40.0, 40.0).has_value());
+}
+
+TEST_CASE(MovieClipInstance_HitTestPoint_OverlappingShapes_TopmostDepthWins) {
+    // shapes[0]: (0,0)-(40,40) at depth 1. shapes[1]: (10,10)-(50,50) at
+    // depth 2 (placed second -> higher depth -> painted on top -> should
+    // win the hit test). Point (30,30) falls inside BOTH.
+    auto bytes = buildMovieWithNamedChildContainingShapes({
+        {40 * 20, 40 * 20, 0, 0},
+        {40 * 20, 40 * 20, 10 * 20, 10 * 20},
+    });
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto result = root->hitTestPoint(30.0, 30.0);
+    CHECK(result.has_value());
+    if (result) {
+        CHECK_EQ(result->characterId, static_cast<uint16_t>(11));  // second shape's id
+        CHECK_EQ(result->depth, static_cast<int32_t>(2));
+    }
+
+    // A point only the FIRST (lower/underneath) shape covers still hits
+    // it correctly -- topmost-wins doesn't mean "only the topmost is ever
+    // testable."
+    auto underOnly = root->hitTestPoint(5.0, 5.0);
+    CHECK(underOnly.has_value());
+    if (underOnly) CHECK_EQ(underOnly->characterId, static_cast<uint16_t>(10));
+}
+
+TEST_CASE(MovieClipInstance_HitTestPoint_InvisibleClip_ReturnsNullopt) {
+    // `mc._visible = false;` -- invisible objects never receive input,
+    // matching real Flash (and hitTestPoint()'s explicit documented
+    // contract, distinct from hitTestBounds()/AS2 hitTest() below).
+    Asm a;
+    a.pushString("mc");
+    a.op(0x1C);  // ActionGetVariable
+    a.pushString("_visible");
+    a.pushBool(false);
+    a.op(0x4F);  // ActionSetMember
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}}, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto childIt = root->children().find(1);
+    CHECK(childIt != root->children().end());
+    CHECK(!childIt->second->visible());  // sanity: the mutation actually took effect
+
+    CHECK(!root->hitTestPoint(20.0, 20.0).has_value());
+}
+
+TEST_CASE(MovieClipInstance_HitTestPoint_DegenerateScale_ReturnsNullopt) {
+    // `mc._xscale = 0;` -- a zero-size object can't be clicked (matching
+    // real Flash); must not crash/divide-by-zero either.
+    Asm a;
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("_xscale");
+    a.pushInt(0);
+    a.op(0x4F);  // ActionSetMember
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}}, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto childIt = root->children().find(1);
+    CHECK(childIt != root->children().end());
+    CHECK_EQ(childIt->second->xScale(), 0.0);  // sanity
+
+    CHECK(!root->hitTestPoint(20.0, 20.0).has_value());
+}
+
+TEST_CASE(MovieClipInstance_HitTestPoint_ScaledChild_UsesCurrentNotOriginalTransform) {
+    // `mc._xscale = 200; mc._yscale = 200;` -- doubles the child's
+    // effective size. A point outside the ORIGINAL 40x40 box but inside
+    // the DOUBLED 80x80 box must now hit -- confirms hitTestPoint() reads
+    // the clip's CURRENT (possibly script-mutated) matrix_, exactly like
+    // rendering does (SceneRenderer uses child.localMatrix(), not the
+    // original placement entry.matrix, for the same reason).
+    Asm a;
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("_xscale");
+    a.pushInt(200);
+    a.op(0x4F);
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("_yscale");
+    a.pushInt(200);
+    a.op(0x4F);
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}}, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    // 60px would have missed the original 40x40 box but is inside the
+    // doubled 80x80 one.
+    CHECK(root->hitTestPoint(60.0, 60.0).has_value());
+}
+
+TEST_CASE(MovieClipInstance_HitTestPoint_TwoLevelsNestedMovieClip_ComposesOffsetsAndRecurses) {
+    // root -> "outer" (offset 30,30) -> "inner" (offset 5,5) -> shape
+    // (offset 2,2, 10x10) — world bounds (37,37)-(47,47). Exercises the
+    // MovieClipInstance-child recursion branch TWICE (root->outer,
+    // outer->inner), not just the single level every other test here uses.
+    auto bytes = buildTwoLevelNestedMovieClipMovie();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto hit = root->hitTestPoint(40.0, 40.0);  // inside (37,37)-(47,47)
+    CHECK(hit.has_value());
+    if (hit) {
+        CHECK_EQ(hit->characterId, static_cast<uint16_t>(30));
+        // The clip returned should be "inner" (the immediate owner of the
+        // hit shape), not "outer" or root.
+        auto outerIt = root->children().find(1);
+        CHECK(outerIt != root->children().end());
+        auto innerIt = outerIt->second->children().find(1);
+        CHECK(innerIt != outerIt->second->children().end());
+        CHECK(hit->clip == innerIt->second.get());
+    }
+
+    // A point that's inside "outer"'s own local area but outside the
+    // doubly-offset shape's actual world bounds must miss.
+    CHECK(!root->hitTestPoint(32.0, 32.0).has_value());
+}
+
+TEST_CASE(MovieClipInstance_HitTestBounds_AS2HitTest_PointInsideAggregateBounds_ReturnsTrue) {
+    // AS2: `capturedHit = mc.hitTest(20, 20);` — real MovieClip.hitTest(x,
+    // y), 2-argument form, via CallMethod (the OOP-callable-method
+    // dispatch, matching the existing getBytesLoaded()/stop() pattern).
+    Asm a;
+    a.pushString("capturedHit");
+    a.pushInt(20);  // arg1: x
+    a.pushInt(20);  // arg2: y
+    a.pushInt(2);   // numArgs
+    a.pushString("mc");
+    a.op(0x1C);  // ActionGetVariable -> resolves "mc"
+    a.pushString("hitTest");
+    a.op(0x52);  // ActionCallMethod
+    a.op(0x1D);  // ActionSetVariable
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}}, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(root->scriptObject()->getOwnProperty("capturedHit").toBoolean());
+}
+
+TEST_CASE(MovieClipInstance_HitTestBounds_AS2HitTest_PointOutsideAggregateBounds_ReturnsFalse) {
+    Asm a;
+    a.pushString("capturedHit");
+    a.pushInt(90);
+    a.pushInt(90);
+    a.pushInt(2);
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("hitTest");
+    a.op(0x52);
+    a.op(0x1D);
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}}, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(!root->scriptObject()->getOwnProperty("capturedHit").toBoolean());
+}
+
+TEST_CASE(MovieClipInstance_HitTestBounds_InvisibleClip_StillReturnsTrue) {
+    // The documented, deliberate distinction from hitTestPoint(): real
+    // Flash's MovieClip.hitTest() tests GEOMETRY, not rendered visibility.
+    Asm a;
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("_visible");
+    a.pushBool(false);
+    a.op(0x4F);
+
+    a.pushString("capturedHit");
+    a.pushInt(20);
+    a.pushInt(20);
+    a.pushInt(2);
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("hitTest");
+    a.op(0x52);
+    a.op(0x1D);
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}}, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    auto childIt = root->children().find(1);
+    CHECK(childIt != root->children().end());
+    CHECK(!childIt->second->visible());  // sanity
+
+    CHECK(root->scriptObject()->getOwnProperty("capturedHit").toBoolean());
+}
+
+TEST_CASE(MovieClipInstance_HitTestBounds_OneArgumentTargetForm_NotImplementedReturnsFalse) {
+    // `mc.hitTest(someOtherClip)` (1-arg form) is explicitly NOT
+    // implemented (see MovieClipInstance.h's hitTestBounds() doc comment)
+    // -- must fail safe (false), not crash or misinterpret the argument.
+    Asm a;
+    a.pushString("capturedHit");
+    a.pushString("_root");  // arbitrary single argument
+    a.pushInt(1);           // numArgs
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("hitTest");
+    a.op(0x52);
+    a.op(0x1D);
+    auto bytes = buildMovieWithNamedChildContainingShapes({{40 * 20, 40 * 20, 0, 0}}, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(!root->scriptObject()->getOwnProperty("capturedHit").toBoolean());
 }
 
 // ===========================================================================

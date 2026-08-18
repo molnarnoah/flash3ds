@@ -68,6 +68,53 @@ Rect transformRect(const Matrix& m, const Rect& r) {
     };
 }
 
+Point transformPoint(const Matrix& m, const Point& p) {
+    return Point{
+        m.scaleX * p.x + m.rotateSkew1 * p.y + m.translateXTwips,
+        m.rotateSkew0 * p.x + m.scaleY * p.y + m.translateYTwips,
+    };
+}
+
+bool invertMatrix(const Matrix& m, Matrix* out) {
+    // Standard 2x3 affine inverse. Forward transform (see transformPoint()/
+    // transformRect()):
+    //   x' = scaleX*x + rotateSkew1*y + translateX
+    //   y' = rotateSkew0*x + scaleY*y + translateY
+    // i.e. the linear part is [[a c]; [b d]] with a=scaleX, b=rotateSkew0,
+    // c=rotateSkew1, d=scaleY. Its inverse is (1/det)*[[d -c]; [-b a]],
+    // det = a*d - b*c.
+    const double a = m.scaleX;
+    const double b = m.rotateSkew0;
+    const double c = m.rotateSkew1;
+    const double d = m.scaleY;
+    const double det = a * d - b * c;
+    // A tiny (not exactly-zero) epsilon — comparing a computed determinant
+    // against exactly 0.0 would reject only the mathematically-exact
+    // degenerate case and accept near-singular matrices that still blow up
+    // numerically once divided through.
+    constexpr double kEpsilon = 1e-9;
+    if (std::abs(det) < kEpsilon) return false;
+
+    const double invA = d / det;
+    const double invB = -b / det;
+    const double invC = -c / det;
+    const double invD = a / det;
+    const double tx = m.translateXTwips;
+    const double ty = m.translateYTwips;
+
+    out->scaleX = invA;
+    out->scaleY = invD;
+    out->rotateSkew0 = invB;
+    out->rotateSkew1 = invC;
+    out->translateXTwips = static_cast<int32_t>(std::lround(-(invA * tx + invC * ty)));
+    out->translateYTwips = static_cast<int32_t>(std::lround(-(invB * tx + invD * ty)));
+    return true;
+}
+
+bool rectContainsPoint(const Rect& r, const Point& p) {
+    return p.x >= r.xMin && p.x <= r.xMax && p.y >= r.yMin && p.y <= r.yMax;
+}
+
 namespace {
 // Converts a raw 16.16 fixed-point SB[nbits] value (already sign-extended
 // by SwfReader::readSBits) into a double.
