@@ -2,8 +2,19 @@
 
 **Status: Phase 3 basic renderer implemented; Phase 5 wired it to a real
 MovieClipInstance tree (independent per-instance playheads); Phase 8 added
-static text, non-interactive button, and edit-text glyph rendering.** Phase
-10 (Nintendo 3DS backend, dual-screen) is still not started.
+static text, non-interactive button, and edit-text glyph rendering; Phase 9
+fixed a shape-parsing bug (see below) found by rendering real content.**
+Phase 10 (Nintendo 3DS backend, dual-screen) is still not started.
+
+**Phase 9 validation.** Rendered a real `hobo.swf`'s title screen
+end-to-end for the first time and found the output recognizably correct —
+character illustration, wordmark, button, and panel art all in the right
+places and colors — which surfaced a real `ShapeRecords.cpp` bug (see
+`docs/compatibility.md`): shapes with more than one style region were
+desyncing the shape record bitstream and rendering garbage fill colors for
+everything past the first style change. Fixed; one shape's parsed
+bounds/fill-color were also independently cross-checked by hand against
+the raw SWF bytes in Python, matching exactly.
 
 ## Architecture
 

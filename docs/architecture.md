@@ -62,7 +62,7 @@ The runtime is deliberately modular so the renderer, audio, input, and
 platform layers can be swapped for Nintendo 3DS-specific implementations
 later without touching the SWF/AVM1 core.
 
-## Current status: Phase 8
+## Current status: Phase 8 complete; Phase 9 (Hobo compatibility testing) underway
 
 Phase 1 built **SWF Loader → SWF Parser** (flat tag list). Phase 2 added
 **Timeline → Display List**: `PlaceObject`/`PlaceObject2`/`RemoveObject`/
@@ -160,6 +160,23 @@ the exact feature matrix, [renderer.md](renderer.md) for the renderer's
 specific limitations, and [avm1-support.md](avm1-support.md) for the AVM1
 opcode support matrix, documented confidence levels, and known Phase 6/7/8
 limitations.
+
+Phase 9 (Hobo compatibility testing) ran the whole pipeline above against
+a real `hobo.swf` for the first time and found two real bugs neither
+Phase 1-8's synthetic test fixtures had exercised: a shape-record
+byte-alignment bug (`readShapeRecordStream()` wasn't byte-aligning before
+a mid-stream `StyleChangeRecord`'s new style arrays — see
+`src/swf/ShapeRecords.cpp`) that was silently corrupting every shape with
+more than one style region, and a missing OOP-callable `MovieClip` method
+surface (`stop()`/`play()`/`gotoAndStop()`/`gotoAndPlay()`/`nextFrame()`/
+`prevFrame()`/`getBytesLoaded()`/`getBytesTotal()`, added to
+`MovieClipInstance::handleNativeGet()` — see `src/runtime/
+MovieClipInstance.cpp`). Both are fixed and regression-tested. See
+`docs/compatibility.md` for the full report, including a screenshot-
+verified render of the real title screen and the prioritized list of
+still-open findings (`DefineMorphShape` not resolved into
+`CharacterDictionary`, a handful of `DefineSprite`s missing a trailing
+`ShowFrame`, and more of the Hobo series/Extreme Pamplona not yet tested).
 
 ## Module layout
 

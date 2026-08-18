@@ -227,3 +227,36 @@ always render their "Up" state, since there's no mouse hit-testing yet).
 - Audio codec decode, streaming sound, `ExportAssets`-based `Sound.attachSound(name)`, `DefineButtonSound` (see the Sound table above)
 - `DefineFont3`, `DefineFontInfo`/`2`, EditText variable binding/word-wrap/scrolling (see the Phase 8 tables above)
 - Nintendo 3DS backend (Phase 10)
+
+## Phase 9 (current) — Hobo compatibility testing
+
+Ran the runtime against a real copy of `hobo.swf` end-to-end for the first
+time (see `docs/compatibility.md` for the full report). Two real bugs
+found and fixed, both from genuine content, neither reproducible from any
+prior synthetic test fixture:
+
+- **`readShapeRecordStream()` byte-alignment bug.** A mid-stream
+  `StyleChangeRecord` with `StateNewStyles` set now correctly byte-aligns
+  before reading its new `FILLSTYLEARRAY`/`LINESTYLEARRAY` (a spec
+  requirement — these are byte-level structures inside the otherwise
+  bit-packed shape record stream). Was silently corrupting every
+  multi-style-region shape's fill styles beyond the first change. See
+  `src/swf/ShapeRecords.cpp` and the regression test
+  `ShapeWithStyle_MidStreamNewStyles_ByteAlignsBeforeNewStyleArrays`.
+- **Missing OOP-callable `MovieClip` methods.** `MovieClipInstance` now
+  exposes `stop()`/`play()`/`nextFrame()`/`prevFrame()`/`gotoAndStop()`/
+  `gotoAndPlay()` (numeric-frame and frame-label forms)/`getBytesLoaded()`/
+  `getBytesTotal()` as real callable methods (via
+  `handleNativeGet()` returning a native `FunctionDef`), not just the
+  bare unqualified action-code forms. `getBytesLoaded`/`getBytesTotal`
+  both return `Movie::declaredFileLength` (this runtime never streams, so
+  "loaded" is trivially "total"). See `src/runtime/MovieClipInstance.cpp`.
+
+Also confirmed (not fixed — see `docs/compatibility.md` for the full
+prioritized list): `DefineMorphShape`/`DefineMorphShape2` are recognized
+but not resolved into `CharacterDictionary` (19 occurrences in `hobo.swf`,
+real-content-confirmed gap, natural next-phase scope); a handful of
+`DefineSprite` tag streams end without a trailing `ShowFrame` (handled
+gracefully, likely a benign encoder quirk); the file uses `DefineFont2`,
+not `DefineFont3` as the old spec-derived table in `compatibility.md`
+claimed before this phase corrected it against the real file.

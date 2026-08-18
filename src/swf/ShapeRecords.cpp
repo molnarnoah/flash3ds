@@ -151,6 +151,23 @@ std::vector<ShapeRecord> readShapeRecordStream(SwfReader& reader, uint32_t numFi
             if (stateLineStyle) rec.lineStyleIndex = reader.readUBits(static_cast<int>(numLineBits));
             if (stateNewStyles) {
                 rec.hasNewStyles = true;
+                // Per spec, a StyleChangeRecord's new fill/line style arrays
+                // are byte-aligned structures — the bit-packed shape record
+                // stream must resync to a byte boundary before reading them
+                // (mirrors how the outer SHAPEWITHSTYLE/RECT structures are
+                // byte-aligned). NumFillBits/NumLineBits immediately follow
+                // as bit fields and do NOT need a second alignment, since
+                // the byte-level array reads above already leave the reader
+                // sitting on a byte boundary.
+                //
+                // Found 2026-08-18 via Phase 9 (Hobo compatibility testing)
+                // against real hobo.swf content: DefineShape/2/3 tags with
+                // more than one style region (common in real exported
+                // artwork) desynced the bitstream here, producing a storm of
+                // "Unknown fill style type" warnings for every byte read
+                // after the first NewStyles record in the shape. No prior
+                // test fixture exercised this path (all set NewStyles=0).
+                reader.byteAlign();
                 rec.newFillStyles = readFillStyleArray(reader, shapeVersion);
                 rec.newLineStyles = readLineStyleArray(reader, shapeVersion);
                 numFillBits = reader.readUBits(4);

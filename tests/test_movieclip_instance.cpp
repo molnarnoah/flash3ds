@@ -44,6 +44,33 @@ std::vector<uint8_t> buildRootScriptMovie(const std::vector<uint8_t>& actionByte
     return swf_fixtures::wrapFws(6, body);
 }
 
+// A 100x100px, `frameCount`-frame movie whose frame 1 DoAction body is
+// `actionBytes`; `labels[i]` (if non-empty) becomes a FrameLabel tag on
+// frame `i+1`. Used for Phase 9's OOP MovieClip-method tests
+// (gotoAndStop/gotoAndPlay/stop/play/getBytesLoaded/getBytesTotal), which
+// need more than one frame to observe playhead movement.
+std::vector<uint8_t> buildMultiFrameRootScriptMovie(uint16_t frameCount,
+                                                     const std::vector<uint8_t>& actionBytes,
+                                                     const std::vector<std::string>& labels = {}) {
+    std::vector<swf_fixtures::FixtureTag> tags;
+    auto labelFor = [&](uint16_t frame1Based) -> std::string {
+        size_t idx = frame1Based - 1;
+        return idx < labels.size() ? labels[idx] : std::string();
+    };
+    for (uint16_t f = 1; f <= frameCount; ++f) {
+        std::string label = labelFor(f);
+        if (!label.empty()) {
+            tags.push_back({43 /* FrameLabel */, swf_fixtures::buildFrameLabelBytes(label)});
+        }
+        if (f == 1 && !actionBytes.empty()) {
+            tags.push_back({static_cast<uint16_t>(TagCode::DoAction), actionBytes});
+        }
+        tags.push_back({1 /* ShowFrame */, {}});
+    }
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, frameCount, tags);
+    return swf_fixtures::wrapFws(6, body);
+}
+
 // A 100x100px, `rootFrames`-frame movie that places a 1-depth, `spriteFrames`
 // -frame sprite character (id=20, no visual content — an empty MovieClip is
 // fine for scripting tests) named "mc" on root frame 1, with `actionBytes`
@@ -765,4 +792,110 @@ TEST_CASE(MovieClipInstance_ExternalInterface_InvokeCallback_UnregisteredName_Re
     ScriptEnvironment env;
     Value result = env.invokeCallback("nope", {});
     CHECK(result.isUndefined());
+}
+
+// --- Phase 9: OOP-callable MovieClip methods (found missing via real
+// hobo.swf content — see handleNativeGet's doc comment in
+// MovieClipInstance.cpp) ------------------------------------------------
+
+TEST_CASE(MovieClipInstance_CallMethod_Stop_HaltsOwnTimeline) {
+    // `_root.stop();` via CallMethod bytecode — the OOP form, as opposed to
+    // MovieClipInstance_Stop_HaltsOwnTimelineOnly's bare `stop();` action
+    // code.
+    Asm a;
+    a.pushInt(0);  // numArgs
+    a.pushString("_root");
+    a.op(0x1C);  // ActionGetVariable
+    a.pushString("stop");
+    a.op(0x52);  // ActionCallMethod
+    auto bytes = buildRootScriptMovie(a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(!root->timeline().isPlaying());
+}
+
+TEST_CASE(MovieClipInstance_CallMethod_GotoAndStopNumericFrame_MovesPlayheadAndStops) {
+    // `_root.gotoAndStop(3);` — AS2's 1-based numeric frame form.
+    Asm a;
+    a.pushInt(3);  // arg: frame 3
+    a.pushInt(1);  // numArgs
+    a.pushString("_root");
+    a.op(0x1C);  // ActionGetVariable
+    a.pushString("gotoAndStop");
+    a.op(0x52);  // ActionCallMethod
+    auto bytes = buildMultiFrameRootScriptMovie(3, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->timeline().currentFrame(), static_cast<uint32_t>(3));
+    CHECK(!root->timeline().isPlaying());
+}
+
+TEST_CASE(MovieClipInstance_CallMethod_GotoAndPlayLabel_MovesPlayheadAndKeepsPlaying) {
+    // `_root.gotoAndPlay("end");` — AS2's frame-label form.
+    Asm a;
+    a.pushString("end");  // arg: label
+    a.pushInt(1);          // numArgs
+    a.pushString("_root");
+    a.op(0x1C);  // ActionGetVariable
+    a.pushString("gotoAndPlay");
+    a.op(0x52);  // ActionCallMethod
+    auto bytes = buildMultiFrameRootScriptMovie(3, a.build(), {"", "", "end"});
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->timeline().currentFrame(), static_cast<uint32_t>(3));
+    CHECK(root->timeline().isPlaying());
+}
+
+TEST_CASE(MovieClipInstance_CallMethod_GetBytesLoadedAndTotal_ReportFullyLoadedFileSize) {
+    // `loaded = _root.getBytesLoaded(); total = _root.getBytesTotal();` —
+    // this runtime never streams, so both must equal the whole file's
+    // declared length from the very first frame.
+    Asm a;
+    a.pushString("loaded");
+    a.pushInt(0);
+    a.pushString("_root");
+    a.op(0x1C);
+    a.pushString("getBytesLoaded");
+    a.op(0x52);
+    a.op(0x1D);  // ActionSetVariable
+
+    a.pushString("total");
+    a.pushInt(0);
+    a.pushString("_root");
+    a.op(0x1C);
+    a.pushString("getBytesTotal");
+    a.op(0x52);
+    a.op(0x1D);
+    auto bytes = buildRootScriptMovie(a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    double loaded = root->scriptObject()->getOwnProperty("loaded").toNumber();
+    double total = root->scriptObject()->getOwnProperty("total").toNumber();
+    CHECK(loaded > 0.0);
+    CHECK_EQ(loaded, total);
+    CHECK_EQ(loaded, static_cast<double>(movie->declaredFileLength));
 }

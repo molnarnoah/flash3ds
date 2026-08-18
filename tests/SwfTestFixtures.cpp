@@ -351,6 +351,57 @@ std::vector<uint8_t> buildSolidRectShapeWithStyleBytes(int shapeVersion, uint8_t
     return out;
 }
 
+std::vector<uint8_t> buildShapeWithMidStreamNewStylesBytes(int shapeVersion, uint8_t r1,
+                                                             uint8_t g1, uint8_t b1, uint8_t r2,
+                                                             uint8_t g2, uint8_t b2) {
+    // Initial (pre-record-stream) FillStyleArray/LineStyleArray — both
+    // byte-level structures, written directly rather than via BitWriter.
+    std::vector<uint8_t> out = buildSolidFillStyleArrayBytes(r1, g1, b1, 255, shapeVersion);
+    auto lineStyles = buildEmptyLineStyleArrayBytes();
+    out.insert(out.end(), lineStyles.begin(), lineStyles.end());
+
+    BitWriter bw(out);
+    bw.writeBits(1, 4);  // NumFillBits = 1
+    bw.writeBits(0, 4);  // NumLineBits = 0
+
+    // Mid-stream StyleChangeRecord: only StateNewStyles set (no MoveTo/
+    // FillStyle/LineStyle fields to read) — 6 bits total, landing at a
+    // non-byte-aligned position (bit 6 of the current byte).
+    bw.writeBits(0, 1);  // TypeFlag = 0 (style-change)
+    bw.writeBits(1, 1);  // StateNewStyles = 1
+    bw.writeBits(0, 1);  // StateLineStyle = 0
+    bw.writeBits(0, 1);  // StateFillStyle1 = 0
+    bw.writeBits(0, 1);  // StateFillStyle0 = 0
+    bw.writeBits(0, 1);  // StateMoveTo = 0
+
+    // Per spec, the new style arrays are byte-aligned — a real encoder
+    // pads here before writing them. This is exactly the alignment the
+    // Phase 9 bug (missing reader.byteAlign()) failed to resync to.
+    bw.byteAlign();
+
+    // New FillStyleArray: one solid fill, color 2.
+    writeU8(out, 1);     // count = 1
+    writeU8(out, 0x00);  // FillStyleType::kSolid
+    writeU8(out, r2);
+    writeU8(out, g2);
+    writeU8(out, b2);
+    if (shapeVersion >= 3) writeU8(out, 255);
+    // New LineStyleArray: empty.
+    writeU8(out, 0);
+
+    // New NumFillBits/NumLineBits (bit-packed again, but the reader is
+    // byte-aligned here so this restarts cleanly).
+    bw.writeBits(1, 4);  // NumFillBits = 1
+    bw.writeBits(0, 4);  // NumLineBits = 0
+
+    // EndShapeRecord: TypeFlag=0 followed by five zero state bits.
+    bw.writeBits(0, 1);
+    bw.writeBits(0, 5);
+    bw.byteAlign();
+
+    return out;
+}
+
 std::vector<uint8_t> buildDefineShapeBytes(int shapeVersion, uint16_t characterId,
                                             int32_t widthTwips, int32_t heightTwips, uint8_t r,
                                             uint8_t g, uint8_t b, uint8_t a) {

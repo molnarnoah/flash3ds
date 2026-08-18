@@ -152,12 +152,43 @@ a code table) and has literal `initialText`, with no word-wrap/scrolling/
 alignment/variable-binding. See `docs/avm1-support.md`'s "Known Phase 8
 limitations" and `docs/swf-support.md`'s Phase 8 section for the full list.
 
+Phase 9: Hobo compatibility testing. Ran the full pipeline against a real
+copy of `hobo.swf` (~4.97 MB, SWF6/CWS, the actual game, not a synthetic
+proxy) end-to-end for the first time — see `docs/compatibility.md` for the
+full report. Found and fixed two real bugs neither Phase 1-8's synthetic
+fixtures had exercised: (1) `readShapeRecordStream()` wasn't byte-aligning
+before a mid-stream `StyleChangeRecord`'s new fill/line style arrays (a
+spec requirement), which was silently corrupting every shape with more
+than one style region — before the fix, rendering all 13 title-screen
+frames logged ~1.54 million bogus "Unknown fill style type" warnings;
+after, zero; (2) `MovieClipInstance` had no OOP-callable methods at all
+(`someClip.stop()`/`.gotoAndPlay()`/`.getBytesLoaded()` etc. via
+`CallMethod` bytecode all failed) — only the bare unqualified action-code
+forms worked. Added `stop`/`play`/`nextFrame`/`prevFrame`/`gotoAndStop`/
+`gotoAndPlay`/`getBytesLoaded`/`getBytesTotal` as real native methods.
+Both fixes are regression-tested. The rendered title screen was visually
+confirmed correct (character art, wordmark, button, panels all in place)
+and one shape's parsed bounds/fill-color were independently hand-verified
+against the raw SWF bytes. 187 passing unit tests, zero compiler warnings
+on a full clean rebuild.
+
+**Known Phase 9 limitations / open findings (see `docs/compatibility.md`
+for the full prioritized list):** `DefineMorphShape`/`2` (confirmed
+present, 19 occurrences) still isn't resolved into `CharacterDictionary`;
+a handful of `DefineSprite` tag streams end without a trailing `ShowFrame`
+(handled gracefully, likely benign); only the specific OOP MovieClip
+methods a real failing script needed were added, not the full AS2 surface
+(`swapDepths`/`hitTest`/`duplicateMovieClip`/etc. still missing); the rest
+of the Hobo series, Extreme Pamplona, and `hobo.swf`'s own gameplay frames
+(only the 13-frame title/menu screen was actually tested) remain untested.
+
 Read `docs/architecture.md` for the full 10-phase plan, `docs/swf-support.md`
 for the current SWF feature matrix, `docs/renderer.md` for the renderer's
-specific (documented, deliberate) limitations, and `docs/avm1-support.md`
-for the AVM1 opcode support matrix, documented confidence levels, and known
-Phase 6/7/8 limitations before starting new work. **Do not jump ahead of
-the current phase** — the project spec is explicit about working phase-by-
+specific (documented, deliberate) limitations, `docs/avm1-support.md` for
+the AVM1 opcode support matrix, documented confidence levels, and known
+Phase 6/7/8/9 limitations, and `docs/compatibility.md` for the real-content
+compatibility report before starting new work. **Do not jump ahead of the
+current phase** — the project spec is explicit about working phase-by-
 phase, building + testing + documenting at the end of each one.
 
 ## Workflow for every phase
@@ -170,15 +201,20 @@ phase, building + testing + documenting at the end of each one.
 5. `git add -A && git commit` with a clear summary of what shipped in that
    phase.
 
-## Next phase (Phase 9)
+## Next phase (Phase 10)
 
-Hobo compatibility testing. Per the original 10-phase plan: run the runtime
-against real target SWF content end-to-end, catalogue what actually breaks
-or is missing when pointed at it, and prioritize fixes by what real content
-needs rather than continuing to guess at spec coverage in the abstract.
-Concrete scope (which file(s), what "passing" looks like, how failures get
-triaged into new phases vs. quick fixes) to work out at the start of that
-phase.
+Nintendo 3DS backend — the final phase per the original 10-phase plan: a
+real `IRenderer` implementation over citro3d, real input (3DS buttons/
+circle pad mapped into `InputState`), and a real `IAudioBackend`, replacing
+the desktop `SoftwareRenderer`/`NullAudioBackend` test doubles without
+touching the platform-independent SWF/AVM1 core above them.
+
+Phase 9 (Hobo compatibility testing) is not "done" in the same sense the
+numbered phases are — its own charter is ongoing real-content testing, and
+`docs/compatibility.md`'s "Not yet tested" list (the rest of the Hobo
+series, Extreme Pamplona, `hobo.swf`'s own gameplay frames) is still open.
+It can continue in parallel with Phase 10, or resume afterward — whichever
+a target title's needs make more useful at the time.
 
 Carry-overs / explicitly deferred from earlier phases, in case a target
 title needs one of these sooner than its "natural" later phase:
@@ -207,6 +243,16 @@ title needs one of these sooner than its "natural" later phase:
   records with a `FilterList` are all explicitly rejected/unsupported
   rather than approximated (Phase 8 limitation) — see
   `docs/swf-support.md`'s Phase 8 section for why.
+- `DefineMorphShape`/`DefineMorphShape2` (confirmed present in real
+  `hobo.swf` content, 19 occurrences) are recognized by `TagCode` but not
+  resolved into `CharacterDictionary` — a real chunk of new parsing +
+  ratio-interpolated rendering work, not a quick fix (Phase 9 finding, see
+  `docs/compatibility.md`).
+- Only the specific OOP `MovieClip` methods a real failing script needed
+  were added in Phase 9 (`stop`/`play`/`nextFrame`/`prevFrame`/
+  `gotoAndStop`/`gotoAndPlay`/`getBytesLoaded`/`getBytesTotal`) — the rest
+  of the AS2 `MovieClip` method surface (`swapDepths`/`hitTest`/
+  `duplicateMovieClip`/`attachMovie`/`loadMovie`/...) is still missing.
 
 Do NOT implement AVM2/ActionScript 3 — out of scope per the project spec.
 Keep following the TDD pattern: small test SWFs / programmatic fixtures,

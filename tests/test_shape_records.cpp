@@ -98,3 +98,39 @@ TEST_CASE(ShapeWithStyle_WithLineStyle_ParsesLineStyleIndex) {
     CHECK(shape.records[0].lineStyleIndex.has_value());
     CHECK_EQ(*shape.records[0].lineStyleIndex, static_cast<uint32_t>(1));
 }
+
+// Regression test for a Phase 9 (Hobo compatibility testing) bug: a
+// mid-stream StyleChangeRecord with StateNewStyles set must byte-align
+// before reading its new FillStyleArray/LineStyleArray (spec requirement —
+// these are byte-level structures embedded in the otherwise bit-packed
+// shape record stream). No prior fixture exercised this path, so it went
+// undetected until tested against real hobo.swf content, where it produced
+// a storm of bogus "Unknown fill style type" warnings for every shape with
+// more than one style region.
+TEST_CASE(ShapeWithStyle_MidStreamNewStyles_ByteAlignsBeforeNewStyleArrays) {
+    auto bytes = fixtures::buildShapeWithMidStreamNewStylesBytes(
+        /*shapeVersion=*/3, /*r1=*/0x11, /*g1=*/0x22, /*b1=*/0x33, /*r2=*/0xAA, /*g2=*/0xBB,
+        /*b2=*/0xCC);
+
+    SwfReader r(bytes.data(), bytes.size());
+    auto shape = readShapeWithStyle(r, 3);
+    CHECK(!r.failed());
+
+    // Initial style arrays parsed normally.
+    CHECK_EQ(shape.fillStyles.size(), static_cast<size_t>(1));
+    CHECK_EQ(shape.fillStyles[0].solidColor.r, 0x11);
+
+    // Exactly one StyleChangeRecord, carrying the new (byte-aligned) styles.
+    CHECK_EQ(shape.records.size(), static_cast<size_t>(1));
+    CHECK(shape.records[0].type == ShapeRecordType::kStyleChange);
+    CHECK(shape.records[0].hasNewStyles);
+
+    CHECK_EQ(shape.records[0].newFillStyles.size(), static_cast<size_t>(1));
+    CHECK(shape.records[0].newFillStyles[0].isSolid());
+    CHECK_EQ(shape.records[0].newFillStyles[0].type, FillStyleType::kSolid);
+    CHECK_EQ(shape.records[0].newFillStyles[0].solidColor.r, 0xAA);
+    CHECK_EQ(shape.records[0].newFillStyles[0].solidColor.g, 0xBB);
+    CHECK_EQ(shape.records[0].newFillStyles[0].solidColor.b, 0xCC);
+
+    CHECK_EQ(shape.records[0].newLineStyles.size(), static_cast<size_t>(0));
+}

@@ -108,6 +108,18 @@ std::vector<uint8_t> buildSolidRectShapeWithStyleBytes(int shapeVersion, uint8_t
                                                          uint8_t b, uint8_t a,
                                                          int32_t widthTwips, int32_t heightTwips);
 
+// A ShapeWithStyle body whose SHAPERECORD stream contains exactly one
+// mid-stream StyleChangeRecord with StateNewStyles set (all other state
+// bits 0 — no MoveTo/FillStyle/LineStyle fields), followed by a byte-
+// aligned new FillStyleArray (one solid fill, `r2/g2/b2`)/LineStyleArray
+// (empty)/NumFillBits(1)/NumLineBits(0), then EndShapeRecord. The initial
+// (pre-record-stream) FillStyleArray holds one solid fill (`r1/g1/b1`).
+// Regression fixture for the Phase 9 byte-alignment bug: real hobo.swf
+// shapes with more than one style region hit exactly this path.
+std::vector<uint8_t> buildShapeWithMidStreamNewStylesBytes(int shapeVersion, uint8_t r1,
+                                                             uint8_t g1, uint8_t b1, uint8_t r2,
+                                                             uint8_t g2, uint8_t b2);
+
 // A full DefineShape/DefineShape2/DefineShape3 tag body: CharacterId,
 // Bounds (RECT), then a solid-filled rectangle ShapeWithStyle.
 std::vector<uint8_t> buildDefineShapeBytes(int shapeVersion, uint16_t characterId,

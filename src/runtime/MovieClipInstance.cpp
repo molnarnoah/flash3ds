@@ -521,6 +521,70 @@ bool MovieClipInstance::handleNativeGet(const std::string& name, avm1::Value& ou
     }
     if (name == "_global") { out = avm1::Value::object(env_->globalObject()); return true; }
 
+    // OOP-callable MovieClip methods (Phase 9, added against real hobo.swf
+    // content: a preloader-gate script called `_root.getBytesLoaded()`/
+    // `getBytesTotal()`/`.stop()` via CallMethod bytecode, which only the
+    // bare unqualified action-code forms — stop()/play()/gotoAndStop() as
+    // *statements*, dispatched through HostBindings — previously handled.
+    // These reuse the exact same Timeline primitives HostBindings uses, so
+    // behavior is identical whether a script says `stop();` (current
+    // target, via HostBindings/SetTarget) or `someClip.stop()` (this exact
+    // clip, via CallMethod). getBytesLoaded()/getBytesTotal() always
+    // report the whole file as loaded — this runtime loads a movie
+    // synchronously and never streams, so "loaded" is trivially "total"
+    // from the very first frame.
+    if (name == "stop" || name == "play" || name == "nextFrame" || name == "prevFrame" ||
+        name == "gotoAndStop" || name == "gotoAndPlay" || name == "getBytesLoaded" ||
+        name == "getBytesTotal") {
+        auto* self = const_cast<MovieClipInstance*>(this);
+        std::weak_ptr<MovieClipInstance> weakSelf = self->shared_from_this();
+        std::string methodName = name;
+        out = avm1::Value::object(avm1::makeNativeFunction(
+            methodName,
+            [weakSelf, methodName](avm1::ExecutionContext&, const avm1::Value&,
+                                    const std::vector<avm1::Value>& args) -> avm1::Value {
+                auto mc = weakSelf.lock();
+                if (!mc) return avm1::Value::undefined();
+                if (methodName == "stop") {
+                    mc->timeline().stop();
+                } else if (methodName == "play") {
+                    mc->timeline().play();
+                } else if (methodName == "nextFrame") {
+                    mc->timeline().nextFrame();
+                } else if (methodName == "prevFrame") {
+                    mc->timeline().prevFrame();
+                } else if (methodName == "gotoAndStop" || methodName == "gotoAndPlay") {
+                    if (args.empty()) return avm1::Value::undefined();
+                    bool isPlay = (methodName == "gotoAndPlay");
+                    if (args[0].isString()) {
+                        bool found = isPlay ? mc->timeline().gotoAndPlay(args[0].toString())
+                                              : mc->timeline().gotoAndStop(args[0].toString());
+                        if (!found) {
+                            LOG_WARN("MOVIECLIP", "%s('%s'): label not found",
+                                      methodName.c_str(), args[0].toString().c_str());
+                        }
+                    } else {
+                        // AS2's gotoAndStop/gotoAndPlay take 1-based frame
+                        // numbers directly — same convention as Timeline's
+                        // own gotoAndStop/gotoAndPlay(uint32_t), unlike the
+                        // 0-based GotoFrame *action code* (see
+                        // MovieClipHostBindings::gotoFrame's +1 above).
+                        uint32_t frame = static_cast<uint32_t>(std::max(0.0, args[0].toNumber()));
+                        if (isPlay) {
+                            mc->timeline().gotoAndPlay(frame);
+                        } else {
+                            mc->timeline().gotoAndStop(frame);
+                        }
+                    }
+                } else if (methodName == "getBytesLoaded" || methodName == "getBytesTotal") {
+                    // Always fully loaded — see comment above.
+                    return avm1::Value::number(mc->movie_->declaredFileLength);
+                }
+                return avm1::Value::undefined();
+            }));
+        return true;
+    }
+
     auto it = childNameToDepth_.find(name);
     if (it != childNameToDepth_.end()) {
         auto childIt = children_.find(it->second);

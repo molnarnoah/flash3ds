@@ -130,9 +130,14 @@ void scanTagsForCharacters(const Movie& movie, const std::vector<swf::TagRecord>
                           tag.bodyOffset);
             }
         }
-        // Other character-defining tags (DefineBits*/bitmaps) are
-        // recognized by TagCode elsewhere but not resolved into the
-        // dictionary yet — later phase.
+        // Other character-defining tags (DefineBits*/bitmaps,
+        // DefineMorphShape/2 — confirmed present in real hobo.swf content
+        // via Phase 9 testing, 19 occurrences) are recognized by TagCode
+        // elsewhere but not resolved into the dictionary yet — later
+        // phase. A PlaceObject2 referencing one of these silently places
+        // nothing (SceneRenderer::renderCharacter finds no CharacterDef
+        // and skips it), matching how unresolved characters are already
+        // handled.
     }
 }
 

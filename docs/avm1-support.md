@@ -579,6 +579,23 @@ real SWF output.
   Down-state record at a different position must NOT appear); a
   `DefineEditText` field with an embedded `DefineFont2` font renders its
   `initialText`'s glyph.
+- `tests/test_shape_records.cpp` (Phase 9 addition) —
+  `ShapeWithStyle_MidStreamNewStyles_ByteAlignsBeforeNewStyleArrays`: a
+  regression test for the byte-alignment bug found against real `hobo.swf`
+  content (see `docs/compatibility.md`), built from a purpose-made fixture
+  (`buildShapeWithMidStreamNewStylesBytes`) whose mid-stream
+  `StyleChangeRecord` lands at a deliberately non-byte-aligned bit
+  position before its `StateNewStyles` block, so the test fails without
+  the fix.
+- `tests/test_movieclip_instance.cpp` (Phase 9 additions) — four
+  `MovieClipInstance_CallMethod_*` tests exercising the new OOP-callable
+  methods via real `CallMethod` AVM1 bytecode (not direct C++ calls):
+  `.stop()` halting the timeline, `.gotoAndStop(3)` (numeric) and
+  `.gotoAndPlay("end")` (label, via a new `buildMultiFrameRootScriptMovie`
+  fixture helper with per-frame `FrameLabel` support) both moving the
+  playhead and setting/preserving `isPlaying()` correctly, and
+  `.getBytesLoaded()`/`.getBytesTotal()` both returning
+  `Movie::declaredFileLength`.
 
 ## Known Phase 5 limitations
 
@@ -690,12 +707,61 @@ the AVM1-relevant highlights:
   chosen over guessing at an unknown-length structure and desyncing
   everything after it.
 
-## Next (Phase 9)
+## Phase 9 — OOP-callable MovieClip methods
 
-Hobo compatibility testing, per the project's original 10-phase plan:
-running the runtime against real target SWF content end-to-end, cataloguing
-what actually breaks or is missing when pointed at it, and prioritizing
-fixes by what real content needs rather than continuing to guess at spec
-coverage in the abstract. Concrete scope (which file(s), what "passing"
-looks like, how failures get triaged into new phases vs. quick fixes) to
-work out at the start of that phase.
+Found missing by running the runtime against a real `hobo.swf`'s frame-1
+preloader-gate script (see `docs/compatibility.md` for the full report):
+`MovieClipInstance::handleNativeGet()` previously only exposed intrinsic
+*properties* (`_x`, `_y`, `_currentframe`, ...) — calling a method on a
+clip via AVM1's `CallMethod` bytecode (`someClip.stop()`,
+`_root.gotoAndPlay("end")`, ...) always failed with `'<name>' is not a
+function`, since only the bare unqualified action-code forms (`stop();`,
+dispatched through `HostBindings`) were wired up. `handleNativeGet()` now
+also returns a native `FunctionDef` (built with `avm1::makeNativeFunction`,
+same mechanism Phase 6's `Key`/`Mouse`/`Sound` built-ins use) for:
+
+- `stop()`, `play()`, `nextFrame()`, `prevFrame()` — call straight through
+  to the owning clip's `Timeline`, same primitives `HostBindings` uses for
+  the bare-action-code forms.
+- `gotoAndStop(frame)`, `gotoAndPlay(frame)` — accept either a 1-based
+  frame number or a frame-label string (checked via `Value::isString()`),
+  matching real AS2's overloaded signature.
+- `getBytesLoaded()`, `getBytesTotal()` — both return
+  `Movie::declaredFileLength`. This runtime loads a movie fully and
+  synchronously before running any script — it never streams — so
+  "loaded" is trivially always equal to "total," from frame 1 onward.
+
+Each of these closes over a `std::weak_ptr<MovieClipInstance>` for the
+*specific clip the method was looked up on* (not the `thisVal` argument
+`CallMethod` passes at call time) — consistent with how every other
+intrinsic property already works on this object, and sufficient for every
+real call pattern (`clip.method()`) without needing to honor a detached/
+reassigned method reference, which AS2 content essentially never does.
+
+See `tests/test_movieclip_instance.cpp`'s four
+`MovieClipInstance_CallMethod_*` tests.
+
+## Known Phase 9 limitations
+
+- Only `stop`/`play`/`nextFrame`/`prevFrame`/`gotoAndStop`/`gotoAndPlay`/
+  `getBytesLoaded`/`getBytesTotal` were added — real content commonly also
+  calls `swapDepths()`, `hitTest()`, `duplicateMovieClip()`,
+  `attachMovie()`, `loadMovie()`, `getURL()` (as a method), and others.
+  Only the ones a real failing script actually needed were added this
+  phase (see `docs/compatibility.md`'s "prioritize fixes by what real
+  content needs" charter) — the rest remain unimplemented until a target
+  title's script is actually observed calling them.
+- The single remaining `CallMethod: target is not an object` warning found
+  against `hobo.swf` (see `docs/compatibility.md`) was not chased down —
+  plausibly correct behavior (a real Flash Player would also no-op calling
+  a method on an unresolved path), not confirmed either way.
+
+## Next (Phase 10)
+
+Nintendo 3DS backend, per the project's original 10-phase plan — the final
+phase. `docs/compatibility.md`'s "Not yet tested" list (the rest of the
+Hobo series, Extreme Pamplona, and `hobo.swf`'s own gameplay frames beyond
+the title screen) is also still open and can continue in parallel with, or
+ahead of, Phase 10 — Phase 9's own charter (run against real content,
+prioritize fixes by what's actually needed) doesn't have a hard "done"
+line the way the numbered phases do.
