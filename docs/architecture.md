@@ -22,7 +22,8 @@ SWF Parser         (src/swf/SwfReader.*, TagDispatcher.*, TagCode.*)
    |                    |
    v                    v
 Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 done, Phase 5 wired in,
-   |                    |                Phase 6 added native Key/Mouse/Sound + real StartDrag/EndDrag
+   |                    |                Phase 6 added native Key/Mouse/Sound + real StartDrag/EndDrag,
+   |                    |                Phase 7 added native ExternalInterface + Interpreter::callFunction
    +---------+----------+
              |
              v
@@ -43,6 +44,11 @@ Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 d
 
  Input                                <-- Phase 6: InputState (src/runtime/InputState.*) backs
                                           Key.isDown()/_xmouse/_ymouse/StartDrag
+
+ Native bridge                        <-- Phase 7: ExternalInterface.call/addCallback (AS2 <-> native/
+                                          host C++, both directions — src/runtime/MovieClipInstance.*'s
+                                          ScriptEnvironment::registerHostFunction/callHostFunction/
+                                          hasCallback/invokeCallback)
     |
     v
 Top / Bottom Screen                   <-- not yet implemented (Phase 10)
@@ -55,7 +61,7 @@ The runtime is deliberately modular so the renderer, audio, input, and
 platform layers can be swapped for Nintendo 3DS-specific implementations
 later without touching the SWF/AVM1 core.
 
-## Current status: Phase 6
+## Current status: Phase 7
 
 Phase 1 built **SWF Loader → SWF Parser** (flat tag list). Phase 2 added
 **Timeline → Display List**: `PlaceObject`/`PlaceObject2`/`RemoveObject`/
@@ -110,12 +116,29 @@ the mouse/keyboard-related clip events and button `on()` handlers are
 still not dispatched (need hit-testing/bounds and `DefineButton`
 respectively — see `docs/avm1-support.md`'s Known Phase 6 limitations).
 
+Phase 7 added **ExternalInterface** — AS2 <-> native/host communication in
+both directions — reusing Phase 6's native-function (`nativeImpl`) seam
+plus one new interpreter-level building block, a public
+`Interpreter::callFunction()` that lets native/host code invoke an
+already-constructed AS2 `Function` value directly (needed for the native ->
+AS2 direction). `ExternalInterface.call(name, ...args)` (AS2 -> native)
+dispatches to a C++ function registered ahead of time via
+`ScriptEnvironment::registerHostFunction()`; `ExternalInterface.
+addCallback(name, instance, function)` (native -> AS2) registers an AS2
+function that native/host code can later find and run via
+`ScriptEnvironment::hasCallback()`/`invokeCallback()`. Since this is a
+same-process C++ embedding rather than a browser+JS bridge like real
+Flash, `avm1::Value` crosses the boundary directly in both directions — a
+deliberate documented simplification/improvement over real
+`ExternalInterface` semantics (see `docs/avm1-support.md`'s
+"ExternalInterface" section).
+
 Text/bitmap/button rendering, `_width`/`_height`, and color-transform
 application at render time still don't exist — see
 [swf-support.md](swf-support.md) for the exact feature matrix,
 [renderer.md](renderer.md) for the renderer's specific limitations, and
 [avm1-support.md](avm1-support.md) for the AVM1 opcode support matrix,
-documented confidence levels, and known Phase 6 limitations.
+documented confidence levels, and known Phase 6/7 limitations.
 
 ## Module layout
 
@@ -151,7 +174,11 @@ src/
                                              (Phase 6: + InputState/
                                              IAudioBackend/drag state,
                                              native Key/Mouse/Sound globals,
-                                             ClipActionRecord dispatch)
+                                             ClipActionRecord dispatch;
+                                             Phase 7: + registerHostFunction/
+                                             callHostFunction/hasCallback/
+                                             invokeCallback, native
+                                             ExternalInterface global)
               InputState.h/.cpp           — Phase 6: host-settable keyboard/
                                              mouse state; no avm1/runtime
                                              dependency either way
@@ -186,7 +213,11 @@ src/
               ExecutionContext.h/.cpp     — stack+scope+registers+constant
                                              pool+globals for one call frame
               Interpreter.h/.cpp          — tree-walking bytecode dispatch
-                                             loop over DoAction bodies
+                                             loop over DoAction bodies;
+                                             Phase 7 added the public
+                                             callFunction() entry point for
+                                             native/host code to invoke an
+                                             AS2 Function value directly
 tools/
   flash_runtime/main.cpp                  — CLI SWF inspector (+ --timeline, --render)
 tests/

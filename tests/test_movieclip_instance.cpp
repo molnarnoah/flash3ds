@@ -646,3 +646,123 @@ TEST_CASE(MovieClipInstance_AVM1SoundObject_AttachNumericIdAndStart_DispatchesTo
     CHECK_EQ(spy.playCalls[0].soundId, static_cast<uint16_t>(5));
     CHECK_EQ(spy.playCalls[0].loopCount, 2);
 }
+
+// --- Phase 7: ExternalInterface -----------------------------------------
+
+TEST_CASE(MovieClipInstance_ExternalInterface_Available_IsTrue) {
+    Asm a;
+    a.pushString("avail");
+    a.pushString("ExternalInterface");
+    a.op(0x1C);  // GetVariable
+    a.pushString("available");
+    a.op(0x4E);  // GetMember
+    a.op(0x1D);  // SetVariable
+    auto bytes = buildRootScriptMovie(a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(root->scriptObject()->getOwnProperty("avail").toBoolean());
+}
+
+TEST_CASE(MovieClipInstance_ExternalInterface_Call_DispatchesToRegisteredHostFunction) {
+    // result = ExternalInterface.call("nativeGreet", "noe", 3);
+    Asm a;
+    a.pushString("result");
+    a.pushString("nativeGreet");  // arg0 — the callee name (call()'s own first arg)
+    a.pushString("noe");          // arg1
+    a.pushInt(3);                 // arg2
+    a.pushInt(3);                 // numArgs
+    a.pushString("ExternalInterface");
+    a.op(0x1C);  // GetVariable
+    a.pushString("call");
+    a.op(0x52);  // CallMethod
+    a.op(0x1D);  // SetVariable
+    auto bytes = buildRootScriptMovie(a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    std::vector<Value> received;
+    env.registerHostFunction("nativeGreet", [&received](const std::vector<Value>& args) {
+        received = args;
+        return Value::string("ok");
+    });
+
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(received.size(), static_cast<size_t>(2));
+    CHECK_EQ(received[0].toString(), "noe");
+    CHECK_EQ(received[1].toNumber(), 3.0);
+    CHECK_EQ(root->scriptObject()->getOwnProperty("result").toString(), "ok");
+}
+
+TEST_CASE(MovieClipInstance_ExternalInterface_Call_UnregisteredName_ReturnsUndefined) {
+    Asm a;
+    a.pushString("result");
+    a.pushString("neverRegistered");
+    a.pushInt(1);  // numArgs
+    a.pushString("ExternalInterface");
+    a.op(0x1C);
+    a.pushString("call");
+    a.op(0x52);
+    a.op(0x1D);
+    auto bytes = buildRootScriptMovie(a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(root->scriptObject()->getOwnProperty("result").isUndefined());
+}
+
+TEST_CASE(MovieClipInstance_ExternalInterface_AddCallback_NativeInvokeCallback_RunsAs2Function) {
+    // function(n) { return n * 2; }
+    Asm fnBody;
+    fnBody.pushString("n");
+    fnBody.op(0x1C);  // GetVariable — resolves the named (non-register) param
+    fnBody.pushInt(2);
+    fnBody.op(0x0C);  // Multiply
+    fnBody.op(0x3E);  // Return
+
+    // ExternalInterface.addCallback("double", "thisMarker", function(n){...});
+    Asm a;
+    a.pushString("double");                          // arg0: methodName
+    a.pushString("thisMarker");                       // arg1: instance
+    a.defineFunctionV1("", {"n"}, fnBody.build());     // arg2: function (anonymous — pushed)
+    a.pushInt(3);                                      // numArgs
+    a.pushString("ExternalInterface");
+    a.op(0x1C);  // GetVariable
+    a.pushString("addCallback");
+    a.op(0x52);  // CallMethod
+    a.op(0x17);  // Pop — discard the boolean return value
+    auto bytes = buildRootScriptMovie(a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(env.hasCallback("double"));
+    CHECK(!env.hasCallback("notRegistered"));
+
+    Value result = env.invokeCallback("double", {Value::number(21)});
+    CHECK_EQ(result.toNumber(), 42.0);
+}
+
+TEST_CASE(MovieClipInstance_ExternalInterface_InvokeCallback_UnregisteredName_ReturnsUndefined) {
+    ScriptEnvironment env;
+    Value result = env.invokeCallback("nope", {});
+    CHECK(result.isUndefined());
+}

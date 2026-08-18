@@ -1,11 +1,12 @@
 # AVM1 (ActionScript 2) Support Status
 
 **Status: Phase 4 VM core implemented; Phase 5 wired it into the scene
-graph; Phase 6 added Sound/Input.** `DoAction`/`DoInitAction` now actually
-execute against a real `MovieClip` tree, with per-instance playheads and a
-real `HostBindings`, native (C++-backed) `Key`/`Mouse`/`Sound` built-ins,
-real `StartDrag`/`EndDrag`, and `onClipEvent`'s `Load`/`Unload`/`EnterFrame`
-handlers.
+graph; Phase 6 added Sound/Input; Phase 7 added ExternalInterface.**
+`DoAction`/`DoInitAction` now actually execute against a real `MovieClip`
+tree, with per-instance playheads and a real `HostBindings`, native
+(C++-backed) `Key`/`Mouse`/`Sound`/`ExternalInterface` built-ins, real
+`StartDrag`/`EndDrag`, `onClipEvent`'s `Load`/`Unload`/`EnterFrame` handlers,
+and AS2 <-> native/host communication in both directions.
 
 Phase 4 built a complete, standalone AVM1 bytecode interpreter
 (`src/avm1/`) that runs against a raw bytecode buffer and an
@@ -40,6 +41,19 @@ keyboard/mouse), an `audio::IAudioBackend*` (defaults to a no-op
 and `PlaceObject2`'s `ClipActionRecord` section is now parsed and partially
 dispatched (`Load`/`Unload`/`EnterFrame` — see "Known Phase 6 limitations").
 
+Phase 7 added `ExternalInterface` — AS2 <-> native/host communication in
+both directions (see "ExternalInterface" below) — reusing the exact same
+`nativeImpl` seam Phase 6 introduced for `Key`/`Mouse`/`Sound`, plus one new
+interpreter-level building block: a public `Interpreter::callFunction()`
+that lets native/host code invoke an already-constructed AS2 `Function`
+value directly, without going through `CallFunction`/`CallMethod` bytecode
+dispatch (needed for the native -> AS2 direction, `ExternalInterface.
+addCallback`). Since this runtime embeds AS2 in the SAME process as its
+native/host code (no browser, unlike real Flash's JS bridge), `avm1::Value`
+crosses the boundary directly in both directions — a deliberate, documented
+simplification/improvement over real `ExternalInterface`'s JS/XML
+marshalling.
+
 ## Module layout
 
 ```
@@ -58,7 +72,9 @@ src/avm1/                      (host-agnostic — no runtime/ or swf/ dependency
   ExecutionContext.h/.cpp  — stack + scope + registers + constant pool +
                              `this` + host + trace/random/clock sources +
                              shared call-depth counter
-  Interpreter.h/.cpp       — the dispatch loop
+  Interpreter.h/.cpp       — the dispatch loop; Phase 7 added the public
+                             `Interpreter::callFunction()` entry point (see
+                             "ExternalInterface" below)
 
 src/runtime/MovieClipInstance.h/.cpp   (Phase 5 — depends on BOTH avm1/ and
                                          runtime/; the scene-graph/AVM1
@@ -67,7 +83,9 @@ src/runtime/MovieClipInstance.h/.cpp   (Phase 5 — depends on BOTH avm1/ and
                          bookkeeping for one loaded movie's whole clip tree;
                          Phase 6 also: InputState, IAudioBackend*, drag
                          state, and populates `_global` with native
-                         Key/Mouse/Sound
+                         Key/Mouse/Sound; Phase 7 also: registered host
+                         functions/AS2 callbacks and populates `_global`
+                         with native `ExternalInterface`
   MovieClipInstance    — one placed MovieClip (root or a sprite instance):
                          owns its own Timeline, a scripting Object, its
                          parsed ClipActionRecords (Phase 6), and
@@ -133,7 +151,13 @@ via `Scope::getVariable`/`Object::getMember` and always call it through
 how `Key`/`Mouse`/`Sound` (Phase 6, populated by `ScriptEnvironment`'s
 constructor) exist without teaching `avm1/` anything about MovieClips,
 input, or audio — same seam philosophy as `HostBindings`/native property
-hooks.
+hooks. Phase 7's `ExternalInterface` (see below) reuses this exact
+mechanism, plus one small addition: `Interpreter::callFunction()` — a
+public static wrapper around the same interpreter-internal
+`invokeFunction()` helper `nativeImpl` calls through — lets native/host code
+invoke an AS2 `Function` value directly (not via bytecode dispatch), which
+`nativeImpl` alone couldn't do since native functions never have anything
+to route native -> AS2 calls back through the interpreter.
 
 ## Opcode status
 
@@ -370,6 +394,48 @@ wired to `IAudioBackend::stopAllSounds()` (low-priority: `Sound.stop()`
 already covers the common per-instance case, and this action is rare in
 practice).
 
+### ExternalInterface (AS2 <-> native/host) — Phase 7
+
+Real Flash's `ExternalInterface` bridges AS2 to browser JavaScript, with
+values crossing a JS<->XML<->AS2 marshalling boundary. This runtime has no
+browser — the eventual target is native Nintendo 3DS code in the SAME
+process — so, as a deliberate documented simplification/improvement over
+real `ExternalInterface` semantics, `avm1::Value` crosses the boundary
+directly in both directions; there is no string/XML serialization step.
+
+`ScriptEnvironment`'s constructor populates `_global` with an
+`ExternalInterface` plain object (used AS2-statically, like `Key`/`Mouse`):
+
+- **`available`** — always `true` (a plain Boolean property, not a getter —
+  this runtime always has a host/native bridge available by construction).
+- **`call(methodName, ...args)`** — AS2 -> native. Looks up `methodName` in
+  a table of C++ functions registered ahead of time via
+  `ScriptEnvironment::registerHostFunction(name, fn)` (`fn` is a
+  `std::function<avm1::Value(const std::vector<avm1::Value>&)>`) and invokes
+  it with `args`. Calling an unregistered name logs a warning and returns
+  `undefined` rather than throwing — matches this codebase's "never crash on
+  untrusted/malformed input" principle (`docs/architecture.md`'s design
+  principles), applied here to "unexpected script behavior" rather than
+  "malformed bytecode".
+- **`addCallback(methodName, instance, function)`** — native -> AS2. Stores
+  `function` (an AS2 `Function` value) bound to `instance` as `this` in a
+  table keyed by `methodName`, via `ScriptEnvironment::registerCallback()`
+  (private — only reachable through `addCallback`'s `nativeImpl`). Returns
+  `true` if `function` is actually a callable Function value, `false`
+  otherwise (matches real AS2's Boolean return, though real Flash's
+  false-case reasons — e.g. browser refusing the registration — don't apply
+  here).
+
+Host/native code drives the native -> AS2 direction with two more
+`ScriptEnvironment` methods, NOT exposed to AS2 itself:
+`hasCallback(name)` (query whether a callback was registered) and
+`invokeCallback(name, args)` (actually run it, via `Interpreter::
+callFunction()` against a **fresh top-level `Scope`/`ExecutionContext` with
+no `HostBindings` bound** — see "Known Phase 7 limitations" below for what
+that means in practice). Calling `invokeCallback()` for a name that was
+never registered logs a warning and returns `undefined`, same
+graceful-degradation policy as `ExternalInterface.call()`.
+
 ## Push's DOUBLE encoding — confidence note
 
 `ActionPush`'s type-6 (Double) operand stores a standard IEEE-754 double
@@ -451,6 +517,21 @@ real SWF output.
   `StartSound` tag dispatch (including `SyncStop`) and the AVM1 `Sound`
   object's numeric `attachSound`/`start` path, both verified against a spy
   `IAudioBackend` implementation local to the test file.
+- `tests/test_avm1_interpreter.cpp` (Phase 7 additions) — `Interpreter::
+  callFunction()` invoking a native function directly (verifying both
+  `thisVal` and args reach it) and invoking a real scripted
+  (`DefineFunction2`-built) AS2 function directly, confirming its body
+  actually runs and its `Return` value comes back — both WITHOUT going
+  through `CallFunction`/`CallMethod` bytecode dispatch.
+- `tests/test_movieclip_instance.cpp` (Phase 7 additions) —
+  `ExternalInterface.available` reads `true`; `ExternalInterface.call()`
+  dispatching to a `registerHostFunction()`-registered native function with
+  the right args and return value; `ExternalInterface.call()` on an
+  unregistered name returning `undefined` gracefully; `ExternalInterface.
+  addCallback()` registering an AS2 function that `hasCallback()`/
+  `invokeCallback()` (native-side) can then find and run, round-tripping a
+  value through it; `invokeCallback()` on an unregistered name returning
+  `undefined` gracefully.
 
 ## Known Phase 5 limitations
 
@@ -508,7 +589,44 @@ real SWF output.
   character's handlers too). Low-priority: script-driven clones with
   `onClipEvent` handlers are an uncommon pattern.
 
-## Next (Phase 7)
+## Known Phase 7 limitations
 
-ExternalInterface, per the project's phase-by-phase plan (see
-`docs/architecture.md`).
+- **`invokeCallback()` runs with NO `HostBindings` bound.** It builds a
+  fresh top-level `Scope`/`ExecutionContext` (not scoped to any particular
+  `MovieClipInstance`), matching Phase 4's original "host-less no-op"
+  precedent (`ExecutionContext::host == nullptr` logs at debug level and
+  no-ops rather than crashing). Concretely: `GotoFrame`/`Play`/`Stop`/
+  `GetProperty`/`SetProperty`/`CloneSprite`/`RemoveSprite`/`StartDrag`/
+  `EndDrag`/`SetTarget` called DIRECTLY inside an `addCallback`-registered
+  function's body are silently no-ops (`GetProperty` reads back
+  `undefined`) — but ordinary computation, global-variable/member access,
+  and calling other AS2 functions/objects (including ones that themselves
+  close over and later act on a `MovieClipInstance`'s scripting `Object`,
+  since THAT still works — only the `HostBindings`-mediated actions are
+  affected) work normally. A callback that legitimately needs to touch the
+  scene graph should currently be written to call a wrapper AS2 function
+  defined on a specific clip's scope (invoked in the ordinary way, with a
+  real `HostBindings` bound) rather than doing scene-graph actions directly
+  in the callback body itself.
+- **`ExternalInterface.call()`/`addCallback()` do no argument-count/type
+  marshalling or validation beyond the bare minimum** (`addCallback`
+  requires its 3rd argument to actually be a callable Function; everything
+  else is passed through as-is). This matches the "Value crosses directly,
+  no serialization" design choice, but also means a native host function
+  registered via `registerHostFunction()` must defensively check
+  `args.size()`/types itself, same as any native (Phase 6) built-in.
+- **No linkage-based lookup** — `ExternalInterface` only supports the
+  explicit `call`/`addCallback` API; there's no equivalent of a
+  browser embed tag's `id` used to route calls between multiple SWF
+  instances (not meaningful here: one `ScriptEnvironment` already IS one
+  loaded movie's whole bridge).
+
+## Next (Phase 8)
+
+Text/Font/Button, per the project's phase-by-phase plan (see
+`docs/architecture.md`): `DefineFont`/`DefineFont2`/`DefineText`/
+`DefineEditText` parsing and (at least static) glyph rendering, and
+`DefineButton`/`DefineButton2` parsing so button `on()` handlers and the
+mouse-related `onClipEvent`s deferred since Phase 6 (`Press`/`Release`/
+`RollOver`/... — see "Known Phase 6 limitations" above) have something to
+hit-test against. Concrete scope to work out at the start of that phase.

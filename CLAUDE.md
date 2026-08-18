@@ -26,7 +26,7 @@ that inspired it.
 
 ## Current status
 
-**Phase 1 through Phase 6 complete and committed** (see `git log`). Phase 1:
+**Phase 1 through Phase 7 complete and committed** (see `git log`). Phase 1:
 SWF loading (FWS/CWS), header parsing, generic tag scan with logging, CLI
 inspector. Phase 2: MATRIX/CXFORM record readers, PlaceObject/PlaceObject2/
 RemoveObject/RemoveObject2/FrameLabel tag-body parsing, depth-indexed
@@ -88,11 +88,42 @@ done (see `docs/avm1-support.md`'s "Known Phase 6 limitations"). 151
 passing unit tests, zero compiler warnings (`-Wall -Wextra`) on a full
 clean rebuild.
 
+Phase 7: ExternalInterface (AS2 <-> native/host communication, both
+directions), built entirely on Phase 6's `nativeImpl` seam plus one new
+interpreter-level building block: a public `Interpreter::callFunction()`
+static method (trivial wrapper around the existing anonymous-namespace
+`invokeFunction()` helper in `Interpreter.cpp`) letting native/host code
+invoke an already-constructed AS2 `Function` value directly, without going
+through `CallFunction`/`CallMethod` bytecode dispatch. `ScriptEnvironment`
+gained `registerHostFunction`/`callHostFunction` (AS2 -> native:
+`ExternalInterface.call(name, ...args)` looks up and invokes a C++ function
+registered ahead of time) and `hasCallback`/`invokeCallback` (native -> AS2:
+`ExternalInterface.addCallback(name, instance, function)` registers an AS2
+function; host code later finds and runs it via `invokeCallback`, which
+builds a fresh top-level `Scope`/`ExecutionContext` with **no HostBindings
+bound** — see "Known Phase 7 limitations" below). `ExternalInterface`
+(`available`/`call`/`addCallback`) is built in `ScriptEnvironment`'s
+constructor, same pattern as Phase 6's `Key`/`Mouse`/`Sound`. Since this
+runtime embeds AS2 in the same process as its native/host code (no
+browser, unlike real Flash's JS bridge), `avm1::Value` crosses the AS2 <->
+native boundary directly in both directions — a deliberate, documented
+simplification/improvement over real `ExternalInterface`'s JS/XML
+marshalling. 158 passing unit tests, zero compiler warnings (`-Wall
+-Wextra`) on a full clean rebuild.
+
+**Known Phase 7 limitation:** `invokeCallback()` runs with no
+`HostBindings` bound, so `GotoFrame`/`Play`/`GetProperty`/`SetProperty`/
+`CloneSprite`/`RemoveSprite`/`StartDrag`/`EndDrag`/`SetTarget` called
+DIRECTLY inside an `addCallback`-registered function's body are silently
+no-ops (matches Phase 4's original host-less-context precedent) — ordinary
+computation and calling other AS2 functions/objects still work normally.
+See `docs/avm1-support.md`'s "Known Phase 7 limitations" for the full list.
+
 Read `docs/architecture.md` for the full 10-phase plan, `docs/swf-support.md`
 for the current SWF feature matrix, `docs/renderer.md` for the renderer's
 specific (documented, deliberate) limitations, and `docs/avm1-support.md`
 for the AVM1 opcode support matrix, documented confidence levels, and known
-Phase 6 limitations before starting new work. **Do not jump ahead of the
+Phase 6/7 limitations before starting new work. **Do not jump ahead of the
 current phase** — the project spec is explicit about working phase-by-
 phase, building + testing + documenting at the end of each one.
 
@@ -106,19 +137,21 @@ phase, building + testing + documenting at the end of each one.
 5. `git add -A && git commit` with a clear summary of what shipped in that
    phase.
 
-## Next phase (Phase 7)
+## Next phase (Phase 8)
 
-ExternalInterface. Per the original 10-phase plan: AS2 <-> host/native
-communication (`ExternalInterface.call`/`addCallback`), which on a real
-Flash Virtual Console likely means AS2 <-> native-3DS-code calls rather
-than AS2 <-> JavaScript (there's no browser). Concrete scope to work out at
-the start of that phase (read `docs/avm1-support.md`'s Phase 6 section
-first — `Sound`/`Key`/`Mouse`'s native-function mechanism,
-`avm1::makeNativeFunction`, is almost certainly the right building block to
-reuse for whatever `ExternalInterface.addCallback` ends up needing).
+Text/Font/Button. Per the original 10-phase plan: `DefineFont`/
+`DefineFont2`/`DefineText`/`DefineEditText` parsing and (at least static)
+glyph rendering, and `DefineButton`/`DefineButton2` parsing so button
+`on()` handlers and the mouse-related `onClipEvent`s deferred since Phase 6
+(`press`/`release`/`rollOver`/`rollOut`/`dragOver`/`dragOut`/`keyDown`/
+`keyUp`) have something to hit-test against (itself blocked on `_width`/
+`_height`, which needs recursive subtree bounding-box computation — also
+still open, see below). Concrete scope to work out at the start of that
+phase (read `docs/avm1-support.md`'s and `docs/swf-support.md`'s current
+matrices first).
 
-Carry-overs / explicitly deferred from Phase 6, in case a target title
-needs one of these sooner than its "natural" later phase:
+Carry-overs / explicitly deferred from earlier phases, in case a target
+title needs one of these sooner than its "natural" later phase:
 
 - `Sound.attachSound(name: String)` — the real AS2 linkage-name form —
   needs `ExportAssets` tag parsing (currently unimplemented; only numeric
@@ -130,7 +163,11 @@ needs one of these sooner than its "natural" later phase:
   `keyDown`, ...) and button `on()` handlers — need hit-testing/bounds
   (itself blocked on `_width`/`_height`, which needs recursive subtree
   bounding-box computation) and, for buttons, `DefineButton`/`DefineButton2`
-  parsing (Phase 8+).
+  parsing (this is now Phase 8's own scope, above).
+- `invokeCallback()`-driven `ExternalInterface.addCallback` functions run
+  with no `HostBindings` bound (Phase 7 limitation) — a callback that needs
+  to affect the scene graph currently has to call out to an ordinary
+  clip-scoped AS2 function rather than doing it directly.
 
 Do NOT implement AVM2/ActionScript 3 — out of scope per the project spec.
 Keep following the TDD pattern: small test SWFs / programmatic fixtures,

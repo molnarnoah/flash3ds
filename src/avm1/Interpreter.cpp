@@ -283,6 +283,15 @@ Value invokeFunction(ExecutionContext& callerCtx, const std::shared_ptr<Object>&
 
 }  // namespace
 
+// Phase 7: public wrapper around the anonymous-namespace invokeFunction()
+// helper above, so native/host code (e.g. ScriptEnvironment's
+// ExternalInterface.addCallback dispatch) can invoke an AS2 Function value
+// directly. See Interpreter.h's doc comment for behavior notes.
+Value Interpreter::callFunction(ExecutionContext& callerCtx, const std::shared_ptr<Object>& funcObj,
+                                 Value thisVal, std::vector<Value> args) {
+    return invokeFunction(callerCtx, funcObj, thisVal, std::move(args));
+}
+
 Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t length) {
     if (!ctx.traceSink) {
         ctx.traceSink = [](const std::string& msg) { LOG_INFO("AVM1", "%s", msg.c_str()); };

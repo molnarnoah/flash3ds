@@ -58,6 +58,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -160,7 +161,51 @@ public:
         if (dragTarget_ == clip) dragTarget_ = nullptr;
     }
 
+    // --- Phase 7: ExternalInterface (AS2 <-> host/native) -----------------
+    //
+    // Real Flash's ExternalInterface bridges AS2 to browser JavaScript,
+    // with values crossing a JS<->XML<->AS2 marshalling boundary. This
+    // runtime has no browser — the eventual target is native 3DS code in
+    // the SAME process — so, as a deliberate documented simplification/
+    // improvement over real ExternalInterface semantics, `avm1::Value`
+    // crosses the boundary directly in both directions; no serialization.
+    //
+    // AS2 -> native ("ExternalInterface.call(name, ...args)"): native/host
+    // code registers a name via registerHostFunction() ahead of time;
+    // ExternalInterface.call's nativeImpl (built in the constructor) looks
+    // it up and invokes it via callHostFunction(). Returns undefined (and
+    // logs a warning) if `name` was never registered.
+    using HostFunction = std::function<avm1::Value(const std::vector<avm1::Value>&)>;
+    void registerHostFunction(const std::string& name, HostFunction fn) {
+        hostFunctions_[name] = std::move(fn);
+    }
+    avm1::Value callHostFunction(const std::string& name, const std::vector<avm1::Value>& args);
+
+    // native -> AS2 ("ExternalInterface.addCallback(name, instance,
+    // function)"): AS2 script registers `function` (bound to `instance` as
+    // `this`) under `name` via addCallback's nativeImpl (which calls
+    // registerCallback() below); host/native code then calls
+    // hasCallback()/invokeCallback() to check for and run it. invokeCallback
+    // builds a FRESH top-level Scope/ExecutionContext with **no HostBindings
+    // bound** (see docs/avm1-support.md's Known Phase 7 limitations —
+    // matches Phase 4's "host-less no-op" precedent: MovieClip-affecting
+    // actions called directly inside a callback body are no-ops, but
+    // ordinary computation, global/this member access, and calling other
+    // AS2 functions all work normally).
+    bool hasCallback(const std::string& name) const { return callbacks_.count(name) != 0; }
+    avm1::Value invokeCallback(const std::string& name, const std::vector<avm1::Value>& args);
+
 private:
+    void registerCallback(const std::string& name, avm1::Value thisArg,
+                           std::shared_ptr<avm1::Object> func) {
+        callbacks_[name] = Callback{std::move(thisArg), std::move(func)};
+    }
+
+    struct Callback {
+        avm1::Value thisArg;
+        std::shared_ptr<avm1::Object> func;
+    };
+
     std::shared_ptr<avm1::Object> global_;
     std::unordered_map<uint16_t, std::vector<uint8_t>> initActionsByCharacter_;
     std::unordered_set<uint16_t> initializedCharacters_;
@@ -174,6 +219,9 @@ private:
     avm1::HostBindings::DragOptions dragOptions_;
     double dragGrabOffsetX_ = 0.0;  // clip._x minus mouseX at drag start (non-lockCenter mode)
     double dragGrabOffsetY_ = 0.0;
+
+    std::unordered_map<std::string, HostFunction> hostFunctions_;
+    std::unordered_map<std::string, Callback> callbacks_;
 };
 
 class MovieClipInstance : public std::enable_shared_from_this<MovieClipInstance> {

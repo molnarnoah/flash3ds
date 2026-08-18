@@ -22,10 +22,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 #include "avm1/ExecutionContext.h"
 
 namespace flash3ds::avm1 {
+
+class Object;
 
 class Interpreter {
 public:
@@ -36,6 +40,23 @@ public:
     // ended without one. Never throws; never crashes on malformed/
     // adversarial bytecode — see the per-opcode notes in Interpreter.cpp.
     static Value execute(ExecutionContext& ctx, const uint8_t* code, size_t length);
+
+    // Phase 7: public entry point for invoking an already-constructed AVM1
+    // Function value directly, without going through bytecode dispatch
+    // (CallFunction/CallMethod/NewObject). This is what lets native/host
+    // code call back into AS2 — e.g. ExternalInterface.addCallback's
+    // registered function, or (in principle) any other native->AS2
+    // callback hook added later. `callerCtx` supplies the shared globals/
+    // host/trace/random/clock sources and (critically) the shared call-
+    // depth counter, exactly as if this were a nested bytecode call site.
+    // Trivial forwarding wrapper around the interpreter-internal
+    // invokeFunction() helper (Interpreter.cpp, anonymous namespace) — see
+    // that function's doc comment for the full behavior (native nativeImpl
+    // short-circuit, closure scope, register/preload handling, bounded
+    // recursion, ...). Returns undefined if `funcObj` isn't a callable
+    // Function object.
+    static Value callFunction(ExecutionContext& callerCtx, const std::shared_ptr<Object>& funcObj,
+                               Value thisVal, std::vector<Value> args);
 
     // Defensive limits (see docs/architecture.md's "Defensive resource
     // limits" principle): guard against malformed/adversarial bytecode

@@ -180,6 +180,70 @@ ScriptEnvironment::ScriptEnvironment() : global_(avm1::GlobalObject::create()) {
         });
     soundCtor->setOwnProperty("prototype", avm1::Value::object(soundProto));
     global_->setOwnProperty("Sound", avm1::Value::object(soundCtor));
+
+    // --- ExternalInterface (Phase 7) -----------------------------------------
+    // See the class header's "Phase 7: ExternalInterface" doc comment for
+    // the full AS2<->native design (in particular: Value crosses directly,
+    // no JS/XML-style marshalling — this is a same-process C++ embedding,
+    // not a browser+JS bridge).
+    auto extInterfaceObj = std::make_shared<avm1::Object>();
+    extInterfaceObj->setOwnProperty("available", avm1::Value::boolean(true));
+    extInterfaceObj->setOwnProperty(
+        "call", avm1::Value::object(avm1::makeNativeFunction(
+                    "call", [this](avm1::ExecutionContext&, const avm1::Value&,
+                                    const std::vector<avm1::Value>& args) {
+                        if (args.empty()) return avm1::Value::undefined();
+                        std::string name = args[0].toString();
+                        std::vector<avm1::Value> callArgs(args.begin() + 1, args.end());
+                        return callHostFunction(name, callArgs);
+                    })));
+    extInterfaceObj->setOwnProperty(
+        "addCallback",
+        avm1::Value::object(avm1::makeNativeFunction(
+            "addCallback", [this](avm1::ExecutionContext&, const avm1::Value&,
+                                    const std::vector<avm1::Value>& args) {
+                // AS2 signature: addCallback(methodName:String, instance:Object,
+                // function:Function):Boolean.
+                if (args.size() < 3 || !args[2].isObject() || !args[2].asObject() ||
+                    !args[2].asObject()->isFunction()) {
+                    return avm1::Value::boolean(false);
+                }
+                registerCallback(args[0].toString(), args[1], args[2].asObject());
+                return avm1::Value::boolean(true);
+            })));
+    global_->setOwnProperty("ExternalInterface", avm1::Value::object(extInterfaceObj));
+}
+
+avm1::Value ScriptEnvironment::callHostFunction(const std::string& name,
+                                                  const std::vector<avm1::Value>& args) {
+    auto it = hostFunctions_.find(name);
+    if (it == hostFunctions_.end()) {
+        LOG_WARN("MOVIECLIP",
+                  "ExternalInterface.call('%s'): no host function registered — undefined",
+                  name.c_str());
+        return avm1::Value::undefined();
+    }
+    return it->second(args);
+}
+
+avm1::Value ScriptEnvironment::invokeCallback(const std::string& name,
+                                                const std::vector<avm1::Value>& args) {
+    auto it = callbacks_.find(name);
+    if (it == callbacks_.end()) {
+        LOG_WARN("MOVIECLIP", "invokeCallback('%s'): no AS2 callback registered — undefined",
+                  name.c_str());
+        return avm1::Value::undefined();
+    }
+    const Callback& cb = it->second;
+    // Phase 7 known limitation (see class header doc comment): this
+    // top-level scope/context has NO HostBindings attached, matching Phase
+    // 4's "host-less no-op" precedent — MovieClip-affecting actions
+    // (GotoFrame/Play/GetProperty/...) called directly inside the callback
+    // body are recognized-but-no-op, not crashes. Ordinary computation and
+    // calling other AS2 functions/objects work normally.
+    avm1::Scope scope = avm1::Scope::topLevel(global_);
+    avm1::ExecutionContext ctx(scope, global_);
+    return avm1::Interpreter::callFunction(ctx, cb.func, cb.thisArg, args);
 }
 
 void ScriptEnvironment::scanInitActions(const Movie& movie) {

@@ -759,3 +759,52 @@ TEST_CASE(Interpreter_NativeFunction_CallMethod_SeesThisValue) {
     run(ctx, a.build());
     CHECK_EQ(ctx.scope.getVariable("result").toString(), "marker");
 }
+
+// --- Phase 7: Interpreter::callFunction (native code invoking an AS2
+// Function value directly, without going through bytecode dispatch) ------
+
+TEST_CASE(Interpreter_CallFunction_InvokesNativeFunctionDirectly) {
+    auto ctx = makeContext();
+    auto fn = makeNativeFunction(
+        "greet", [](ExecutionContext&, const Value& thisVal, const std::vector<Value>& args) {
+            std::string who = args.empty() ? "world" : args[0].toString();
+            std::string prefix = (thisVal.isObject() && thisVal.asObject())
+                                      ? thisVal.asObject()->getOwnProperty("prefix").toString()
+                                      : "";
+            return Value::string(prefix + who);
+        });
+
+    auto thisObj = std::make_shared<Object>();
+    thisObj->setOwnProperty("prefix", Value::string("hi, "));
+
+    Value result = Interpreter::callFunction(ctx, fn, Value::object(thisObj),
+                                              {Value::string("noe")});
+    CHECK_EQ(result.toString(), "hi, noe");
+}
+
+TEST_CASE(Interpreter_CallFunction_ScriptedFunction_RunsBodyAndReturnsValue) {
+    // Build a scripted AS2 function via DefineFunction2 (no params), whose
+    // body is `return 41 + 1;`, then invoke it through callFunction rather
+    // than a CallFunction bytecode op.
+    Asm fnBody;
+    fnBody.pushInt(41);
+    fnBody.pushInt(1);
+    fnBody.op(op(AC::Add2));
+    fnBody.op(op(AC::Return));
+
+    // fn = function(){ return 41 + 1; } — anonymous DefineFunction2 pushes
+    // the resulting function object onto the stack (see the sibling
+    // "PreloadThis" test above for the same push convention).
+    Asm def;
+    def.pushString("fn");
+    def.defineFunction2("", 0, 0, {}, fnBody.build());
+    def.op(op(AC::SetVariable));
+
+    auto ctx = makeContext();
+    run(ctx, def.build());
+
+    Value fnVal = ctx.scope.getVariable("fn");
+    CHECK(fnVal.isObject());
+    Value result = Interpreter::callFunction(ctx, fnVal.asObject(), Value::undefined(), {});
+    CHECK_EQ(result.toNumber(), 42.0);
+}
