@@ -23,6 +23,13 @@ void writeU32(std::vector<uint8_t>& out, uint32_t v) {
     out.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
 }
 
+void writeS16(std::vector<uint8_t>& out, int16_t v) { writeU16(out, static_cast<uint16_t>(v)); }
+
+void writeCString(std::vector<uint8_t>& out, const std::string& s) {
+    out.insert(out.end(), s.begin(), s.end());
+    out.push_back(0);
+}
+
 // Minimal bit writer, mirroring SwfReader's bit reader (independently
 // implemented for the test builder — not shared code).
 class BitWriter {
@@ -456,6 +463,274 @@ std::vector<uint8_t> buildPlaceObject2WithClipActionsBytes(
         out.insert(out.end(), rec.actionBytes.begin(), rec.actionBytes.end());
     }
     writeU32(out, 0);  // terminator record (zero EventFlags)
+
+    return out;
+}
+
+// --- Phase 8: font / text / button / edit-text builders -----------------
+
+std::vector<uint8_t> buildGlyphShapeBytes(int32_t widthUnits, int32_t heightUnits) {
+    // A bare SHAPE (NumFillBits/NumLineBits + records, no style arrays) is
+    // exactly what buildRectShapeRecordsBytes already produces — see its
+    // own doc comment (Phase 3) and this function's doc comment (Phase 8)
+    // in SwfTestFixtures.h.
+    return buildRectShapeRecordsBytes(widthUnits, heightUnits, false);
+}
+
+std::vector<uint8_t> buildDefineFontV1Bytes(
+    uint16_t fontId, const std::vector<std::vector<uint8_t>>& glyphShapeBytes) {
+    std::vector<uint8_t> out;
+    writeU16(out, fontId);
+
+    uint16_t numGlyphs = static_cast<uint16_t>(glyphShapeBytes.size());
+    if (numGlyphs == 0) {
+        // The v1 encoding derives numGlyphs from the FIRST offset table
+        // entry (numGlyphs = firstOffset / 2) — so even a zero-glyph font
+        // still needs that one sentinel UI16 (value 0) present, or a
+        // reader can't tell "empty font" apart from "truncated stream".
+        writeU16(out, 0);
+        return out;
+    }
+    std::vector<uint16_t> offsets(numGlyphs);
+    uint16_t running = static_cast<uint16_t>(numGlyphs * 2);  // offset table's own byte size
+    for (uint16_t i = 0; i < numGlyphs; ++i) {
+        offsets[i] = running;
+        running = static_cast<uint16_t>(running + glyphShapeBytes[i].size());
+    }
+    for (uint16_t off : offsets) writeU16(out, off);
+    for (const auto& glyph : glyphShapeBytes) out.insert(out.end(), glyph.begin(), glyph.end());
+    return out;
+}
+
+std::vector<uint8_t> buildDefineFont2Bytes(
+    uint16_t fontId, const std::string& fontName,
+    const std::vector<std::vector<uint8_t>>& glyphShapeBytes, const std::vector<uint16_t>& codes,
+    bool wideCodes, int16_t ascent, int16_t descent, int16_t leading,
+    const std::vector<GlyphLayoutFixture>& layout) {
+    std::vector<uint8_t> out;
+    writeU16(out, fontId);
+
+    bool hasLayout = !layout.empty();
+    uint8_t flags = static_cast<uint8_t>((hasLayout ? 0x80 : 0) | (wideCodes ? 0x04 : 0));
+    writeU8(out, flags);
+    writeU8(out, 0);  // LanguageCode
+
+    writeU8(out, static_cast<uint8_t>(fontName.size()));
+    out.insert(out.end(), fontName.begin(), fontName.end());
+
+    uint16_t numGlyphs = static_cast<uint16_t>(glyphShapeBytes.size());
+    writeU16(out, numGlyphs);
+
+    std::vector<uint16_t> offsets(static_cast<size_t>(numGlyphs) + 1);
+    uint16_t running = static_cast<uint16_t>((numGlyphs + 1) * 2);  // offset table's own byte size
+    for (uint16_t i = 0; i < numGlyphs; ++i) {
+        offsets[i] = running;
+        running = static_cast<uint16_t>(running + glyphShapeBytes[i].size());
+    }
+    offsets[numGlyphs] = running;  // CodeTableOffset
+
+    for (uint16_t off : offsets) writeU16(out, off);
+    for (const auto& glyph : glyphShapeBytes) out.insert(out.end(), glyph.begin(), glyph.end());
+
+    for (uint16_t i = 0; i < numGlyphs; ++i) {
+        uint16_t code = i < codes.size() ? codes[i] : 0;
+        if (wideCodes) {
+            writeU16(out, code);
+        } else {
+            writeU8(out, static_cast<uint8_t>(code));
+        }
+    }
+
+    if (hasLayout) {
+        writeS16(out, ascent);
+        writeS16(out, descent);
+        writeS16(out, leading);
+        for (uint16_t i = 0; i < numGlyphs; ++i) {
+            int16_t adv = i < layout.size() ? layout[i].advance : 0;
+            writeS16(out, adv);
+        }
+        for (uint16_t i = 0; i < numGlyphs; ++i) {
+            if (i < layout.size()) {
+                const auto& l = layout[i];
+                writeRect(out, l.boundsXMin, l.boundsXMax, l.boundsYMin, l.boundsYMax);
+            } else {
+                writeRect(out, 0, 0, 0, 0);
+            }
+        }
+        writeU16(out, 0);  // KerningCount = 0
+    }
+
+    return out;
+}
+
+std::vector<uint8_t> buildDefineTextBytes(uint16_t characterId,
+                                           const std::vector<uint8_t>& matrixBytes,
+                                           uint8_t glyphBits, uint8_t advanceBits,
+                                           const std::vector<TextRecordFixture>& records,
+                                           bool withAlpha, int32_t boundsWidthTwips,
+                                           int32_t boundsHeightTwips) {
+    std::vector<uint8_t> out;
+    writeU16(out, characterId);
+    writeRect(out, 0, boundsWidthTwips, 0, boundsHeightTwips);
+    out.insert(out.end(), matrixBytes.begin(), matrixBytes.end());
+    writeU8(out, glyphBits);
+    writeU8(out, advanceBits);
+
+    for (const auto& rec : records) {
+        bool hasFont = rec.fontId.has_value();
+        bool hasColor = rec.colorRgba.has_value();
+        bool hasYOffset = rec.yOffsetTwips.has_value();
+        bool hasXOffset = rec.xOffsetTwips.has_value();
+        uint8_t flags = static_cast<uint8_t>(0x80 /* TextRecordType */ | (hasFont ? 0x08 : 0) |
+                                              (hasColor ? 0x04 : 0) | (hasYOffset ? 0x02 : 0) |
+                                              (hasXOffset ? 0x01 : 0));
+        writeU8(out, flags);
+        if (hasFont) writeU16(out, *rec.fontId);
+        if (hasColor) {
+            const auto& c = *rec.colorRgba;
+            writeU8(out, c[0]);
+            writeU8(out, c[1]);
+            writeU8(out, c[2]);
+            if (withAlpha) writeU8(out, c[3]);
+        }
+        if (hasXOffset) writeS16(out, *rec.xOffsetTwips);
+        if (hasYOffset) writeS16(out, *rec.yOffsetTwips);
+        if (hasFont) writeU16(out, rec.textHeightTwips.value_or(0));
+
+        writeU8(out, static_cast<uint8_t>(rec.glyphs.size()));
+        BitWriter bw(out);
+        uint32_t advanceMask = advanceBits >= 32 ? 0xFFFFFFFFu : ((1u << advanceBits) - 1u);
+        for (const auto& g : rec.glyphs) {
+            bw.writeBits(g.first, glyphBits);
+            bw.writeBits(static_cast<uint32_t>(g.second) & advanceMask, advanceBits);
+        }
+        bw.byteAlign();
+    }
+    writeU8(out, 0);  // terminator
+    return out;
+}
+
+namespace {
+
+void writeButtonRecordV1Fields(std::vector<uint8_t>& out, const ButtonRecordV1Fixture& r) {
+    uint16_t characterId = r.characterId;
+    uint16_t depth = r.depth;
+    writeU16(out, characterId);
+    writeU16(out, depth);
+    out.insert(out.end(), r.matrixBytes.begin(), r.matrixBytes.end());
+}
+
+void writeIdentityColorTransformWithAlpha(std::vector<uint8_t>& out) {
+    BitWriter bw(out);
+    bw.writeBits(0, 1);  // HasAddTerms
+    bw.writeBits(0, 1);  // HasMultTerms
+    bw.writeBits(0, 4);  // NBits
+    bw.byteAlign();
+}
+
+}  // namespace
+
+std::vector<uint8_t> buildDefineButtonV1Bytes(uint16_t characterId,
+                                               const std::vector<ButtonRecordV1Fixture>& records,
+                                               const std::vector<uint8_t>& actionBytes) {
+    std::vector<uint8_t> out;
+    writeU16(out, characterId);
+    for (const auto& r : records) {
+        uint8_t flags = static_cast<uint8_t>((r.hitTest ? 0x08 : 0) | (r.down ? 0x04 : 0) |
+                                              (r.over ? 0x02 : 0) | (r.up ? 0x01 : 0));
+        writeU8(out, flags);
+        writeButtonRecordV1Fields(out, r);
+    }
+    writeU8(out, 0);  // end-of-records terminator
+    out.insert(out.end(), actionBytes.begin(), actionBytes.end());
+    return out;
+}
+
+std::vector<uint8_t> buildDefineButtonV2Bytes(uint16_t characterId,
+                                               const std::vector<ButtonRecordV1Fixture>& records,
+                                               uint16_t conditions, std::optional<uint8_t> keyCode,
+                                               const std::vector<uint8_t>& actionBytes) {
+    std::vector<uint8_t> out;
+    writeU16(out, characterId);
+    writeU8(out, 0);  // flags: TrackAsMenu = 0
+
+    size_t actionOffsetFieldPos = out.size();
+    writeU16(out, 0);  // ButtonActionOffset placeholder, patched below
+
+    for (const auto& r : records) {
+        uint8_t flags = static_cast<uint8_t>((r.hitTest ? 0x08 : 0) | (r.down ? 0x04 : 0) |
+                                              (r.over ? 0x02 : 0) | (r.up ? 0x01 : 0));
+        writeU8(out, flags);
+        writeButtonRecordV1Fields(out, r);
+        writeIdentityColorTransformWithAlpha(out);
+    }
+    writeU8(out, 0);  // end-of-records terminator
+
+    if (!actionBytes.empty()) {
+        size_t recordStart = out.size();
+        uint16_t actionOffset = static_cast<uint16_t>(recordStart - actionOffsetFieldPos);
+        out[actionOffsetFieldPos] = static_cast<uint8_t>(actionOffset & 0xFF);
+        out[actionOffsetFieldPos + 1] = static_cast<uint8_t>((actionOffset >> 8) & 0xFF);
+
+        writeU16(out, 0);  // CondActionSize = 0 (last/only record — runs to end of tag)
+
+        // `conditions` uses swf::ButtonCondition's bit values (kIdleToOverDown = 1<<0, ...,
+        // kOverDownToIdle = 1<<8) — re-map each to its CONDACTION wire position, mirroring
+        // parseDefineButton2's read side (independently re-derived here, not shared code).
+        uint16_t rawConditions = 0;
+        auto mapBit = [&](uint16_t prodBit, uint16_t wireBit) {
+            if (conditions & prodBit) rawConditions = static_cast<uint16_t>(rawConditions | wireBit);
+        };
+        mapBit(1u << 7, 0x8000);  // kIdleToOverDown
+        mapBit(1u << 6, 0x4000);  // kOutDownToIdle
+        mapBit(1u << 5, 0x2000);  // kOutDownToOverDown
+        mapBit(1u << 4, 0x1000);  // kOverDownToOutDown
+        mapBit(1u << 3, 0x0800);  // kOverDownToOverUp
+        mapBit(1u << 2, 0x0400);  // kOverUpToOverDown
+        mapBit(1u << 1, 0x0200);  // kOverUpToIdle
+        mapBit(1u << 0, 0x0100);  // kIdleToOverUp
+        mapBit(1u << 8, 0x0001);  // kOverDownToIdle
+        if (keyCode) rawConditions = static_cast<uint16_t>(rawConditions | ((*keyCode & 0x7F) << 1));
+
+        writeU16(out, rawConditions);
+        out.insert(out.end(), actionBytes.begin(), actionBytes.end());
+    }
+
+    return out;
+}
+
+std::vector<uint8_t> buildDefineEditTextBytes(uint16_t characterId, int32_t boundsWidthTwips,
+                                               int32_t boundsHeightTwips,
+                                               std::optional<uint16_t> fontId,
+                                               std::optional<uint16_t> fontHeightTwips,
+                                               std::optional<std::array<uint8_t, 4>> textColorRgba,
+                                               const std::string& variableName,
+                                               std::optional<std::string> initialText) {
+    std::vector<uint8_t> out;
+    writeU16(out, characterId);
+    writeRect(out, 0, boundsWidthTwips, 0, boundsHeightTwips);
+
+    bool hasFont = fontId.has_value();
+    bool hasTextColor = textColorRgba.has_value();
+    bool hasText = initialText.has_value();
+
+    uint8_t flags1 = static_cast<uint8_t>((hasText ? 0x80 : 0) | (hasTextColor ? 0x04 : 0) |
+                                           (hasFont ? 0x01 : 0));
+    uint8_t flags2 = 0;
+    writeU8(out, flags1);
+    writeU8(out, flags2);
+
+    if (hasFont) writeU16(out, *fontId);
+    if (hasFont) writeU16(out, fontHeightTwips.value_or(0));
+    if (hasTextColor) {
+        const auto& c = *textColorRgba;
+        writeU8(out, c[0]);
+        writeU8(out, c[1]);
+        writeU8(out, c[2]);
+        writeU8(out, c[3]);
+    }
+    writeCString(out, variableName);
+    if (hasText) writeCString(out, *initialText);
 
     return out;
 }

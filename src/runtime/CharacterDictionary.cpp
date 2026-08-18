@@ -86,10 +86,53 @@ void scanTagsForCharacters(const Movie& movie, const std::vector<swf::TagRecord>
             } else {
                 LOG_WARN("CHARDICT", "Failed to parse DefineSound at offset=%zu", tag.bodyOffset);
             }
+        } else if (code == swf::TagCode::DefineFont) {
+            swf::SwfReader reader = movie.tagBodyReader(tag);
+            auto fontDef = swf::parseDefineFont(reader);
+            if (fontDef) {
+                characters[fontDef->fontId] = *fontDef;
+            } else {
+                LOG_WARN("CHARDICT", "Failed to parse DefineFont at offset=%zu", tag.bodyOffset);
+            }
+        } else if (code == swf::TagCode::DefineFont2) {
+            swf::SwfReader reader = movie.tagBodyReader(tag);
+            auto fontDef = swf::parseDefineFont2(reader, tag.code);
+            if (fontDef) {
+                characters[fontDef->fontId] = *fontDef;
+            } else {
+                LOG_WARN("CHARDICT", "Failed to parse DefineFont2 at offset=%zu", tag.bodyOffset);
+            }
+        } else if (code == swf::TagCode::DefineText || code == swf::TagCode::DefineText2) {
+            swf::SwfReader reader = movie.tagBodyReader(tag);
+            auto textDef = swf::parseDefineText(reader, tag.code);
+            if (textDef) {
+                characters[textDef->characterId] = *textDef;
+            } else {
+                LOG_WARN("CHARDICT", "Failed to parse %s at offset=%zu", tag.name.c_str(),
+                          tag.bodyOffset);
+            }
+        } else if (code == swf::TagCode::DefineButton || code == swf::TagCode::DefineButton2) {
+            swf::SwfReader reader = movie.tagBodyReader(tag);
+            auto buttonDef = swf::parseDefineButton(reader, tag.code);
+            if (buttonDef) {
+                characters[buttonDef->characterId] = *buttonDef;
+            } else {
+                LOG_WARN("CHARDICT", "Failed to parse %s at offset=%zu", tag.name.c_str(),
+                          tag.bodyOffset);
+            }
+        } else if (code == swf::TagCode::DefineEditText) {
+            swf::SwfReader reader = movie.tagBodyReader(tag);
+            auto editTextDef = swf::parseDefineEditText(reader);
+            if (editTextDef) {
+                characters[editTextDef->characterId] = *editTextDef;
+            } else {
+                LOG_WARN("CHARDICT", "Failed to parse DefineEditText at offset=%zu",
+                          tag.bodyOffset);
+            }
         }
-        // Other character-defining tags (DefineBits*, DefineText*,
-        // DefineFont*, DefineButton*) are recognized by TagCode elsewhere
-        // but not resolved into the dictionary yet — Phase 8+.
+        // Other character-defining tags (DefineBits*/bitmaps) are
+        // recognized by TagCode elsewhere but not resolved into the
+        // dictionary yet — later phase.
     }
 }
 

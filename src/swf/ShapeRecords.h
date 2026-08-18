@@ -126,4 +126,19 @@ std::vector<LineStyle> readLineStyleArray(SwfReader& reader, int shapeVersion);
 // end-of-vector marker rather than a stored record) the EndShapeRecord.
 Shape readShapeWithStyle(SwfReader& reader, int shapeVersion);
 
+// Reads just the SHAPERECORD stream itself (StyleChangeRecord/
+// StraightEdgeRecord/CurvedEdgeRecord, up to and including the
+// EndShapeRecord, which is consumed but not represented as a stored
+// record) — the part of a ShapeWithStyle that comes AFTER its
+// FillStyleArray/LineStyleArray/NumFillBits/NumLineBits header. Factored
+// out of readShapeWithStyle (Phase 3) so Phase 8's font-glyph SHAPE
+// records — which have NO leading FillStyleArray/LineStyleArray, just a
+// bare NumFillBits/NumLineBits + record stream — can reuse the exact same
+// record-decoding logic without duplicating it. `shapeVersion` is only
+// consulted if a StyleChangeRecord's (rare, and never legitimately present
+// in a font glyph's SHAPE, per spec) "new styles" sub-arrays appear, to
+// decide RGB vs RGBA fill/line colors.
+std::vector<ShapeRecord> readShapeRecordStream(SwfReader& reader, uint32_t numFillBits,
+                                                uint32_t numLineBits, int shapeVersion);
+
 }  // namespace flash3ds::swf

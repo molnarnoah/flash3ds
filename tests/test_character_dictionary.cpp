@@ -183,3 +183,96 @@ TEST_CASE(CharacterDictionary_Build_ResolvesDefineSound) {
     CHECK(!sound.stereo);
     CHECK_EQ(sound.sampleCount, 22050u);
 }
+
+// --- Phase 8: font/text/button/edit-text resolution ---------------------
+
+TEST_CASE(CharacterDictionary_Build_ResolvesDefineFont2) {
+    auto glyph = fixtures::buildGlyphShapeBytes(600, 600);
+    auto fontBody = fixtures::buildDefineFont2Bytes(30, "Dict", {glyph}, {'A'}, false, 0, 0, 0, {});
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineFont2), fontBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto dict = CharacterDictionary::build(*movie);
+
+    const auto* fontCharacter = dict.find(30);
+    CHECK(fontCharacter != nullptr);
+    CHECK(std::holds_alternative<flash3ds::swf::FontDef>(*fontCharacter));
+    CHECK_EQ(std::get<flash3ds::swf::FontDef>(*fontCharacter).glyphCount(),
+              static_cast<size_t>(1));
+}
+
+TEST_CASE(CharacterDictionary_Build_ResolvesDefineText) {
+    fixtures::TextRecordFixture rec;
+    rec.fontId = 1;
+    rec.textHeightTwips = 200;
+    rec.glyphs = {{0, 100}};
+    auto textBody = fixtures::buildDefineTextBytes(31, fixtures::buildMatrixBytes(0, 0), 8, 8,
+                                                      {rec}, false);
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineText), textBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto dict = CharacterDictionary::build(*movie);
+
+    const auto* textCharacter = dict.find(31);
+    CHECK(textCharacter != nullptr);
+    CHECK(std::holds_alternative<flash3ds::swf::TextDef>(*textCharacter));
+    CHECK_EQ(std::get<flash3ds::swf::TextDef>(*textCharacter).records.size(),
+              static_cast<size_t>(1));
+}
+
+TEST_CASE(CharacterDictionary_Build_ResolvesDefineButton) {
+    fixtures::ButtonRecordV1Fixture up;
+    up.up = true;
+    up.characterId = 10;
+    up.matrixBytes = fixtures::buildMatrixBytes(0, 0);
+    auto buttonBody = fixtures::buildDefineButtonV1Bytes(32, {up}, {0x00});
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineButton), buttonBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto dict = CharacterDictionary::build(*movie);
+
+    const auto* buttonCharacter = dict.find(32);
+    CHECK(buttonCharacter != nullptr);
+    CHECK(std::holds_alternative<flash3ds::swf::ButtonDef>(*buttonCharacter));
+    CHECK_EQ(std::get<flash3ds::swf::ButtonDef>(*buttonCharacter).records.size(),
+              static_cast<size_t>(1));
+}
+
+TEST_CASE(CharacterDictionary_Build_ResolvesDefineEditText) {
+    auto editTextBody = fixtures::buildDefineEditTextBytes(
+        33, 50 * 20, 20 * 20, std::nullopt, std::nullopt, std::nullopt, "myVar", std::nullopt);
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineEditText), editTextBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto dict = CharacterDictionary::build(*movie);
+
+    const auto* editTextCharacter = dict.find(33);
+    CHECK(editTextCharacter != nullptr);
+    CHECK(std::holds_alternative<flash3ds::swf::EditTextDef>(*editTextCharacter));
+    CHECK_EQ(std::get<flash3ds::swf::EditTextDef>(*editTextCharacter).variableName,
+              std::string("myVar"));
+}

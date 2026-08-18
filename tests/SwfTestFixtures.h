@@ -8,9 +8,11 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace flash3ds::test::fixtures {
@@ -158,5 +160,104 @@ std::vector<uint8_t> buildPlaceObject2WithClipActionsBytes(
     uint16_t depth, std::optional<uint16_t> characterId,
     std::optional<std::vector<uint8_t>> matrixBytes, std::optional<std::string> name,
     const std::vector<ClipActionFixture>& clipActions);
+
+// ---------------------------------------------------------------------
+// Phase 8: font/text/button/edit-text tag body builders, independently
+// encoded from the same public SWF spec the production parsers
+// (DefineFontTag/DefineTextTag/DefineButtonTag/DefineEditTextTag)
+// implement.
+// ---------------------------------------------------------------------
+
+// A single glyph's bare SHAPE (NumFillBits=1/NumLineBits=0 + records, no
+// FillStyleArray/LineStyleArray) tracing an axis-aligned rectangle
+// `widthUnits` x `heightUnits` in the font's 1024-units-per-em space, with
+// fillStyle1=1 (matching the real-world "fill style 1 == inside the
+// glyph" convention). Reuses the exact same bit-packing as
+// buildRectShapeRecordsBytes (Phase 3) — that function already produces
+// exactly a bare SHAPE (NumFillBits/NumLineBits + records + EndShape), no
+// leading style arrays, so it doubles as a glyph-shape builder unchanged.
+std::vector<uint8_t> buildGlyphShapeBytes(int32_t widthUnits, int32_t heightUnits);
+
+// DefineFont (tag 10, v1) body: FontID, an offset table, then each of
+// `glyphShapeBytes` concatenated (each entry normally built by
+// buildGlyphShapeBytes).
+std::vector<uint8_t> buildDefineFontV1Bytes(uint16_t fontId,
+                                             const std::vector<std::vector<uint8_t>>& glyphShapeBytes);
+
+// One glyph's layout metadata for buildDefineFont2Bytes's optional layout
+// table (HasLayout).
+struct GlyphLayoutFixture {
+    int16_t advance = 0;
+    int32_t boundsXMin = 0, boundsXMax = 0, boundsYMin = 0, boundsYMax = 0;
+};
+
+// DefineFont2 (tag 48) body: FontID, flags (HasLayout/WideCodes per the
+// arguments below; WideOffsets/ShiftJIS/SmallText/ANSI always unset),
+// LanguageCode=0, FontName, NumGlyphs, offset table, each glyph's SHAPE,
+// CodeTable, and (iff `layout` is non-empty) FontAscent/Descent/Leading +
+// FontAdvanceTable + FontBoundsTable + an empty KerningTable.
+// `glyphShapeBytes`, `codes`, and `layout` (if non-empty) must all be the
+// same length (one entry per glyph).
+std::vector<uint8_t> buildDefineFont2Bytes(uint16_t fontId, const std::string& fontName,
+                                            const std::vector<std::vector<uint8_t>>& glyphShapeBytes,
+                                            const std::vector<uint16_t>& codes, bool wideCodes,
+                                            int16_t ascent, int16_t descent, int16_t leading,
+                                            const std::vector<GlyphLayoutFixture>& layout);
+
+// One TEXTRECORD for buildDefineTextBytes.
+struct TextRecordFixture {
+    std::optional<uint16_t> fontId;
+    std::optional<uint16_t> textHeightTwips;  // only meaningful alongside fontId
+    std::optional<std::array<uint8_t, 4>> colorRgba;  // r,g,b,a — a ignored if !withAlpha
+    std::optional<int16_t> xOffsetTwips;
+    std::optional<int16_t> yOffsetTwips;
+    std::vector<std::pair<uint32_t, int32_t>> glyphs;  // {glyphIndex, advance}
+};
+
+// DefineText (tag 11, withAlpha=false) / DefineText2 (tag 33,
+// withAlpha=true) body: CharacterId, TextBounds, TextMatrix, GlyphBits,
+// AdvanceBits, then each of `records` (terminated by the required trailing
+// zero byte).
+std::vector<uint8_t> buildDefineTextBytes(uint16_t characterId,
+                                           const std::vector<uint8_t>& matrixBytes,
+                                           uint8_t glyphBits, uint8_t advanceBits,
+                                           const std::vector<TextRecordFixture>& records,
+                                           bool withAlpha, int32_t boundsWidthTwips = 2000,
+                                           int32_t boundsHeightTwips = 2000);
+
+// One BUTTONRECORD (v1) for buildDefineButtonV1Bytes.
+struct ButtonRecordV1Fixture {
+    bool up = false, over = false, down = false, hitTest = false;
+    uint16_t characterId = 0;
+    uint16_t depth = 0;
+    std::vector<uint8_t> matrixBytes;
+};
+
+// DefineButton (tag 7) body: ButtonId, each of `records`, then
+// `actionBytes` verbatim (no length prefix — runs to the end of the tag).
+std::vector<uint8_t> buildDefineButtonV1Bytes(uint16_t characterId,
+                                               const std::vector<ButtonRecordV1Fixture>& records,
+                                               const std::vector<uint8_t>& actionBytes);
+
+// DefineButton2 (tag 34) body: ButtonId, flags (TrackAsMenu=false),
+// ButtonActionOffset (0 if `actionBytes` is empty), each of `records`
+// (reusing ButtonRecordV1Fixture — v2's extra ColorTransform is always the
+// identity CXFORMWITHALPHA, and HasFilterList/HasBlendMode are always
+// unset), then (iff `actionBytes` non-empty) a single terminal
+// BUTTONCONDACTION (CondActionSize=0, meaning "runs to end of tag") with
+// `conditions`/`keyCode` as given.
+std::vector<uint8_t> buildDefineButtonV2Bytes(uint16_t characterId,
+                                               const std::vector<ButtonRecordV1Fixture>& records,
+                                               uint16_t conditions, std::optional<uint8_t> keyCode,
+                                               const std::vector<uint8_t>& actionBytes);
+
+// DefineEditText (tag 37) body. Pass std::nullopt for fontId/fontHeight/
+// textColorRgba/initialText to leave the corresponding HasFont/
+// HasTextColor/HasText flags (and dependent fields) unset.
+std::vector<uint8_t> buildDefineEditTextBytes(
+    uint16_t characterId, int32_t boundsWidthTwips, int32_t boundsHeightTwips,
+    std::optional<uint16_t> fontId, std::optional<uint16_t> fontHeightTwips,
+    std::optional<std::array<uint8_t, 4>> textColorRgba, const std::string& variableName,
+    std::optional<std::string> initialText);
 
 }  // namespace flash3ds::test::fixtures

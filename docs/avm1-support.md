@@ -1,12 +1,15 @@
 # AVM1 (ActionScript 2) Support Status
 
 **Status: Phase 4 VM core implemented; Phase 5 wired it into the scene
-graph; Phase 6 added Sound/Input; Phase 7 added ExternalInterface.**
-`DoAction`/`DoInitAction` now actually execute against a real `MovieClip`
-tree, with per-instance playheads and a real `HostBindings`, native
-(C++-backed) `Key`/`Mouse`/`Sound`/`ExternalInterface` built-ins, real
-`StartDrag`/`EndDrag`, `onClipEvent`'s `Load`/`Unload`/`EnterFrame` handlers,
-and AS2 <-> native/host communication in both directions.
+graph; Phase 6 added Sound/Input; Phase 7 added ExternalInterface; Phase 8
+added Text/Font/Button tag parsing and rendering.** `DoAction`/
+`DoInitAction` now actually execute against a real `MovieClip` tree, with
+per-instance playheads and a real `HostBindings`, native (C++-backed)
+`Key`/`Mouse`/`Sound`/`ExternalInterface` built-ins, real `StartDrag`/
+`EndDrag`, `onClipEvent`'s `Load`/`Unload`/`EnterFrame` handlers, AS2 <->
+native/host communication in both directions, and (Phase 8, mostly outside
+`avm1/` itself — see "Text/Font (Phase 8)" below) rendered static text and
+non-interactive buttons.
 
 Phase 4 built a complete, standalone AVM1 bytecode interpreter
 (`src/avm1/`) that runs against a raw bytecode buffer and an
@@ -436,6 +439,31 @@ that means in practice). Calling `invokeCallback()` for a name that was
 never registered logs a warning and returns `undefined`, same
 graceful-degradation policy as `ExternalInterface.call()`.
 
+### Text/Font (Phase 8)
+
+Text/Font/Button tag parsing and rendering is primarily `swf::`/
+`renderer::` territory — see `docs/swf-support.md`'s new Phase 8 section
+for the full `DefineFont`/`DefineFont2`/`DefineText`/`DefineText2`/
+`DefineButton`/`DefineButton2`/`DefineEditText` tag-status tables. The one
+convention worth documenting here (since it's shared by every glyph-drawing
+code path): a font glyph's outline coordinates are in the SWF spec's
+1024-units-per-em space, NOT twips. `SceneRenderer::renderGlyph()` converts
+by multiplying every glyph coordinate by `scale = textHeightTwips / 1024.0`
+before tessellating — the SAME scale factor also applies to
+`TextRecord`/`GLYPHENTRY`'s `GlyphAdvance` and `FontDef`'s
+`glyphAdvances`/`glyphBounds` (both defined in the same em-square units per
+spec), so one scale factor per text run/`EditText` field is correct
+throughout, with no separate unit conversion needed for advances vs.
+outlines. This is believed correct per the public spec but — like several
+other bit-layout/encoding conventions in this codebase (`ClipEventFlag`,
+`TEXTRECORD`'s flags byte, `ActionPush`'s DOUBLE encoding) — has not been
+independently verified against a real Flash-authored font.
+
+`AVM1`'s side of text is unchanged by Phase 8: there is no scripted
+`TextField`/`TextFormat` API surface implemented (no `_root.field.text`
+getter/setter wired to `EditTextDef`, no `TextFormat` object, no
+`Selection`) — see "Known Phase 8 limitations" below.
+
 ## Push's DOUBLE encoding — confidence note
 
 `ActionPush`'s type-6 (Double) operand stores a standard IEEE-754 double
@@ -532,6 +560,25 @@ real SWF output.
   `invokeCallback()` (native-side) can then find and run, round-tripping a
   value through it; `invokeCallback()` on an unregistered name returning
   `undefined` gracefully.
+- `tests/test_define_font_tag.cpp`/`test_define_text_tag.cpp`/
+  `test_define_button_tag.cpp`/`test_define_edit_text_tag.cpp` (Phase 8,
+  new) — `DefineFont`/`DefineFont2` glyph/code-table/layout parsing
+  (including the `DefineFont3` tag-code rejection and an empty-font edge
+  case), `DefineText`/`DefineText2` `TEXTRECORD` parsing (including the
+  spec's "absent field carries the previous record's value forward"
+  behavior and RGB-vs-RGBA colors), `DefineButton`/`DefineButton2` state/
+  action/`BUTTONCONDACTION` parsing (including a key-press condition), and
+  `DefineEditText` structural parsing (full-fields and all-optional-fields-
+  absent cases) — all in isolation against raw tag bodies, same pattern as
+  `test_define_shape_tag.cpp`.
+- `tests/test_character_dictionary.cpp` (Phase 8 additions) — each of the
+  four new character kinds resolves into the dictionary correctly.
+- `tests/test_scene_renderer.cpp` (Phase 8 additions) — pixel-level
+  rendering tests: a `DefineText` glyph lands at its expected scaled/
+  translated device position; a button draws only its Up-state record (a
+  Down-state record at a different position must NOT appear); a
+  `DefineEditText` field with an embedded `DefineFont2` font renders its
+  `initialText`'s glyph.
 
 ## Known Phase 5 limitations
 
@@ -621,12 +668,34 @@ real SWF output.
   instances (not meaningful here: one `ScriptEnvironment` already IS one
   loaded movie's whole bridge).
 
-## Next (Phase 8)
+## Known Phase 8 limitations
 
-Text/Font/Button, per the project's phase-by-phase plan (see
-`docs/architecture.md`): `DefineFont`/`DefineFont2`/`DefineText`/
-`DefineEditText` parsing and (at least static) glyph rendering, and
-`DefineButton`/`DefineButton2` parsing so button `on()` handlers and the
-mouse-related `onClipEvent`s deferred since Phase 6 (`Press`/`Release`/
-`RollOver`/... — see "Known Phase 6 limitations" above) have something to
-hit-test against. Concrete scope to work out at the start of that phase.
+See `docs/swf-support.md`'s Phase 8 section for the full tag-by-tag status;
+the AVM1-relevant highlights:
+
+- **Button `on()` handlers are parsed but never dispatched.** `DefineButton`/
+  `DefineButton2`'s action bytecode (`ButtonDef::actionsV1`/
+  `condActionsV2`) is fully captured, but nothing ever runs it — same root
+  cause as the mouse-related `onClipEvent`s deferred since Phase 6
+  (`Press`/`Release`/`RollOver`/...): there's no hit-testing/bounds
+  infrastructure yet (itself blocked on `_width`/`_height`, still not
+  computed — see "Known Phase 5 limitations" above).
+- **No `TextField`/`TextFormat` AS2 API.** `DefineEditText` characters are
+  parsed and (narrowly) rendered, but there's no scripted way to read or
+  set a text field's displayed text, no variable-binding (`_root.myField`
+  auto-syncing with the field), and no `TextFormat`/`Selection` objects.
+- **`DefineButton2`'s `FilterList` support is a hard stop, not a partial
+  parse.** A button record with `HasFilterList` set aborts parsing the
+  REST of that button's records entirely (see `swf/DefineButtonTag.h`) —
+  chosen over guessing at an unknown-length structure and desyncing
+  everything after it.
+
+## Next (Phase 9)
+
+Hobo compatibility testing, per the project's original 10-phase plan:
+running the runtime against real target SWF content end-to-end, cataloguing
+what actually breaks or is missing when pointed at it, and prioritizing
+fixes by what real content needs rather than continuing to guess at spec
+coverage in the abstract. Concrete scope (which file(s), what "passing"
+looks like, how failures get triaged into new phases vs. quick fixes) to
+work out at the start of that phase.

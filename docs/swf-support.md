@@ -161,7 +161,8 @@ for the renderer architecture and known limitations.
 | `Key.isDown()`/`Key.getCode()`/named constants | ✅ Phase 6 — native `Key` object backed by `InputState` |
 | `Mouse.show()`/`Mouse.hide()` | ✅ Phase 6 — recognized no-ops (no cursor rendering model) |
 | `Sound` object (`attachSound`/`start`/`stop`/`setVolume`/`getVolume`) | ⚠️ Phase 6 — wired to `IAudioBackend`, but `attachSound()` only resolves a numeric character ID, not the real AS2 `String` linkage-name form (needs `ExportAssets`, not implemented) |
-| `onClipEvent`/button `on()` handlers | ⚠️ Phase 6 — `ClipActionRecord` parsing done; only `Load`/`Unload`/`EnterFrame` are dispatched (Mouse*/Press/Release/RollOver*/DragOver*/KeyDown/KeyUp need hit-testing infrastructure that doesn't exist yet; button `on()` needs `DefineButton`/`2`, Phase 8+) |
+| `onClipEvent`/button `on()` handlers | ⚠️ Phase 6/8 — `ClipActionRecord` parsing done; only `Load`/`Unload`/`EnterFrame` are dispatched. `DefineButton`/`2` are now parsed (Phase 8) and their action bytecode (`actionsV1`/`condActionsV2`) captured, but NOT dispatched — like the mouse-related `onClipEvent`s, it needs hit-testing/bounds infrastructure that doesn't exist yet (see this doc's Phase 8 section and `docs/avm1-support.md`'s Known Phase 8 limitations) |
+| ExternalInterface (`ExternalInterface.call`/`addCallback`) | ✅ Phase 7 — AS2 <-> native/host communication in both directions; see `docs/avm1-support.md` |
 
 ### Sound (Phase 6 — see `docs/avm1-support.md` for the AVM1-facing side)
 
@@ -170,13 +171,59 @@ for the renderer architecture and known limitations.
 | `DefineSound` (14) | ✅ structural header fields only (format/rate/16-bit/stereo/sample count) — no codec decode |
 | `StartSound` (15) / `SOUNDINFO` | ✅ fully parsed (in/out points, loop count, sync flags, envelope points) and dispatched per-frame to `IAudioBackend` |
 | `SoundStreamHead`/`2` (18/45) / `SoundStreamBlock` (19) | ❌ not implemented — streaming sound is a later-phase concern if a target title needs it |
-| `DefineButtonSound` (17) | ❌ not implemented — no `DefineButton`/`2` parsing to attach it to yet (Phase 8+) |
+| `DefineButtonSound` (17) | ❌ not implemented — `DefineButton`/`2` parsing exists now (Phase 8) but nothing attaches per-state sounds to it yet |
 | `IAudioBackend` abstraction (`src/audio/IAudioBackend.h`) | ✅ mirrors `IRenderer`'s design; `NullAudioBackend` (logs, plays nothing) is the only implementation so far — a real desktop/3DS backend is a later addition that needs zero changes to `runtime/`/`avm1/` |
+
+## Phase 8 (current) — Text / Font / Button
+
+Adds four new character-defining tags, all resolved into `CharacterDictionary`
+(`swf::FontDef`/`swf::TextDef`/`swf::ButtonDef`/`swf::EditTextDef`) exactly
+like Phase 3's shapes and Phase 6's sounds, and rendered by `SceneRenderer`
+(text/button/edit-text are new leaf character kinds it can draw; buttons
+always render their "Up" state, since there's no mouse hit-testing yet).
+
+### Fonts
+
+| Tag | Status |
+|---|---|
+| `DefineFont` (10, "v1") | ✅ glyph outlines (bare SHAPE records — no fill/line style arrays; a synthetic one-entry fill style is created at render time from the TextRecord/EditText color instead — see `docs/avm1-support.md`). No code table (v1 has none of its own; see below) |
+| `DefineFont2` (48, "v2") | ✅ glyph outlines, code table (`FontDef::codeTable`, `glyphIndexForCode()`), bold/italic flags, font name, and (iff `HasLayout`) ascent/descent/leading + per-glyph advance width + per-glyph bounds. Kerning table is parsed-and-discarded (not applied by the renderer) |
+| `DefineFont3` (75) | ❌ explicitly rejected (`parseDefineFont2` returns `std::nullopt` for tag 75) — its glyph coordinates use a 20x finer em-square (20480 units/em vs. `DefineFont2`'s 1024) for sub-pixel hinting; silently treating it as `DefineFont2` would mis-scale every glyph by 20x, so it's rejected rather than guessed at |
+| `DefineFontInfo`/`DefineFontInfo2` (13/62) | ❌ not implemented — these attach a code table to an existing `DefineFont` v1 (which has none of its own). A v1 font's `FontDef::codeTable` is always empty; this only matters for `DefineEditText` initial-text rendering (`DefineText`/`DefineText2` reference glyphs by index directly and never need one) |
+| `DefineFontAlignZones`/`DefineFontName` (73/88) | ❌ not implemented — text-rendering-quality/licensing metadata, not needed for basic rendering |
+
+### Text
+
+| Tag | Status |
+|---|---|
+| `DefineText` (11) | ✅ full `TEXTRECORD` parsing (font/color/x-offset/y-offset changes, glyph-index+advance runs), RGB colors |
+| `DefineText2` (33) | ✅ same as `DefineText`, RGBA colors |
+| `SceneRenderer` glyph-run rendering | ✅ walks each `TextRecord`, carrying font/color/position forward across records that don't set them (matching the SWF spec's incremental-state model), looks up each glyph's outline in its `FontDef`, and reuses `ShapeTessellator` (via a synthesized single-fill-style `Shape`, scaled by `textHeight/1024`) to draw it — see `docs/avm1-support.md`'s "Text/Font" section for the scale-factor convention |
+| `CsmTextSettings` (74) | ❌ not implemented — advanced/CSM anti-aliasing hints, not needed for basic rendering |
+
+### Buttons
+
+| Tag | Status |
+|---|---|
+| `DefineButton` (7, "v1") | ✅ `BUTTONRECORD` list (Up/Over/Down/HitTest state flags, character/depth/matrix) + trailing action bytecode block (`actionsV1`) — parsed but not dispatched (see the AVM1/MovieClip API table above) |
+| `DefineButton2` (34, "v2") | ✅ `BUTTONRECORD2` list (adds `CXFORMWITHALPHA` per record) + `BUTTONCONDACTION` list (`condActionsV2` — per-transition conditions, optional key-press trigger, action bytecode), parsed but not dispatched. A record with `HasFilterList` set aborts parsing the REMAINDER of that button's records (unknown-length `FILTERLIST` isn't implemented — see `swf/DefineButtonTag.h`); `HasBlendMode` alone is supported (fixed 1-byte field, safely skipped) |
+| `DefineButtonCxform` (23) | ❌ not implemented (v1-only per-state color transform, rare) |
+| `DefineButtonSound` (17) | ❌ not implemented (see the Sound table above) |
+| `SceneRenderer` button rendering | ⚠️ always draws the "Up" state's records only — no hit-testing/mouse-state model exists yet (see this doc's `onClipEvent`/button table entry above) |
+
+### Dynamic/input text (`DefineEditText`)
+
+| Tag / feature | Status |
+|---|---|
+| `DefineEditText` (37) | ✅ full structural parsing: every documented flag bit, optional font/height/color/max-length/layout fields, variable name, initial text |
+| Variable binding (`_root.myField` <-> displayed text) | ❌ not implemented |
+| User input/editing, word-wrap, scrolling, alignment | ❌ not implemented |
+| `SceneRenderer` initial-text rendering | ⚠️ narrow: only renders when the field embeds a `DefineFont2` font (one WITH a code table) and has literal `initialText` — reuses the same glyph-drawing path as `DefineText`, with a naive fixed-line-height `\n`/`\r` handling and no real baseline/font-metric placement (see `swf/DefineEditTextTag.h` and `renderer/SceneRenderer.cpp`'s `renderEditTextCharacter()`) |
 
 ### Not yet implemented (by design — later phases)
 
-- Bitmap / Text / Button rendering, `LineStyle2`/`DefineShape4`, real gradient rendering, `ColorTransform` application (Phase 8, or earlier if a target title needs it)
-- `_width`/`_height`, most `onClipEvent`/button `on()` triggers (see the AVM1/MovieClip API table above)
-- Audio codec decode, streaming sound, `ExportAssets`-based `Sound.attachSound(name)` (see the Sound table above)
-- ExternalInterface (Phase 7)
+- Bitmap rendering, `LineStyle2`/`DefineShape4`, real gradient rendering, `ColorTransform` application (later phase, or earlier if a target title needs it)
+- `_width`/`_height`, all mouse/keyboard-related `onClipEvent`s and button `on()` handlers (blocked on hit-testing/bounds — see the AVM1/MovieClip API table above)
+- Audio codec decode, streaming sound, `ExportAssets`-based `Sound.attachSound(name)`, `DefineButtonSound` (see the Sound table above)
+- `DefineFont3`, `DefineFontInfo`/`2`, EditText variable binding/word-wrap/scrolling (see the Phase 8 tables above)
 - Nintendo 3DS backend (Phase 10)

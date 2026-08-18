@@ -26,7 +26,7 @@ that inspired it.
 
 ## Current status
 
-**Phase 1 through Phase 7 complete and committed** (see `git log`). Phase 1:
+**Phase 1 through Phase 8 complete and committed** (see `git log`). Phase 1:
 SWF loading (FWS/CWS), header parsing, generic tag scan with logging, CLI
 inspector. Phase 2: MATRIX/CXFORM record readers, PlaceObject/PlaceObject2/
 RemoveObject/RemoveObject2/FrameLabel tag-body parsing, depth-indexed
@@ -119,12 +119,45 @@ no-ops (matches Phase 4's original host-less-context precedent) — ordinary
 computation and calling other AS2 functions/objects still work normally.
 See `docs/avm1-support.md`'s "Known Phase 7 limitations" for the full list.
 
+Phase 8: Text/Font/Button. Four new character-defining tags, all resolved
+into `CharacterDictionary` (`swf::FontDef`/`swf::TextDef`/`swf::ButtonDef`/
+`swf::EditTextDef`) exactly like Phase 3's shapes and Phase 6's sounds:
+`DefineFont`/`DefineFont2` (glyph outlines — a bare SHAPE record stream
+with no fill/line style arrays of its own, hence `ShapeRecords.h/.cpp`
+gained a small refactor, `readShapeRecordStream()`, factored out of
+`readShapeWithStyle()` so glyphs reuse the exact same decoding logic — plus
+`DefineFont2`'s code table and optional layout metrics; `DefineFont3` is
+explicitly rejected, since its glyph coordinates use a 20x finer em-square
+that would otherwise silently mis-scale every glyph), `DefineText`/
+`DefineText2` (`TEXTRECORD`/`GLYPHENTRY` runs), `DefineButton`/
+`DefineButton2` (per-state character placements + action bytecode —
+captured but not dispatched, same as `onClipEvent`), and `DefineEditText`
+(structural parsing only — no variable binding/word-wrap/scrolling).
+`SceneRenderer` gained matching leaf-rendering: `renderCharacter()` now
+dispatches on the resolved character's actual kind instead of assuming
+Shape — text/edit-text glyph runs are drawn via `renderGlyph()` (looks up
+each glyph's outline in its font, scales by `textHeight/1024` — see
+`docs/avm1-support.md`'s "Text/Font" section for why one scale factor
+covers both outlines and advances — and reuses `ShapeTessellator` via a
+synthesized one-fill-style `Shape`), and buttons always draw their "Up"
+state (no mouse hit-testing/state machine exists yet). 182 passing unit
+tests, zero compiler warnings (`-Wall -Wextra`) on a full clean rebuild.
+
+**Known Phase 8 limitations:** button `on()` handlers and the mouse-related
+`onClipEvent`s deferred since Phase 6 are still not dispatched (both need
+hit-testing/bounds infrastructure that doesn't exist yet, itself blocked on
+`_width`/`_height`); there's no AS2 `TextField`/`TextFormat` API surface;
+`DefineEditText` only renders when it embeds a `DefineFont2` font (one with
+a code table) and has literal `initialText`, with no word-wrap/scrolling/
+alignment/variable-binding. See `docs/avm1-support.md`'s "Known Phase 8
+limitations" and `docs/swf-support.md`'s Phase 8 section for the full list.
+
 Read `docs/architecture.md` for the full 10-phase plan, `docs/swf-support.md`
 for the current SWF feature matrix, `docs/renderer.md` for the renderer's
 specific (documented, deliberate) limitations, and `docs/avm1-support.md`
 for the AVM1 opcode support matrix, documented confidence levels, and known
-Phase 6/7 limitations before starting new work. **Do not jump ahead of the
-current phase** — the project spec is explicit about working phase-by-
+Phase 6/7/8 limitations before starting new work. **Do not jump ahead of
+the current phase** — the project spec is explicit about working phase-by-
 phase, building + testing + documenting at the end of each one.
 
 ## Workflow for every phase
@@ -137,18 +170,15 @@ phase, building + testing + documenting at the end of each one.
 5. `git add -A && git commit` with a clear summary of what shipped in that
    phase.
 
-## Next phase (Phase 8)
+## Next phase (Phase 9)
 
-Text/Font/Button. Per the original 10-phase plan: `DefineFont`/
-`DefineFont2`/`DefineText`/`DefineEditText` parsing and (at least static)
-glyph rendering, and `DefineButton`/`DefineButton2` parsing so button
-`on()` handlers and the mouse-related `onClipEvent`s deferred since Phase 6
-(`press`/`release`/`rollOver`/`rollOut`/`dragOver`/`dragOut`/`keyDown`/
-`keyUp`) have something to hit-test against (itself blocked on `_width`/
-`_height`, which needs recursive subtree bounding-box computation — also
-still open, see below). Concrete scope to work out at the start of that
-phase (read `docs/avm1-support.md`'s and `docs/swf-support.md`'s current
-matrices first).
+Hobo compatibility testing. Per the original 10-phase plan: run the runtime
+against real target SWF content end-to-end, catalogue what actually breaks
+or is missing when pointed at it, and prioritize fixes by what real content
+needs rather than continuing to guess at spec coverage in the abstract.
+Concrete scope (which file(s), what "passing" looks like, how failures get
+triaged into new phases vs. quick fixes) to work out at the start of that
+phase.
 
 Carry-overs / explicitly deferred from earlier phases, in case a target
 title needs one of these sooner than its "natural" later phase:
@@ -160,14 +190,23 @@ title needs one of these sooner than its "natural" later phase:
   `IAudioBackend` implementation; `NullAudioBackend` doesn't need it since
   it never actually plays anything.
 - Mouse/keyboard `onClipEvent`s (`press`, `release`, `rollOver`, `mouseDown`,
-  `keyDown`, ...) and button `on()` handlers — need hit-testing/bounds
-  (itself blocked on `_width`/`_height`, which needs recursive subtree
-  bounding-box computation) and, for buttons, `DefineButton`/`DefineButton2`
-  parsing (this is now Phase 8's own scope, above).
+  `keyDown`, ...) and button `on()` handlers — `DefineButton`/`DefineButton2`
+  parsing exists now (Phase 8) and captures the action bytecode, but
+  dispatching any of these still needs hit-testing/bounds, itself blocked
+  on `_width`/`_height` (recursive subtree bounding-box computation, still
+  not implemented).
 - `invokeCallback()`-driven `ExternalInterface.addCallback` functions run
   with no `HostBindings` bound (Phase 7 limitation) — a callback that needs
   to affect the scene graph currently has to call out to an ordinary
   clip-scoped AS2 function rather than doing it directly.
+- No AS2 `TextField`/`TextFormat` API surface, and `DefineEditText`
+  rendering only covers the narrow case of an embedded `DefineFont2` font
+  with literal `initialText` — no variable-binding, word-wrap, scrolling,
+  or alignment (Phase 8 limitation).
+- `DefineFont3`, `DefineFontInfo`/`DefineFontInfo2`, and `DefineButton2`
+  records with a `FilterList` are all explicitly rejected/unsupported
+  rather than approximated (Phase 8 limitation) — see
+  `docs/swf-support.md`'s Phase 8 section for why.
 
 Do NOT implement AVM2/ActionScript 3 — out of scope per the project spec.
 Keep following the TDD pattern: small test SWFs / programmatic fixtures,

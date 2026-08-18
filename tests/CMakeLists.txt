@@ -21,6 +21,10 @@ add_executable(flash3ds_tests
     test_movieclip_instance.cpp
     test_define_sound_tag.cpp
     test_input_state.cpp
+    test_define_font_tag.cpp
+    test_define_text_tag.cpp
+    test_define_button_tag.cpp
+    test_define_edit_text_tag.cpp
 )
 
 target_include_directories(flash3ds_tests PRIVATE

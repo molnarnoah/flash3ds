@@ -5,8 +5,13 @@
 // (DefineShape/2/3) and sprites (DefineSprite — a nested, independently
 // timed mini-movie). Phase 6 added a third: sounds (DefineSound — see
 // swf/DefineSoundTag.h; structural header fields only, no codec decode).
-// Bitmap/Text/Button characters are recognized by tag but not parsed yet
-// (Phase 8+; see docs/swf-support.md).
+// Phase 8 added four more: fonts (DefineFont/DefineFont2 — swf/
+// DefineFontTag.h), static text (DefineText/DefineText2 — swf/
+// DefineTextTag.h), buttons (DefineButton/DefineButton2 — swf/
+// DefineButtonTag.h), and dynamic/input text fields (DefineEditText — swf/
+// DefineEditTextTag.h; parsed structurally only, see that header). Bitmap
+// characters (DefineBits*) are still recognized by tag but not parsed
+// (later phase; see docs/swf-support.md).
 //
 // DefineSprite's body is CharacterId, FrameCount, then a *nested* tag
 // stream (its own ShowFrame/PlaceObject*/RemoveObject*/DoAction/... control
@@ -26,8 +31,12 @@
 #include <vector>
 
 #include "runtime/Movie.h"
+#include "swf/DefineButtonTag.h"
+#include "swf/DefineEditTextTag.h"
+#include "swf/DefineFontTag.h"
 #include "swf/DefineShapeTag.h"
 #include "swf/DefineSoundTag.h"
+#include "swf/DefineTextTag.h"
 #include "swf/TagDispatcher.h"
 
 namespace flash3ds::runtime {
@@ -38,14 +47,17 @@ struct SpriteDef {
     std::vector<swf::TagRecord> tags;  // nested control tags; bodyOffset is absolute into Movie::data
 };
 
-using CharacterDef = std::variant<swf::ShapeDef, SpriteDef, swf::SoundDef>;
+using CharacterDef = std::variant<swf::ShapeDef, SpriteDef, swf::SoundDef, swf::FontDef,
+                                   swf::TextDef, swf::ButtonDef, swf::EditTextDef>;
 
 class CharacterDictionary {
 public:
     // Scans `movie`'s top-level tags for DefineShape/DefineShape2/
-    // DefineShape3/DefineSprite and parses each into the dictionary, keyed
-    // by character ID. Tags that fail to parse (malformed input) are
-    // logged and skipped rather than aborting the whole scan.
+    // DefineShape3/DefineSprite/DefineSound/DefineFont/DefineFont2/
+    // DefineText/DefineText2/DefineButton/DefineButton2/DefineEditText and
+    // parses each into the dictionary, keyed by character ID. Tags that
+    // fail to parse (malformed input) are logged and skipped rather than
+    // aborting the whole scan.
     static CharacterDictionary build(const Movie& movie);
 
     const CharacterDef* find(uint16_t characterId) const;

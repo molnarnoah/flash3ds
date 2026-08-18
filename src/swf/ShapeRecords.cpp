@@ -113,16 +113,12 @@ std::vector<LineStyle> readLineStyleArray(SwfReader& reader, int shapeVersion) {
     return styles;
 }
 
-Shape readShapeWithStyle(SwfReader& reader, int shapeVersion) {
-    Shape shape;
-    shape.fillStyles = readFillStyleArray(reader, shapeVersion);
-    shape.lineStyles = readLineStyleArray(reader, shapeVersion);
-
-    uint32_t numFillBits = reader.readUBits(4);
-    uint32_t numLineBits = reader.readUBits(4);
+std::vector<ShapeRecord> readShapeRecordStream(SwfReader& reader, uint32_t numFillBits,
+                                                uint32_t numLineBits, int shapeVersion) {
+    std::vector<ShapeRecord> records;
 
     constexpr size_t kMaxRecords = 500000;  // defense-in-depth against pathological input
-    while (shape.records.size() < kMaxRecords) {
+    while (records.size() < kMaxRecords) {
         if (reader.failed()) break;
 
         uint32_t typeFlag = reader.readUBits(1);
@@ -160,7 +156,7 @@ Shape readShapeWithStyle(SwfReader& reader, int shapeVersion) {
                 numFillBits = reader.readUBits(4);
                 numLineBits = reader.readUBits(4);
             }
-            shape.records.push_back(std::move(rec));
+            records.push_back(std::move(rec));
         } else {
             uint32_t straightFlag = reader.readUBits(1);
             uint32_t numBitsField = reader.readUBits(4);
@@ -188,10 +184,22 @@ Shape readShapeWithStyle(SwfReader& reader, int shapeVersion) {
                 rec.anchorDeltaXTwips = reader.readSBits(numBits);
                 rec.anchorDeltaYTwips = reader.readSBits(numBits);
             }
-            shape.records.push_back(std::move(rec));
+            records.push_back(std::move(rec));
         }
     }
 
+    return records;
+}
+
+Shape readShapeWithStyle(SwfReader& reader, int shapeVersion) {
+    Shape shape;
+    shape.fillStyles = readFillStyleArray(reader, shapeVersion);
+    shape.lineStyles = readLineStyleArray(reader, shapeVersion);
+
+    uint32_t numFillBits = reader.readUBits(4);
+    uint32_t numLineBits = reader.readUBits(4);
+
+    shape.records = readShapeRecordStream(reader, numFillBits, numLineBits, shapeVersion);
     return shape;
 }
 

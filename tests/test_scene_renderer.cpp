@@ -135,3 +135,169 @@ TEST_CASE(SceneRenderer_NestedSprite_ComposesWorldTransform) {
     CHECK_EQ(notComposed.g, 255);
     CHECK_EQ(notComposed.b, 255);
 }
+
+// --- Phase 8: text / button / edit-text rendering ------------------------
+
+TEST_CASE(SceneRenderer_DefineText_DrawsGlyphAtScaledPosition) {
+    // Font (id=1): one glyph, a 700x700-unit rectangle in the 1024-per-em
+    // space. Text (id=2): that glyph at textHeight=1024 twips (scale=1.0,
+    // so the glyph's raw units map 1:1 to twips), green, at TextRecord
+    // offset (0,0). Text character placed at (10px,10px) — so the glyph
+    // rectangle should land at world twips [200,900]x[200,900], i.e.
+    // device px [10,45)x[10,45).
+    auto glyph = fixtures::buildGlyphShapeBytes(700, 700);
+    auto fontBody = fixtures::buildDefineFont2Bytes(1, "T", {glyph}, {'A'}, false, 0, 0, 0, {});
+
+    fixtures::TextRecordFixture rec;
+    rec.fontId = 1;
+    rec.textHeightTwips = 1024;
+    rec.colorRgba = std::array<uint8_t, 4>{0, 255, 0, 255};
+    rec.xOffsetTwips = 0;
+    rec.yOffsetTwips = 0;
+    rec.glyphs = {{0, 0}};
+    auto textBody = fixtures::buildDefineTextBytes(2, fixtures::buildMatrixBytes(0, 0), 8, 16,
+                                                      {rec}, false);
+
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineFont2), fontBody},
+        {static_cast<uint16_t>(TagCode::DefineText), textBody},
+        {26 /* PlaceObject2 */,
+         fixtures::buildPlaceObject2Bytes(1, false, 2, fixtures::buildMatrixBytes(10 * 20, 10 * 20))},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    int width = static_cast<int>(movie->frameSize.widthPixels());
+    int height = static_cast<int>(movie->frameSize.heightPixels());
+    SoftwareRenderer renderer(width, height);
+    SceneRenderer scene(*movie, characters);
+    scene.render(*root, renderer, width, height);
+
+    auto inside = renderer.pixelAt(20, 20);
+    CHECK_EQ(inside.r, 0);
+    CHECK_EQ(inside.g, 255);
+    CHECK_EQ(inside.b, 0);
+
+    auto outside = renderer.pixelAt(80, 80);
+    CHECK_EQ(outside.r, 255);
+    CHECK_EQ(outside.g, 255);
+    CHECK_EQ(outside.b, 255);
+}
+
+TEST_CASE(SceneRenderer_DefineButton_DrawsOnlyUpStateRecord) {
+    // A 20x20px shape (id=10) referenced by a button's (id=2) Up-state
+    // record at its own placement matrix (identity — coincides with the
+    // button's own placement), and by a Down-state record offset far away
+    // (which must NOT render, since there's no interactive state machine —
+    // Up is always what's drawn).
+    auto shapeBody = fixtures::buildDefineShapeBytes(2, /*characterId=*/10, 20 * 20, 20 * 20, 0xFF,
+                                                        0x00, 0x00, 0xFF);
+
+    fixtures::ButtonRecordV1Fixture upRec;
+    upRec.up = true;
+    upRec.characterId = 10;
+    upRec.depth = 1;
+    upRec.matrixBytes = fixtures::buildMatrixBytes(0, 0);
+
+    fixtures::ButtonRecordV1Fixture downRec;
+    downRec.down = true;
+    downRec.characterId = 10;
+    downRec.depth = 2;
+    downRec.matrixBytes = fixtures::buildMatrixBytes(50 * 20, 50 * 20);
+
+    auto buttonBody = fixtures::buildDefineButtonV1Bytes(2, {upRec, downRec}, {0x00});
+
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineShape2), shapeBody},
+        {static_cast<uint16_t>(TagCode::DefineButton), buttonBody},
+        {26 /* PlaceObject2 */,
+         fixtures::buildPlaceObject2Bytes(1, false, 2, fixtures::buildMatrixBytes(10 * 20, 10 * 20))},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    int width = static_cast<int>(movie->frameSize.widthPixels());
+    int height = static_cast<int>(movie->frameSize.heightPixels());
+    SoftwareRenderer renderer(width, height);
+    SceneRenderer scene(*movie, characters);
+    scene.render(*root, renderer, width, height);
+
+    // Up state: button placed at (10,10) + record's identity matrix ->
+    // shape occupies device px [10,30)x[10,30).
+    auto upInside = renderer.pixelAt(15, 15);
+    CHECK_EQ(upInside.r, 255);
+    CHECK_EQ(upInside.g, 0);
+    CHECK_EQ(upInside.b, 0);
+
+    // Down state would occupy [60,80)x[60,80) if (incorrectly) rendered —
+    // must stay background white.
+    auto downOutside = renderer.pixelAt(65, 65);
+    CHECK_EQ(downOutside.r, 255);
+    CHECK_EQ(downOutside.g, 255);
+    CHECK_EQ(downOutside.b, 255);
+}
+
+TEST_CASE(SceneRenderer_DefineEditText_DrawsInitialTextGlyph) {
+    // Font (id=1) with a code-table entry for 'A' -> glyph 0 (a 700x700
+    // rectangle). EditText (id=2): fontHeight=1024 twips (scale=1.0),
+    // initialText="A", blue. Baseline starts at bounds.yMin + fontHeight;
+    // bounds.yMin is always 0 (see buildDefineEditTextBytes), so the glyph
+    // lands at LOCAL twips x:[0,700] y:[1024,1724] — placed at (10px,10px)
+    // -> world twips x:[200,900] y:[1224,1924], i.e. device px roughly
+    // [10,45)x[61,96).
+    auto glyph = fixtures::buildGlyphShapeBytes(700, 700);
+    auto fontBody = fixtures::buildDefineFont2Bytes(1, "E", {glyph}, {'A'}, false, 0, 0, 0, {});
+
+    auto editTextBody = fixtures::buildDefineEditTextBytes(
+        2, 100 * 20, 100 * 20, /*fontId=*/1, /*fontHeight=*/1024,
+        std::array<uint8_t, 4>{0, 0, 255, 255}, "", std::string("A"));
+
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineFont2), fontBody},
+        {static_cast<uint16_t>(TagCode::DefineEditText), editTextBody},
+        {26 /* PlaceObject2 */,
+         fixtures::buildPlaceObject2Bytes(1, false, 2, fixtures::buildMatrixBytes(10 * 20, 10 * 20))},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    int width = static_cast<int>(movie->frameSize.widthPixels());
+    int height = static_cast<int>(movie->frameSize.heightPixels());
+    SoftwareRenderer renderer(width, height);
+    SceneRenderer scene(*movie, characters);
+    scene.render(*root, renderer, width, height);
+
+    auto inside = renderer.pixelAt(20, 70);
+    CHECK_EQ(inside.r, 0);
+    CHECK_EQ(inside.g, 0);
+    CHECK_EQ(inside.b, 255);
+
+    auto outside = renderer.pixelAt(5, 5);
+    CHECK_EQ(outside.r, 255);
+    CHECK_EQ(outside.g, 255);
+    CHECK_EQ(outside.b, 255);
+}

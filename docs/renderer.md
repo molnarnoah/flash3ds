@@ -1,8 +1,9 @@
 # Renderer
 
 **Status: Phase 3 basic renderer implemented; Phase 5 wired it to a real
-MovieClipInstance tree (independent per-instance playheads).** Phase 10
-(Nintendo 3DS backend, dual-screen) is still not started.
+MovieClipInstance tree (independent per-instance playheads); Phase 8 added
+static text, non-interactive button, and edit-text glyph rendering.** Phase
+10 (Nintendo 3DS backend, dual-screen) is still not started.
 
 ## Architecture
 
@@ -48,6 +49,17 @@ Movie::frameSize (stage)   ─┘                          │
   Converts local shape points → world twips (via the composed matrix) →
   device pixels (via a stage-size-to-viewport pixel scale) before handing
   geometry to `IRenderer`.
+- **Text/button/edit-text leaf rendering (Phase 8).** `SceneRenderer`'s
+  entry point for a non-sprite display-list entry, `renderCharacter()`,
+  now dispatches on the resolved `CharacterDef`'s actual kind instead of
+  assuming Shape: `swf::TextDef`/`swf::EditTextDef` glyph runs are drawn by
+  `renderGlyph()` (looks up each glyph's outline in its `swf::FontDef`,
+  scales it by `textHeight/1024` — see `docs/avm1-support.md`'s "Text/Font"
+  section — and reuses `ShapeTessellator` via a synthesized one-fill-style
+  `Shape`, so every `ShapeTessellator` limitation above applies to glyph
+  outlines too, e.g. no hole support); `swf::ButtonDef` draws only its
+  "Up"-state records (no mouse hit-testing/state machine exists yet — see
+  `docs/avm1-support.md`'s Known Phase 8 limitations).
 
 ## Known limitations
 
@@ -63,10 +75,22 @@ Movie::frameSize (stage)   ─┘                          │
   it) follow-ups.
 - **No background color tag support.** `SetBackgroundColor` isn't parsed
   yet, so `SceneRenderer::render` always clears to white.
-- **Bitmap and text characters are not resolved at all.**
-  `CharacterDictionary` only knows `DefineShape`/`2`/`3` and `DefineSprite`;
-  `DefineBits*`/`DefineText*`/`DefineFont*`/`DefineButton*` references
-  resolve to nothing and are silently skipped by `SceneRenderer` (Phase 8+).
+- **Bitmap characters are still not resolved at all.**
+  `CharacterDictionary` knows `DefineShape`/`2`/`3`, `DefineSprite`,
+  `DefineSound`, and (as of Phase 8) `DefineFont`/`2`/`DefineText`/`2`/
+  `DefineButton`/`2`/`DefineEditText`; `DefineBits*` (bitmap) references
+  still resolve to nothing and are silently skipped by `SceneRenderer`
+  (later phase, or earlier if a target title needs it).
+- **Button rendering has no interactivity.** `SceneRenderer` always draws a
+  button's "Up" state — there's no mouse position, no hit-testing against a
+  record's bounds, and no Over/Down state switching (see the Phase 8 bullet
+  above and `docs/avm1-support.md`'s Known Phase 8 limitations).
+- **`DefineEditText` rendering is narrow.** Only fields with BOTH an
+  embedded font that has a code table (`DefineFont2`, not a legacy
+  `DefineFont` v1 — see `docs/swf-support.md`) AND literal `initialText`
+  render at all; there's no word-wrap, scrolling, alignment, or variable-
+  binding (`_root.myField` <-> displayed text) — see
+  `renderEditTextCharacter()`'s doc comment in `SceneRenderer.cpp`.
 - **Recursion guard.** `SceneRenderer` caps sprite-in-sprite recursion at 64
   levels to guard against a malformed/cyclic sprite reference; exceeding it
   logs a warning and stops that branch rather than crashing.
@@ -107,7 +131,11 @@ bug.
   world position is correct (proving `concatMatrix` parent/child ordering
   is right, not just identity-transform rendering). Both now build a
   `MovieClipInstance` tree via `ScriptEnvironment`/`createRoot()` rather
-  than a bare `Timeline`.
+  than a bare `Timeline`. Phase 8 added three more: a `DefineText` glyph
+  lands at its expected scaled/translated device pixel; a `DefineButton`
+  draws only its Up-state record (a Down-state record elsewhere must NOT
+  appear); a `DefineEditText` field with an embedded `DefineFont2` font
+  renders its `initialText`'s glyph.
 - `tests/test_movieclip_instance.cpp` (Phase 5) — AVM1 bytecode actually
   driving a `MovieClipInstance` tree (as opposed to `test_avm1_*.cpp`, which
   tests the interpreter in isolation): `GetProperty`/`SetProperty` and

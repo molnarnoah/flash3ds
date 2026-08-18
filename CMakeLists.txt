@@ -28,6 +28,10 @@ add_library(flash3ds_core
     src/swf/DefineShapeTag.cpp
     src/swf/DefineSoundTag.cpp
     src/swf/StartSoundTag.cpp
+    src/swf/DefineFontTag.cpp
+    src/swf/DefineTextTag.cpp
+    src/swf/DefineButtonTag.cpp
+    src/swf/DefineEditTextTag.cpp
     src/swf/SwfLoader.cpp
     src/runtime/Movie.cpp
     src/runtime/DisplayList.cpp

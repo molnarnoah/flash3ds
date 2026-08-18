@@ -33,11 +33,12 @@ Timeline             AVM1 VM         <-- Timeline: Phase 2 done; AVM1: Phase 4 d
     +--------+--------+
     |        |         |
     v        v         v
-  Shape    Sprite    Text             <-- Shape/Sprite: Phase 3+5 done; Text: Phase 8 not started
+  Shape   Sprite   Text/Font   Button   <-- Shape/Sprite: Phase 3+5 done; Text/Font/Button: Phase 8 done
     |
     v
  Renderer                             <-- Phase 3 done (SoftwareRenderer, desktop/testing);
-                                          Phase 5 rewired to walk MovieClipInstance
+                                          Phase 5 rewired to walk MovieClipInstance; Phase 8 added
+                                          glyph-run (Text/EditText) and non-interactive Button drawing
 
  Audio                                <-- Phase 6: IAudioBackend seam (src/audio/), StartSound tag +
                                           AVM1 Sound object dispatch; NullAudioBackend only so far
@@ -61,7 +62,7 @@ The runtime is deliberately modular so the renderer, audio, input, and
 platform layers can be swapped for Nintendo 3DS-specific implementations
 later without touching the SWF/AVM1 core.
 
-## Current status: Phase 7
+## Current status: Phase 8
 
 Phase 1 built **SWF Loader → SWF Parser** (flat tag list). Phase 2 added
 **Timeline → Display List**: `PlaceObject`/`PlaceObject2`/`RemoveObject`/
@@ -133,12 +134,32 @@ deliberate documented simplification/improvement over real
 `ExternalInterface` semantics (see `docs/avm1-support.md`'s
 "ExternalInterface" section).
 
-Text/bitmap/button rendering, `_width`/`_height`, and color-transform
-application at render time still don't exist — see
-[swf-support.md](swf-support.md) for the exact feature matrix,
-[renderer.md](renderer.md) for the renderer's specific limitations, and
-[avm1-support.md](avm1-support.md) for the AVM1 opcode support matrix,
-documented confidence levels, and known Phase 6/7 limitations.
+Phase 8 added **Text / Font / Button**: `DefineFont`/`DefineFont2` (glyph
+outlines + code table + optional layout metrics — `src/swf/
+DefineFontTag.h/.cpp`), `DefineText`/`DefineText2` (`TEXTRECORD`/
+`GLYPHENTRY` runs — `src/swf/DefineTextTag.h/.cpp`), `DefineButton`/
+`DefineButton2` (per-state character placements + action bytecode —
+`src/swf/DefineButtonTag.h/.cpp`), and `DefineEditText` (structural parsing
+of a dynamic/input text field — `src/swf/DefineEditTextTag.h/.cpp`) are all
+now resolved into `CharacterDictionary` alongside shapes/sprites/sounds.
+`ShapeRecords.h/.cpp` gained a small refactor (`readShapeRecordStream()`,
+factored out of `readShapeWithStyle()`) so font glyphs — which have a bare
+SHAPE record stream with no `FillStyleArray`/`LineStyleArray` of their own
+— can reuse the exact same SHAPERECORD-decoding logic without duplicating
+it. `SceneRenderer` gained matching leaf-rendering support: static text and
+edit-text initial-text are drawn glyph-by-glyph (`renderGlyph()` — looks up
+each glyph's outline in its font, scales by `textHeight/1024`, and reuses
+`ShapeTessellator`), and buttons draw their "Up" state only (no mouse hit-
+testing/state machine exists yet). Button `on()` handlers and the mouse-
+related `onClipEvent`s deferred since Phase 6 are still not dispatched —
+see `docs/avm1-support.md`'s Known Phase 8 limitations.
+
+Bitmap rendering, `_width`/`_height`, and color-transform application at
+render time still don't exist — see [swf-support.md](swf-support.md) for
+the exact feature matrix, [renderer.md](renderer.md) for the renderer's
+specific limitations, and [avm1-support.md](avm1-support.md) for the AVM1
+opcode support matrix, documented confidence levels, and known Phase 6/7/8
+limitations.
 
 ## Module layout
 
@@ -153,8 +174,21 @@ src/
               PlaceObjectTag.h/.cpp       — PlaceObject/2, RemoveObject/2,
                                              FrameLabel body parsers
               ShapeRecords.h/.cpp         — FILLSTYLEARRAY/LINESTYLEARRAY/
-                                             SHAPERECORD stream reader
+                                             SHAPERECORD stream reader;
+                                             Phase 8: readShapeRecordStream()
+                                             factored out for font glyphs
+                                             (bare SHAPE, no style arrays)
               DefineShapeTag.h/.cpp       — DefineShape/2/3 tag body parser
+              DefineFontTag.h/.cpp        — Phase 8: DefineFont/DefineFont2
+                                             (glyph outlines, code table,
+                                             optional layout metrics)
+              DefineTextTag.h/.cpp        — Phase 8: DefineText/DefineText2
+                                             (TEXTRECORD/GLYPHENTRY runs)
+              DefineButtonTag.h/.cpp      — Phase 8: DefineButton/
+                                             DefineButton2 (per-state
+                                             placements + action bytecode)
+              DefineEditTextTag.h/.cpp    — Phase 8: DefineEditText
+                                             (structural parsing only)
               SwfLoader.h/.cpp            — FWS/CWS signature, zlib inflate,
                                              header parse, tag scan
   runtime/    Movie.h/.cpp                — loaded-movie model; owns the
@@ -163,8 +197,10 @@ src/
               Timeline.h/.cpp             — per-frame tag grouping + playhead
                                              (generalized: main movie OR any
                                              nested DefineSprite tag stream)
-              CharacterDictionary.h/.cpp  — characterId -> Shape/Sprite lookup
-                                             (recursive: scans nested
+              CharacterDictionary.h/.cpp  — characterId -> character lookup
+                                             (Shape/Sprite/Sound, + Phase 8:
+                                             Font/Text/Button/EditText;
+                                             recursive: scans nested
                                              DefineSprite streams too)
               MovieClipInstance.h/.cpp    — Phase 5: ScriptEnvironment +
                                              MovieClipInstance — the AVM1/
@@ -189,7 +225,11 @@ src/
               SceneRenderer.h/.cpp        — MovieClipInstance-tree walk ->
                                              IRenderer, recursive sprite
                                              rendering with per-instance
-                                             transform/visibility (Phase 5)
+                                             transform/visibility (Phase 5);
+                                             Phase 8: renderCharacter()
+                                             dispatches Text/EditText glyph
+                                             runs (renderGlyph()) and
+                                             Button "Up"-state rendering
   audio/      IAudioBackend.h             — Phase 6: abstract sound-output
                                              interface, mirrors IRenderer.h
               NullAudioBackend.h/.cpp     — Phase 6: logs, plays nothing —
