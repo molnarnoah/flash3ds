@@ -184,8 +184,18 @@ void drawButtonTestScreen(IRenderer& renderer, u32 held) {
     renderer.endFrame();
 }
 
-// Shows a solid-color error screen on both LCDs and blocks until
-// START+SELECT is held, instead of the app just vanishing.
+// Which of showFatalErrorScreen()'s callers is reporting -- see that
+// function's own comment for why this needs to be visually countable
+// rather than just logged. Numbered in the order main() checks them.
+enum class FatalError {
+    kRomfsOpenFailed = 1,
+    kInvalidMovie = 2,
+    kNoRootMovieClip = 3,
+};
+
+// Shows a solid-color error screen on both LCDs, with `errorCode` small
+// white squares drawn in the top screen's top-left corner, and blocks
+// until START+SELECT is held, instead of the app just vanishing.
 //
 // Added 2026-08-19 while diagnosing a "loads in Azahar, then freezes and
 // quits" report: every early-failure path here used to just call
@@ -196,12 +206,19 @@ void drawButtonTestScreen(IRenderer& renderer, u32 held) {
 // screen that STAYS UP (rather than a black screen that vanishes) is a
 // clear, low-effort signal that this is a handled error, not a hang --
 // distinguishing "the app is telling you something's wrong" from "the app
-// died" is the whole point; the actual reason always still goes to
-// LOG_ERROR (now visible via svcOutputDebugString in the emulator's Log
-// Viewer) rather than being hardcoded into this screen, which has no font
-// rendering available to display text with.
-void showFatalErrorScreen(IRenderer& top, IRenderer& bottom) {
+// died" is the whole point. The specific reason always still goes to
+// LOG_ERROR (visible via svcOutputDebugString in an emulator's own Log
+// Viewer, e.g. Citra/Azahar's Debug menu) -- but that's not reachable from
+// every platform testers might use (e.g. iOS emulators typically expose
+// no such log view), so the square count is a second, universally-visible
+// encoding of WHICH check failed, needing no font rendering (none is
+// available in this project -- see docs/architecture.md) or log access at
+// all: just count the squares and report the number back.
+void showFatalErrorScreen(IRenderer& top, IRenderer& bottom, FatalError error) {
     constexpr RgbaColor kErrorColor{200, 30, 30, 255};
+    constexpr RgbaColor kMarkerColor{255, 255, 255, 255};
+    const int markerCount = static_cast<int>(error);
+
     while (aptMainLoop()) {
         hidScanInput();
         const u32 kHeld = hidKeysHeld();
@@ -210,6 +227,9 @@ void showFatalErrorScreen(IRenderer& top, IRenderer& bottom) {
         }
 
         top.beginFrame(kErrorColor);
+        for (int i = 0; i < markerCount; ++i) {
+            drawFilledRect(top, 12 + i * 24, 12, 16, 16, kMarkerColor);
+        }
         top.endFrame();
         bottom.beginFrame(kErrorColor);
         bottom.endFrame();
@@ -280,7 +300,7 @@ int main(int argc, char** argv) {
         LOG_ERROR("3DS", "Failed to open this app's own embedded RomFS section (see the "
                           "Nintendo3DSRomfs::open log line above for the specific reason) -- was "
                           "this .3dsx built with --romfs=... ? (see CMakeLists.txt)");
-        showFatalErrorScreen(topRenderer, bottomRenderer);
+        showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kRomfsOpenFailed);
         gfxExit();
         return 1;
     }
@@ -301,7 +321,7 @@ int main(int argc, char** argv) {
     if (!movie || !movie->valid) {
         LOG_ERROR("3DS", "Could not load '%s': %s", package.config.swfFilename.c_str(),
                    movie ? movie->errorMessage.c_str() : "(no Movie produced)");
-        showFatalErrorScreen(topRenderer, bottomRenderer);
+        showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kInvalidMovie);
         gfxExit();
         return 1;
     }
@@ -330,7 +350,7 @@ int main(int argc, char** argv) {
     if (!root) {
         LOG_ERROR("3DS", "'%s' parsed but produced no root MovieClip (no frames?)",
                    package.config.swfFilename.c_str());
-        showFatalErrorScreen(topRenderer, bottomRenderer);
+        showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kNoRootMovieClip);
         gfxExit();
         return 1;
     }
