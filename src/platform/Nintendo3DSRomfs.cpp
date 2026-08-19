@@ -70,83 +70,115 @@ bool Nintendo3DSRomfs::open(const char* argv0, OpenFailure* outFailure) {
         return false;
     };
 
-    if (!envIsHomebrew()) {
-        LOG_ERROR("VC", "Nintendo3DSRomfs::open: not a homebrew (3DSX) launch -- no embedded "
-                        "RomFS section to read (see docs/3ds-toolchain.md)");
-        return fail(OpenFailure::kNotHomebrew);
-    }
-    if (!argv0) {
-        LOG_ERROR("VC", "Nintendo3DSRomfs::open: argv[0] is null -- can't locate this .3dsx's "
-                        "own file on the SD card");
-        return fail(OpenFailure::kNullArgv0);
-    }
-
-    // Mirrors romfsMountSelf()'s own two supported schemes exactly (see
-    // libctru's romfs_dev.c): a plain SD-card launch (hbmenu, or an
-    // emulator's "Load File") hands argv[0] as "sdmc:/path/to/app.3dsx";
-    // launching via the `3dslink` dev-workflow tool (also usable against
-    // Citra/Azahar, which both implement the same TCP handshake) instead
-    // hands "3dslink:/path/to/app.3dsx", which resolves against the SD
-    // card's "/3ds" directory by convention, NOT literally -- both are
-    // legitimate, commonly-hit launch paths, not just the first one.
-    std::string path = argv0;
-    const std::string kSdmcPrefix = "sdmc:/";
-    const std::string k3dslinkPrefix = "3dslink:/";
-    if (path.rfind(kSdmcPrefix, 0) == 0) {
-        path = path.substr(kSdmcPrefix.size() - 1);  // keep the leading '/'
-    } else if (path.rfind(k3dslinkPrefix, 0) == 0) {
-        path = "/3ds" + path.substr(k3dslinkPrefix.size() - 1);
-    } else {
-        LOG_ERROR("VC", "Nintendo3DSRomfs::open: argv[0] ('%s') isn't an sdmc:/ or 3dslink:/ "
-                        "path -- this launch method isn't supported by this reader",
-                  path.c_str());
-        return fail(OpenFailure::kUnrecognizedArgv0Scheme);
-    }
-
-    uint16_t utf16Path[512];
-    ssize_t units = utf8_to_utf16(utf16Path, reinterpret_cast<const uint8_t*>(path.c_str()), 511);
-    if (units < 0) {
-        LOG_ERROR("VC", "Nintendo3DSRomfs::open: failed to convert '%s' to UTF-16", path.c_str());
-        return fail(OpenFailure::kUtf16ConversionFailed);
-    }
-    utf16Path[units] = 0;
-
-    FS_Path archPath = {PATH_EMPTY, 1, ""};
-    FS_Path filePath = {PATH_UTF16, static_cast<uint32_t>((units + 1) * 2), utf16Path};
-
     Handle fd = 0;
-    Result rc = FSUSER_OpenFileDirectly(&fd, ARCHIVE_SDMC, archPath, filePath, FS_OPEN_READ, 0);
-    if (R_FAILED(rc)) {
-        LOG_ERROR("VC", "Nintendo3DSRomfs::open: FSUSER_OpenFileDirectly('%s') failed "
-                        "(result=0x%08lx)",
-                  path.c_str(), static_cast<unsigned long>(rc));
-        return fail(OpenFailure::kFileOpenFailed);
-    }
+    uint32_t sectionOffset = 0;
 
-    ThreeDsxHeader header{};
-    uint32_t bytesRead = 0;
-    rc = FSFILE_Read(fd, &bytesRead, 0, &header, sizeof(header));
-    if (R_FAILED(rc) || bytesRead != sizeof(header) || header.magic != k3dsxMagic) {
-        LOG_ERROR("VC", "Nintendo3DSRomfs::open: '%s' is not a readable/valid .3dsx file",
-                  path.c_str());
-        FSFILE_Close(fd);
-        return fail(OpenFailure::kInvalid3dsxHeader);
-    }
-    if (header.headerSize < sizeof(header)) {
-        LOG_ERROR("VC", "Nintendo3DSRomfs::open: '%s' has no embedded RomFS section -- it was "
-                        "built without --romfs=... (see CMakeLists.txt's FLASH3DS_BUILD_3DS block)",
-                  path.c_str());
-        FSFILE_Close(fd);
-        return fail(OpenFailure::kNoRomfsSection);
+    if (envIsHomebrew()) {
+        // Recognized homebrew (3DSX) launch, with the loader having poked
+        // __service_ptr/__system_arglist before entry (hbmenu, 3dslink,
+        // and Citra/Azahar all do this -- it's the documented, widely-
+        // relied-upon homebrew launcher ABI). Locate our own .3dsx by
+        // argv[0] and parse its 3DSX header to find the RomFS section.
+        if (!argv0) {
+            LOG_ERROR("VC", "Nintendo3DSRomfs::open: argv[0] is null -- can't locate this "
+                            "3dsx's own file on the SD card");
+            return fail(OpenFailure::kNullArgv0);
+        }
+
+        // Mirrors romfsMountSelf()'s own two supported schemes exactly
+        // (see libctru's romfs_dev.c): a plain SD-card launch hands
+        // argv[0] as "sdmc:/path/to/app.3dsx"; the `3dslink` dev-workflow
+        // tool instead hands "3dslink:/path/to/app.3dsx", which resolves
+        // against the SD card's "/3ds" directory by convention.
+        std::string path = argv0;
+        const std::string kSdmcPrefix = "sdmc:/";
+        const std::string k3dslinkPrefix = "3dslink:/";
+        if (path.rfind(kSdmcPrefix, 0) == 0) {
+            path = path.substr(kSdmcPrefix.size() - 1);  // keep the leading '/'
+        } else if (path.rfind(k3dslinkPrefix, 0) == 0) {
+            path = "/3ds" + path.substr(k3dslinkPrefix.size() - 1);
+        } else {
+            LOG_ERROR("VC", "Nintendo3DSRomfs::open: argv[0] ('%s') isn't an sdmc:/ or "
+                            "3dslink:/ path -- this launch method isn't supported by this "
+                            "reader",
+                      path.c_str());
+            return fail(OpenFailure::kUnrecognizedArgv0Scheme);
+        }
+
+        uint16_t utf16Path[512];
+        ssize_t units =
+            utf8_to_utf16(utf16Path, reinterpret_cast<const uint8_t*>(path.c_str()), 511);
+        if (units < 0) {
+            LOG_ERROR("VC", "Nintendo3DSRomfs::open: failed to convert '%s' to UTF-16",
+                      path.c_str());
+            return fail(OpenFailure::kUtf16ConversionFailed);
+        }
+        utf16Path[units] = 0;
+
+        FS_Path archPath = {PATH_EMPTY, 1, ""};
+        FS_Path filePath = {PATH_UTF16, static_cast<uint32_t>((units + 1) * 2), utf16Path};
+
+        Result rc = FSUSER_OpenFileDirectly(&fd, ARCHIVE_SDMC, archPath, filePath, FS_OPEN_READ, 0);
+        if (R_FAILED(rc)) {
+            LOG_ERROR("VC", "Nintendo3DSRomfs::open: FSUSER_OpenFileDirectly('%s') failed "
+                            "(result=0x%08lx)",
+                      path.c_str(), static_cast<unsigned long>(rc));
+            return fail(OpenFailure::kFileOpenFailed);
+        }
+
+        ThreeDsxHeader header{};
+        uint32_t bytesRead = 0;
+        rc = FSFILE_Read(fd, &bytesRead, 0, &header, sizeof(header));
+        if (R_FAILED(rc) || bytesRead != sizeof(header) || header.magic != k3dsxMagic) {
+            LOG_ERROR("VC", "Nintendo3DSRomfs::open: '%s' is not a readable/valid .3dsx file",
+                      path.c_str());
+            FSFILE_Close(fd);
+            return fail(OpenFailure::kInvalid3dsxHeader);
+        }
+        if (header.headerSize < sizeof(header)) {
+            LOG_ERROR("VC", "Nintendo3DSRomfs::open: '%s' has no embedded RomFS section -- it "
+                            "was built without --romfs=... (see CMakeLists.txt's "
+                            "FLASH3DS_BUILD_3DS block)",
+                      path.c_str());
+            FSFILE_Close(fd);
+            return fail(OpenFailure::kNoRomfsSection);
+        }
+
+        sectionOffset = header.fsOffset;
+    } else {
+        // Not every 3DSX loader implements the homebrew argv/service-
+        // handle-override ABI above -- confirmed empirically (2026-08-19)
+        // on Manic EMU (an iOS 3DS emulator), where envIsHomebrew() reads
+        // false even though this genuinely IS a .3dsx with an embedded
+        // RomFS section (the same build boots and runs fine otherwise --
+        // see nintendo3ds_main.cpp's own header comment). For exactly
+        // this situation, libctru's OWN romfsMountSelf() doesn't give up
+        // either -- it falls back to romfsMountFromCurrentProcess(),
+        // which opens ARCHIVE_ROMFS with an all-zero 12-byte binary path
+        // at offset 0 (see romfs_dev.c). Reproduced faithfully here: this
+        // is the same public, documented fallback every non-homebrew-ABI
+        // launch path already needs, not anything Manic-EMU-specific.
+        uint8_t zeros[0xC] = {0};
+        FS_Path archPath = {PATH_EMPTY, 1, ""};
+        FS_Path filePath = {PATH_BINARY, sizeof(zeros), zeros};
+
+        Result rc = FSUSER_OpenFileDirectly(&fd, ARCHIVE_ROMFS, archPath, filePath, FS_OPEN_READ, 0);
+        if (R_FAILED(rc)) {
+            LOG_ERROR("VC", "Nintendo3DSRomfs::open: not a recognized homebrew launch, and the "
+                            "ARCHIVE_ROMFS fallback also failed (result=0x%08lx)",
+                      static_cast<unsigned long>(rc));
+            return fail(OpenFailure::kFileOpenFailed);
+        }
+        sectionOffset = 0;  // no 3DSX header to skip in this path
     }
 
     fd_ = fd;
-    sectionOffset_ = header.fsOffset;
+    sectionOffset_ = sectionOffset;
     open_ = true;
 
     if (!readAt(0, &header_, sizeof(header_)) || header_.headerSize < sizeof(header_)) {
-        LOG_ERROR("VC", "Nintendo3DSRomfs::open: RomFS section header in '%s' is malformed",
-                  path.c_str());
+        LOG_ERROR("VC", "Nintendo3DSRomfs::open: RomFS section header (offset=%lu) is malformed",
+                  static_cast<unsigned long>(sectionOffset_));
         FSFILE_Close(fd_);
         open_ = false;
         return fail(OpenFailure::kRomfsHeaderMalformed);

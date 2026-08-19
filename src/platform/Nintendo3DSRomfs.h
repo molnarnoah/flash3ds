@@ -69,7 +69,14 @@ public:
     // count as on-screen squares for exactly that reason).
     enum class OpenFailure {
         kNone = 0,
-        kNotHomebrew = 1,       // envIsHomebrew() == false
+        // NOT emitted anymore as of 2026-08-19 -- envIsHomebrew()==false
+        // now takes the ARCHIVE_ROMFS fallback branch instead of failing
+        // outright (see open()'s .cpp comment; confirmed necessary on
+        // Manic EMU, an iOS 3DS emulator that doesn't implement the
+        // homebrew argv/service-handle-override ABI). Value kept
+        // reserved/unused rather than renumbered so any earlier on-screen
+        // square-count report stays meaningful.
+        kNotHomebrew = 1,
         kNullArgv0 = 2,
         kUnrecognizedArgv0Scheme = 3,  // argv0 isn't "sdmc:/" or "3dslink:/"
         kUtf16ConversionFailed = 4,
