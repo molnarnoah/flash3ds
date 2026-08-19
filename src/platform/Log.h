@@ -40,6 +40,21 @@ public:
     // in-memory buffer to assert on emitted log lines.
     static void setSink(FILE* sink);
 
+    // Optional SECOND output path, called with the already-vsnprintf'd
+    // message (no trailing newline) in addition to (not instead of)
+    // whatever setSink() points at. Generic/portable by design -- this
+    // header has no platform-specific type anywhere in it -- so a
+    // platform backend can register e.g. an on-device debug-output SVC
+    // call without flash3ds_core itself gaining any platform dependency.
+    // Pass nullptr to clear. See docs/virtual-console.md's "3DS RomFS
+    // failure diagnostics" note for why this exists: on the 3DS target,
+    // setSink()'s default (stderr) is a silent no-op (newlib's _write is
+    // deliberately left unimplemented -- see docs/3ds-toolchain.md), so
+    // without a second path every LOG_ERROR on that target was completely
+    // invisible.
+    using DebugCallback = void (*)(LogLevel level, const char* category, const char* message);
+    static void setDebugCallback(DebugCallback callback);
+
     static void log(LogLevel level, const char* category, const char* fmt, ...)
 #if defined(__GNUC__) || defined(__clang__)
         __attribute__((format(printf, 3, 4)))

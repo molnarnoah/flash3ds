@@ -50,6 +50,17 @@ Nintendo3DSRomfs::~Nintendo3DSRomfs() {
 }
 
 bool Nintendo3DSRomfs::open(const char* argv0) {
+    // Logged UNCONDITIONALLY, before any check below can bail out --
+    // discovered while diagnosing a "loads then silently quits" report
+    // (2026-08-19): every LOG_ERROR call after an early return was
+    // previously invisible on target (see Log.cpp's svcOutputDebugString
+    // addition, same date), so a failure here gave zero clue which of
+    // these checks actually failed. Logging the raw inputs first means the
+    // very next test run's Citra/Azahar Log Viewer output pinpoints it
+    // exactly instead of requiring another guess-and-rebuild cycle.
+    LOG_INFO("VC", "Nintendo3DSRomfs::open: envIsHomebrew=%d argv0=%s", envIsHomebrew() ? 1 : 0,
+              argv0 ? argv0 : "(null)");
+
     if (!envIsHomebrew()) {
         LOG_ERROR("VC", "Nintendo3DSRomfs::open: not a homebrew (3DSX) launch -- no embedded "
                         "RomFS section to read (see docs/3ds-toolchain.md)");
@@ -61,18 +72,24 @@ bool Nintendo3DSRomfs::open(const char* argv0) {
         return false;
     }
 
-    // romfsMountSelf() strips a leading "sdmc:/" the same way -- the 3DSX
-    // loader hands the app its own path with that prefix, and
-    // FSUSER_OpenFileDirectly below already targets ARCHIVE_SDMC
-    // explicitly, so it's the prefix (not the path after it) that needs
-    // stripping.
+    // Mirrors romfsMountSelf()'s own two supported schemes exactly (see
+    // libctru's romfs_dev.c): a plain SD-card launch (hbmenu, or an
+    // emulator's "Load File") hands argv[0] as "sdmc:/path/to/app.3dsx";
+    // launching via the `3dslink` dev-workflow tool (also usable against
+    // Citra/Azahar, which both implement the same TCP handshake) instead
+    // hands "3dslink:/path/to/app.3dsx", which resolves against the SD
+    // card's "/3ds" directory by convention, NOT literally -- both are
+    // legitimate, commonly-hit launch paths, not just the first one.
     std::string path = argv0;
     const std::string kSdmcPrefix = "sdmc:/";
+    const std::string k3dslinkPrefix = "3dslink:/";
     if (path.rfind(kSdmcPrefix, 0) == 0) {
         path = path.substr(kSdmcPrefix.size() - 1);  // keep the leading '/'
+    } else if (path.rfind(k3dslinkPrefix, 0) == 0) {
+        path = "/3ds" + path.substr(k3dslinkPrefix.size() - 1);
     } else {
-        LOG_ERROR("VC", "Nintendo3DSRomfs::open: argv[0] ('%s') isn't an sdmc:/ path -- launch "
-                        "methods other than a plain SD-card .3dsx aren't supported by this reader",
+        LOG_ERROR("VC", "Nintendo3DSRomfs::open: argv[0] ('%s') isn't an sdmc:/ or 3dslink:/ "
+                        "path -- this launch method isn't supported by this reader",
                   path.c_str());
         return false;
     }

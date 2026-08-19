@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 #include "audio/Nintendo3DSAudioBackend.h"
@@ -183,10 +184,61 @@ void drawButtonTestScreen(IRenderer& renderer, u32 held) {
     renderer.endFrame();
 }
 
+// Shows a solid-color error screen on both LCDs and blocks until
+// START+SELECT is held, instead of the app just vanishing.
+//
+// Added 2026-08-19 while diagnosing a "loads in Azahar, then freezes and
+// quits" report: every early-failure path here used to just call
+// gfxExit()/return after an invisible LOG_ERROR (see Log.cpp's
+// svcOutputDebugString addition, same date, for the other half of this
+// fix) -- so a config/RomFS/SWF failure and an actual crash were
+// indistinguishable to whoever was watching the screen. A solid red
+// screen that STAYS UP (rather than a black screen that vanishes) is a
+// clear, low-effort signal that this is a handled error, not a hang --
+// distinguishing "the app is telling you something's wrong" from "the app
+// died" is the whole point; the actual reason always still goes to
+// LOG_ERROR (now visible via svcOutputDebugString in the emulator's Log
+// Viewer) rather than being hardcoded into this screen, which has no font
+// rendering available to display text with.
+void showFatalErrorScreen(IRenderer& top, IRenderer& bottom) {
+    constexpr RgbaColor kErrorColor{200, 30, 30, 255};
+    while (aptMainLoop()) {
+        hidScanInput();
+        const u32 kHeld = hidKeysHeld();
+        if ((kHeld & KEY_START) && (kHeld & KEY_SELECT)) {
+            break;
+        }
+
+        top.beginFrame(kErrorColor);
+        top.endFrame();
+        bottom.beginFrame(kErrorColor);
+        bottom.endFrame();
+        Nintendo3DSRenderer::presentFrame();
+
+        gspWaitForVBlank();
+    }
+}
+
+// Routes every Log::log() call through svcOutputDebugString as well as
+// whatever setSink() (stderr, by default) points at -- see Log.h's
+// setDebugCallback() doc comment for why this is needed at all on this
+// target specifically. svcOutputDebugString is an ordinary public libctru
+// SVC call, needs no filesystem/console setup, and Citra/Azahar's own Log
+// Viewer displays it; real hardware silently ignores it if nothing is
+// attached to observe it, so registering this is harmless either way.
+void logToDebugSvc(flash3ds::LogLevel level, const char* category, const char* message) {
+    (void)level;
+    char buf[560];
+    std::snprintf(buf, sizeof(buf), "[%s] %s", category, message);
+    svcOutputDebugString(buf, static_cast<s32>(std::strlen(buf)));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     (void)argc;
+
+    flash3ds::Log::setDebugCallback(logToDebugSvc);
 
     // NOTE: no consoleInit()/consoleDebugInit() call here -- libctru's
     // console.c is one of the files this from-source toolchain build
@@ -206,6 +258,15 @@ int main(int argc, char** argv) {
     constexpr int kBottomWidth = 320;
     constexpr int kBottomHeight = 240;
 
+    // Constructed up front (before any RomFS/config/SWF work below) purely
+    // so showFatalErrorScreen() has a screen to draw on for every failure
+    // path, including the very first one -- these are cheap to build
+    // (SoftwareRenderer allocation only, see Nintendo3DSRenderer.h) and
+    // were already unconditionally constructed later in this same
+    // function on the success path, just moved up.
+    Nintendo3DSRenderer topRenderer(kTopWidth, kTopHeight, GFX_TOP);
+    Nintendo3DSRenderer bottomRenderer(kBottomWidth, kBottomHeight, GFX_BOTTOM);
+
     // --- Virtual Console resource layer: RomFS -> GamePackage -----------
     // See Nintendo3DSRomfs.h for why this ISN'T libctru's own romfsInit(),
     // and docs/virtual-console.md for the full design. `romfs` must
@@ -219,6 +280,7 @@ int main(int argc, char** argv) {
         LOG_ERROR("3DS", "Failed to open this app's own embedded RomFS section (see the "
                           "Nintendo3DSRomfs::open log line above for the specific reason) -- was "
                           "this .3dsx built with --romfs=... ? (see CMakeLists.txt)");
+        showFatalErrorScreen(topRenderer, bottomRenderer);
         gfxExit();
         return 1;
     }
@@ -239,6 +301,7 @@ int main(int argc, char** argv) {
     if (!movie || !movie->valid) {
         LOG_ERROR("3DS", "Could not load '%s': %s", package.config.swfFilename.c_str(),
                    movie ? movie->errorMessage.c_str() : "(no Movie produced)");
+        showFatalErrorScreen(topRenderer, bottomRenderer);
         gfxExit();
         return 1;
     }
@@ -267,12 +330,11 @@ int main(int argc, char** argv) {
     if (!root) {
         LOG_ERROR("3DS", "'%s' parsed but produced no root MovieClip (no frames?)",
                    package.config.swfFilename.c_str());
+        showFatalErrorScreen(topRenderer, bottomRenderer);
         gfxExit();
         return 1;
     }
 
-    Nintendo3DSRenderer topRenderer(kTopWidth, kTopHeight, GFX_TOP);
-    Nintendo3DSRenderer bottomRenderer(kBottomWidth, kBottomHeight, GFX_BOTTOM);
     SceneRenderer scene(*movie, characters);
 
     // Frame-rate pacing: advance the loaded movie's own timeline at
