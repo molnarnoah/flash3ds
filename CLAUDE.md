@@ -388,6 +388,29 @@ docs" section — don't just assume this is resolved.
    **ON HOLD.**
 5. Audio codec decode. **ON HOLD.**
 
+## Virtual Console resource/configuration layer (2026-08-19, not one of the numbered phases)
+
+A new, separately-scoped layer sits on top of the runtime above (nothing
+below this section changed): `src/vc/` (`IniDocument`, `GameConfig`,
+`GamePackage` — all platform-independent, part of `flash3ds_core`) plus
+`src/platform/Nintendo3DSRomfs.h/.cpp` (3DS-only) let `flash3ds_3ds` load
+`game.swf`/`config.ini` from an embedded RomFS section (`romfs/` in the
+repo root) instead of a compiled-in `EmbeddedDemoSwf.h` array — so
+swapping which SWF plays, and how input maps to it, no longer needs a
+recompile. **Full design, RomFS-reader rationale (why not libctru's own
+`romfsInit()`), config.ini syntax, and the CIA-packaging boundary are all
+in `docs/virtual-console.md` — read that before touching this layer.**
+279 desktop tests total became 316 (37 new, covering the INI parser,
+`GameConfig`, and `GamePackage`); the 3DS cross-build still links clean
+(same 8 weak undefined symbols as Phase 10's own prior verification) and
+was verified byte-for-byte via an independent RomFS-section parse (no
+hardware/emulator access this session either). `EmbeddedDemoSwf.h`/
+`tools/gen_3ds_demo_swf.py`'s C++-header-emitting mode are no longer used
+by `nintendo3ds_main.cpp` but were left in the tree (harmless, and the
+script's SWF-building logic is now reused via `--swf-out` to generate the
+default `romfs/game.swf`) rather than deleted, since deletion wasn't asked
+for.
+
 ## Build
 
 ```sh

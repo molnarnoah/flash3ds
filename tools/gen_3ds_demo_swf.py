@@ -15,10 +15,18 @@ any shipped binary) or with Shift-DX/gameswf/code.bin.
 
 Usage:
     python3 tools/gen_3ds_demo_swf.py > src/platform/EmbeddedDemoSwf.h
+    python3 tools/gen_3ds_demo_swf.py --swf-out romfs/game.swf
 
 (The generated header is checked into the repo -- see that file's own
-top comment -- so the 3DS build does not need Python at build time.)
+top comment -- so the 3DS build does not need Python at build time. As of
+the Virtual Console resource layer (2026-08-19), the C++ entry point no
+longer includes/uses EmbeddedDemoSwf.h at all -- see nintendo3ds_main.cpp
+-- but the SAME clean-room demo content is reused, via --swf-out, as the
+default committed romfs/game.swf so the RomFS dev workflow has SOME
+default content out of the box without needing any third-party SWF. See
+docs/virtual-console.md's "Replacing game.swf" section.)
 """
+import argparse
 import struct
 import sys
 
@@ -286,5 +294,16 @@ def emit_cpp_header(swf_bytes, out=sys.stdout):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__,
+                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--swf-out', metavar='PATH',
+                         help='Write the raw .swf bytes to PATH instead of emitting the C++ '
+                              'header to stdout (used to (re)generate romfs/game.swf).')
+    args = parser.parse_args()
+
     swf = build_demo_swf()
-    emit_cpp_header(swf)
+    if args.swf_out:
+        with open(args.swf_out, 'wb') as f:
+            f.write(swf)
+    else:
+        emit_cpp_header(swf)
