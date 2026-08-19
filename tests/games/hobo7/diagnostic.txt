@@ -1,0 +1,178 @@
+[INFO ] [SWF] Signature=CWS Version=6 DeclaredLength=13898200
+[INFO ] [SWF] Decompressed CWS body: 13898192 bytes
+[INFO ] [SWF] FrameSize=600.0x450.0 px FrameRate=25.00 fps FrameCount=13
+[INFO ] [SWF] Loaded movie: 6737 tags, ActionScript=yes
+PARSE_RESULT: OK
+
+=== HEADER ===
+file: /home/claude/game-corpus/hobo7/hobo7.swf
+swf_version: 6
+compression: zlib (CWS)
+declared_length: 13898200
+actual_file_size: 7170232
+decompressed_body_size: 13898192
+stage_width_px: 600.0
+stage_height_px: 450.0
+fps: 25.00
+declared_frame_count: 13
+has_actionscript_tag: yes
+
+=== ACTIONSCRIPT VERSION ===
+avm1_present: yes
+avm2_present (DoABC/DoABC2 tags): no
+DoAction_tag_count: 4864
+DoInitAction_tag_count: 0
+DoABC_tag_count: 0
+
+=== TAG HISTOGRAM (recursive incl. nested DefineSprite streams; 83756 total tag occurrences) ===
+  PlaceObject2                     46149
+  ShowFrame                        18854
+  RemoveObject2                    4905
+  DoAction                         4864
+  DefineShape                      3492
+  DefineShape2                     1226
+  DefineShape3                     938
+  End                              819
+  SoundStreamHead2                 819
+  DefineSprite                     818
+  StartSound                       646
+  FrameLabel                       127
+  DefineSound                      39
+  DefineButton2                    27
+  DefineMorphShape                 22
+  DefineText                       4
+  DefineEditText                   2
+  DefineBitsJpeg2                  1
+  DefineBitsJpeg3                  1
+  DefineFont2                      1
+  DefineFontName                   1
+  SetBackgroundColor               1
+
+=== AVM1 OPCODE PROFILE (4890 bytecode buffers scanned, 31746 total opcodes, 0 nested function bodies, 0 With blocks) ===
+  Push                  11764  [supported]
+  GetVariable            4534  [supported]
+  Stop                   4007  [supported]
+  GetMember              4007  [supported]
+  SetMember              1651  [supported]
+  CallMethod             1092  [supported]
+  Pop                    1058  [supported]
+  Not                     598  [supported]
+  If                      580  [supported]
+  Subtract                555  [supported]
+  Equals2                 551  [supported]
+  ConstantPool            427  [supported]
+  Add2                    372  [supported]
+  Jump                    259  [supported]
+  And                      82  [supported]
+  Less2                    58  [supported]
+  Greater                  41  [supported]
+  StopSounds               29  [supported]
+  Multiply                 17  [supported]
+  GetURL                   13  [supported]
+  StringEquals             12  [supported]
+  Play                     11  [supported]
+  NewObject                 9  [supported]
+  SetVariable               7  [supported]
+  SetProperty               5  [supported]
+  InitObject                4  [supported]
+  GotoLabel                 1  [supported]
+  GotoFrame                 1  [supported]
+  Divide                    1  [supported]
+
+=== AS2 API/IDENTIFIER SCAN (best-effort substring match over decompressed body; presence only, not proof of semantic usage) ===
+  Key                  FOUND
+  Mouse                not found
+  MovieClip            not found
+  Sound                FOUND
+  _root                FOUND
+  _parent              FOUND
+  _global              not found
+  gotoAndPlay          FOUND
+  gotoAndStop          FOUND
+  play                 FOUND
+  stop                 FOUND
+  removeMovieClip      FOUND
+  createEmptyMovieClip not found
+  duplicateMovieClip   not found
+  attachMovie          not found
+  loadMovie            not found
+  _x                   FOUND
+  _y                   FOUND
+  _xscale              FOUND
+  _yscale              FOUND
+  _rotation            not found
+  _alpha               not found
+  _visible             FOUND
+  _width               not found
+  _height              not found
+  onClipEvent          not found
+  onPress              not found
+  onRelease            not found
+  onRollOver           not found
+  onRollOut            not found
+  onMouseDown          not found
+  onMouseUp            not found
+  onMouseMove          not found
+  ExternalInterface    not found
+
+=== BUTTON PROFILE ===
+DefineButton_v1_count: 0
+DefineButton2_v2_count: 27
+total_button_records: 170
+buttons_with_ex[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [AVM1] CallMethod: target is not an object
+plicit_hittest_state: 27
+buttons_falling_back_to_upstate_hit_area: 0
+placed_button_instances_frame1: 3
+  - parent=/ name=(unnamed) depth=42 characterId=93 world=(267.50px,370.55px)
+  - parent=/ name=(unnamed) depth=444 characterId=104 world=(71.80px,425.95px)
+  - parent=/mutebutton name=(unnamed) depth=1 characterId=95 world=(581.45px,430.90px)
+
+=== SOUND PROFILE ===
+DefineSound_count: 39
+StartSound_count: 646
+codec decode implemented: no (this runtime never decodes any sound codec -- see docs/known-limitations.md priority #5)
+  format=MP3                  count=39
+
+=== RENDERING FEATURE PROFILE (tag-presence proxy; DefineShape/2/3 fill styles inspected directly, DefineShape4 tag-count only -- parser doesn't support it) ===
+shape_tag_count (all versions): 5656
+  DefineShape4_count (unparsed by this runtime): 0
+gradient_fill_styles_found: 113 (in 5656 parsed DefineShape/2/3 tags)
+bitmap_fill_styles_found: 2
+sprite_tag_count: 818
+morphshape_tag_count: 22
+bitmap_tag_count (DefineBits/JPEG2/3/4/Lossless/2): 2
+text_tag_count (DefineText/2/DefineEditText): 6
+font_tag_count (DefineFont/2/3): 1
+PlaceObject3_count (blend modes/filters carrier -- neither is applied by this runtime): 0
+
+=== INTERACTIVITY PROFILE SUMMARY ===
+Button2_present: yes
+onPress_string_found: no
+onRelease_string_found: no
+onRollOver_string_found: no
+onRollOut_string_found: no
+onClipEvent_string_found: no
+Key_isDown_context (Key string found): yes
+Mouse_string_found: no
+Sound_string_found: yes
+ExternalInterface_string_found: no

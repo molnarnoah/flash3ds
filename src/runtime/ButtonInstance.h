@@ -32,6 +32,20 @@
 // mouseUp)) and does NOT run the ButtonDef's parsed condActionsV2/
 // actionsV1 bytecode anywhere. That is explicitly the NEXT phase's job.
 //
+// EVENT-DISPATCH PHASE UPDATE (2026-08-19 — see docs/events.md): the "next
+// phase" referenced above is now implemented. ScriptEnvironment (see
+// MovieClipInstance.h) owns the actual dispatcher (per-tick hover/press/
+// release tracking, condActionsV2 condition matching, CondKeyPress
+// keyboard-trigger matching, and AS2 onPress/onRelease/onRollOver/
+// onRollOut property-handler lookup+invocation) — this class's own surface
+// is UNCHANGED (no new state, no new methods added to ButtonInstance
+// itself, per that phase's explicit "do not invent additional states"
+// rule): the dispatcher tracks press/hover/capture externally in
+// ScriptEnvironment, reading only this class's EXISTING state() /
+// hitTestLocal() / worldMatrix() / def(). The one change IN this file is
+// wireScriptObject() below gaining minimal _parent/_root native property
+// support (see its own comment) — everything else here is untouched.
+//
 // DISPLAY-LIST / RENDERING INTEGRATION: ButtonInstance objects live in
 // MovieClipInstance's NEW, separate `buttonInstances_` map — deliberately
 // NOT inside `children_` (which only ever holds MovieClipInstance/Sprite
@@ -46,17 +60,28 @@
 // transformPoint/rectContainsPoint) — see hitTestLocal()'s doc comment.
 // No second hit-testing implementation is introduced.
 //
-// AS2 OBJECT IDENTITY: scriptObject() is a bare avm1::Object with NO
-// native get/set/enumerate hooks wired — it exists purely so
+// AS2 OBJECT IDENTITY: scriptObject() is a bare avm1::Object so
 // `_root.someButtonName` resolves to a real, distinct AS2 object
 // (established via MovieClipInstance::handleNativeGet()'s
 // childNameToDepth_ fallback into buttonInstances_ — see
-// MovieClipInstance.cpp). No button-specific properties (_x/_y/_visible/
-// etc.) or methods are exposed on it yet; that bridging is deferred to the
-// event-dispatch phase this file explicitly does not implement. See
-// docs/buttons.md's "AS2 object identity" section for the exact missing
-// bridge this leaves (e.g. `_root.someButtonName._x` currently resolves to
-// undefined, since scriptObject_ has no nativeGet hook at all).
+// MovieClipInstance.cpp). Event-dispatch phase update (2026-08-19): a
+// MINIMAL nativeGet hook is now wired (see wireScriptObject()) for exactly
+// `_parent`/`_root` — the "smallest correct fix" identified while
+// implementing AS2 onPress/onRelease/onRollOver/onRollOut PROPERTY-HANDLER
+// dispatch (docs/events.md): a handler function assigned directly to a
+// button (`myButton.onPress = function(){ _parent.gotoAndPlay(2); }`,
+// Extreme Pamplona's pattern) runs with `this` bound to the BUTTON itself
+// (matching real AS2's `this`-follows-the-property-owner semantics — this
+// is DIFFERENT from native condActionsV2 dispatch, which runs with
+// `this`/scope bound to the button's PARENT, matching real Flash's "a
+// button has no timeline of its own" rule — see docs/events.md's
+// "Execution target" section for the full distinction and why both are
+// correct). Without _parent/_root resolving, that extremely common
+// `_parent.foo()`/`_root.bar` pattern inside a property-handler body would
+// silently do nothing. Everything else (`_x`/`_y`/`_visible`/`_width`/
+// `_height`/named-child lookup/...) still resolves to undefined — not
+// needed by any corpus content found this phase (docs/events.md documents
+// this as a known, deliberately out-of-scope gap, not an oversight).
 
 #pragma once
 
@@ -150,7 +175,9 @@ public:
     // Bare AS2 identity object — see the class header's "AS2 OBJECT
     // IDENTITY" section. Called once by MovieClipInstance::syncChildren()
     // right after construction, mirroring MovieClipInstance::
-    // wireScriptObject()'s naming (but with no native hooks wired).
+    // wireScriptObject()'s naming. Wires a minimal nativeGet hook for
+    // `_parent`/`_root` only (event-dispatch phase, 2026-08-19 — see the
+    // class header's "AS2 OBJECT IDENTITY" section for why).
     void wireScriptObject();
     const std::shared_ptr<avm1::Object>& scriptObject() const { return scriptObject_; }
 

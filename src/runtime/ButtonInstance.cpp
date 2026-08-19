@@ -37,6 +37,26 @@ bool ButtonInstance::hitTestLocal(const swf::Point& localPoint,
     return swf::rectContainsPoint(hitBounds, ownSpacePoint);
 }
 
-void ButtonInstance::wireScriptObject() { scriptObject_ = std::make_shared<avm1::Object>(); }
+void ButtonInstance::wireScriptObject() {
+    scriptObject_ = std::make_shared<avm1::Object>();
+    // Minimal nativeGet hook — see the class header's "AS2 OBJECT IDENTITY"
+    // section (event-dispatch phase, 2026-08-19). `parent_` outlives this
+    // instance (same non-owning-pointer convention as everywhere else in
+    // this class), so capturing the raw pointer by value here is safe for
+    // scriptObject_'s own lifetime.
+    MovieClipInstance* parent = parent_;
+    scriptObject_->nativeGet = [parent](const std::string& name, avm1::Value& out) -> bool {
+        if (name == "_parent") {
+            out = parent ? avm1::Value::object(parent->scriptObject()) : avm1::Value::undefined();
+            return true;
+        }
+        if (name == "_root") {
+            out = parent ? avm1::Value::object(parent->rootInstance().scriptObject())
+                          : avm1::Value::undefined();
+            return true;
+        }
+        return false;
+    };
+}
 
 }  // namespace flash3ds::runtime

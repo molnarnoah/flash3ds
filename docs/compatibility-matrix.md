@@ -260,3 +260,25 @@ libctru documentation" but not independently pixel-verified.
 3. **`GlobalObject::create()` installs zero named built-ins** (`Math`,
    `Date`, `Number`, `String`, `Boolean` as global objects/constructors) —
    not previously called out as a gap in any doc. See §3a above.
+
+## 12. Real-content cross-game matrix (Hobo 1–7, Extreme Pamplona)
+
+**Real-game-corpus phase (2026-08-18).** Everything in this document
+above was traced against source only, mostly with `hobo.swf` as the one
+real-content reference point. This phase adds a second, wider axis: a
+tag/opcode/API/button/sound/rendering feature matrix across all 8 real
+games in the compatibility corpus (`tests/games/`), so future
+prioritization decisions ("if we implement X, which games does it help?")
+are evidence-based across the corpus, not extrapolated from hobo.swf
+alone. Full per-game breakdown, the cross-game YES/NO/UNKNOWN matrix, and
+the Hobo-family common/unique-feature comparison all live in
+`docs/real-game-compatibility.md` — not duplicated here to avoid drift
+between two copies of the same table. Headline finding relevant to this
+document's existing §9 (input/interactivity) and `docs/known-
+limitations.md` priority #2: button event dispatch, the current top
+blocker, has **two independent mechanisms** to cover across the corpus —
+native `DefineButton2` `condActionsV2` (all 7 Hobo games, 0 use of
+AS2-source-level handler properties) and `object.onPress`/`onRelease`
+property-handler assignment (Extreme Pamplona only, 0 Hobo files use it)
+— see `docs/real-game-compatibility.md`'s "If we implement feature X..."
+section for the full per-feature breakdown.

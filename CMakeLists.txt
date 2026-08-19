@@ -102,6 +102,13 @@ target_compile_options(flash3ds_core PRIVATE
 if(FLASH3DS_BUILD_TOOLS)
     add_executable(flash_runtime tools/flash_runtime/main.cpp)
     target_link_libraries(flash_runtime PRIVATE flash3ds_core)
+
+    # Real-game compatibility corpus phase (2026-08-18): a read-only,
+    # analysis-only SWF diagnostic tool (tag histogram, AVM1 opcode
+    # profile, AS2 API scan, button/sound/rendering-feature profile). See
+    # tools/swf_diagnostic/main.cpp and docs/real-game-compatibility.md.
+    add_executable(swf_diagnostic tools/swf_diagnostic/main.cpp)
+    target_link_libraries(swf_diagnostic PRIVATE flash3ds_core)
 endif()
 
 # ---------------------------------------------------------------------------

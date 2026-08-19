@@ -1,0 +1,146 @@
+[INFO ] [SWF] Signature=CWS Version=8 DeclaredLength=130500
+[INFO ] [SWF] Decompressed CWS body: 130492 bytes
+[INFO ] [SWF] FrameSize=550.0x400.0 px FrameRate=12.00 fps FrameCount=1
+[INFO ] [SWF] Loaded movie: 40 tags, ActionScript=yes
+PARSE_RESULT: OK
+
+=== HEADER ===
+file: /home/claude/game-corpus/extreme_pamplona/content/sounds_moscow.swf
+swf_version: 8
+compression: zlib (CWS)
+declared_length: 130500
+actual_file_size: 82794
+decompressed_body_size: 130492
+stage_width_px: 550.0
+stage_height_px: 400.0
+fps: 12.00
+declared_frame_count: 1
+has_actionscript_tag: yes
+
+=== ACTIONSCRIPT VERSION ===
+avm1_present: yes
+avm2_present (DoABC/DoABC2 tags): no
+DoAction_tag_count: 1
+DoInitAction_tag_count: 4
+DoABC_tag_count: 0
+
+=== TAG HISTOGRAM (recursive incl. nested DefineSprite streams; 44 total tag occurrences) ===
+  ExportAssets                     15
+  DefineSound                      11
+  End                              5
+  DefineSprite                     4
+  DoInitAction                     4
+  DoAction                         1
+  FileAttributes                   1
+  SetBackgroundColor               1
+  ShowFrame                        1
+  SoundStreamHead2                 1
+
+=== AVM1 OPCODE PROFILE (5 bytecode buffers scanned, 1420 total opcodes, 24 nested function bodies, 0 With blocks) ===
+  Push                    536  [supported]
+  GetMember               272  [supported]
+  Pop                      92  [supported]
+  GetVariable              82  [supported]
+  Not                      72  [supported]
+  SetMember                69  [supported]
+  If                       49  [supported]
+  CallMethod               48  [supported]
+  StoreRegister            40  [supported]
+  Add2                     30  [supported]
+  DefineFunction2          21  [supported]
+  Jump                     19  [supported]
+  NewObject                17  [supported]
+  Equals2                  13  [supported]
+  Trace                    12  [supported]
+  Increment                 8  [supported]
+  Less2                     6  [supported]
+  ConstantPool              5  [supported]
+  Return                    5  [supported]
+  CallFunction              4  [supported]
+  Delete                    3  [supported]
+  DefineFunction            3  [supported]
+  Enumerate2                3  [supported]
+  NewMethod                 2  [supported]
+  Divide                    1  [supported]
+  Greater                   1  [supported]
+  DefineLocal               1  [supported]
+  Multiply                  1  [supported]
+  PushDuplicate             1  [supported]
+  Modulo                    1  [supported]
+  Decrement                 1  [supported]
+  SetVariable               1  [supported]
+  InitObject                1  [supported]
+
+=== AS2 API/IDENTIFIER SCAN (best-effort substring match over decompressed body; presence only, not proof of semantic usage) ===
+  Key                  not found
+  Mouse                not found
+  MovieClip            not found
+  Sound                FOUND
+  _root                not found
+  _parent              not found
+  _global              FOUND
+  gotoAndPlay          not found
+  gotoAndStop          not found
+  play                 not found
+  stop                 FOUND
+  removeMovieClip      FOUND
+  createEmptyMovieClip FOUND
+  duplicateMovieClip   not found
+  attachMovie          not found
+  loadMovie            not found
+  _x                   not found
+  _y                   FOUND
+  _xscale              not found
+  _yscale              not found
+  _rotation            not found
+  _alpha               not found
+  _visible             FOUND
+  _width               not found
+  _height              not found
+  onClipEvent          not found
+  onPress              not found
+  onRelease            not found
+  onRollOver           not found
+  onRollOut            not found
+  onMouseDown          not found
+  onMouseUp            not found
+  onMouseMove          not found
+  ExternalInterface    not found
+
+=== BUTTON PROFILE ===
+DefineButton_v1_count: 0
+DefineButton2_v2_count: 0
+total_button_records: 0
+buttons_with_explicit_hittest_state: 0
+buttons_falling_back_to_upstate_hit_area: 0
+placed_button_instances_frame1: 0 (no DefineButton/2 characters in this file)
+
+=== SOUND PROFILE ===
+DefineSound_count: 11
+StartSound_count: 0
+codec decode implemented: no (this runtime never decodes any sound codec -- see docs/known-limitations.md priority #5)
+  format=MP3                  count=11
+
+=== RENDERING FEATURE PROFILE (tag-presence proxy; DefineShape/2/3 fill styles inspected directly, DefineShape4 tag-count only -- parser doesn't support it) ===
+shape_tag_count (all versions): 0
+  DefineShape4_count (unparsed by this runtime): 0
+gradient_fill_styles_found: 0 (in 0 parsed DefineShape/2/3 tags)
+bitmap_fill_styles_found: 0
+sprite_tag_count: 4
+morphshape_tag_count: 0
+bitmap_tag_count (DefineBits/JPEG2/3/4/Lossless/2): 0
+text_tag_count (DefineText/2/DefineEditText): 0
+font_tag_count (DefineFont/2/3): 0
+PlaceObject3_count (blend modes/filters carrier -- neither is applied by this runtime): 0
+
+=== INTERACTIVITY PROFILE SUMMARY ===
+Button2_present: no
+onPress_string_found: no
+onRelease_string_found: no
+onRollOver_string_found: no
+onRollOut_string_found: no
+onClipEvent_string_found: no
+Key_isDown_context (Key string found): no
+Mouse_string_found: no
+Sound_string_found: yes
+ExternalInterface_string_found: no

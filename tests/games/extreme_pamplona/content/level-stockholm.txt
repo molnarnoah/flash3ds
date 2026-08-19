@@ -1,0 +1,123 @@
+[INFO ] [SWF] Signature=CWS Version=8 DeclaredLength=271675
+[INFO ] [SWF] Decompressed CWS body: 271667 bytes
+[INFO ] [SWF] FrameSize=800.0x400.0 px FrameRate=25.00 fps FrameCount=1
+[INFO ] [SWF] Loaded movie: 475 tags, ActionScript=no
+PARSE_RESULT: OK
+
+=== HEADER ===
+file: /home/claude/game-corpus/extreme_pamplona/content/level-stockholm.swf
+swf_version: 8
+compression: zlib (CWS)
+declared_length: 271675
+actual_file_size: 203725
+decompressed_body_size: 271667
+stage_width_px: 800.0
+stage_height_px: 400.0
+fps: 25.00
+declared_frame_count: 1
+has_actionscript_tag: no
+
+=== ACTIONSCRIPT VERSION ===
+avm1_present: yes
+avm2_present (DoABC/DoABC2 tags): no
+DoAction_tag_count: 131
+DoInitAction_tag_count: 0
+DoABC_tag_count: 0
+
+=== TAG HISTOGRAM (recursive incl. nested DefineSprite streams; 3194 total tag occurrences) ===
+  PlaceObject2                     1723
+  ShowFrame                        535
+  RemoveObject2                    215
+  DefineShape2                     159
+  DefineShape                      145
+  DoAction                         131
+  End                              117
+  DefineSprite                     116
+  DefineShape4                     26
+  DefineMorphShape                 16
+  DefineShape3                     8
+  FileAttributes                   1
+  FrameLabel                       1
+  SetBackgroundColor               1
+
+=== AVM1 OPCODE PROFILE (131 bytecode buffers scanned, 547 total opcodes, 0 nested function bodies, 0 With blocks) ===
+  Push                    262  [supported]
+  GetVariable             132  [supported]
+  SetMember               131  [supported]
+  ConstantPool             10  [supported]
+  Stop                      9  [supported]
+  Play                      2  [supported]
+  GotoLabel                 1  [supported]
+
+=== AS2 API/IDENTIFIER SCAN (best-effort substring match over decompressed body; presence only, not proof of semantic usage) ===
+  Key                  not found
+  Mouse                not found
+  MovieClip            not found
+  Sound                not found
+  _root                not found
+  _parent              not found
+  _global              not found
+  gotoAndPlay          not found
+  gotoAndStop          not found
+  play                 not found
+  stop                 not found
+  removeMovieClip      not found
+  createEmptyMovieClip not found
+  duplicateMovieClip   not found
+  attachMovie          not found
+  loadMovie            not found
+  _x                   FOUND
+  _y                   FOUND
+  _xscale              not found
+  _yscale              not found
+  _rotation            not found
+  _alpha               not found
+  _visible             not found
+  _width               not found
+  _height              not found
+  onClipEvent          not found
+  onPress              not found
+  onRelease            not found
+  onRollOver           not found
+  onRollOut            not found
+  onMouseDown          not found
+  onMouseUp            not found
+  onMouseMove          not found
+  ExternalInterface    not found
+
+=== BUTTON PROFILE ===
+DefineButton_v1_count: 0
+DefineButton2_v2_count: 0
+total_button_records: 0
+buttons_with_explicit_hittest_state: 0
+buttons_falling_back_to_upstate_hit_area: 0
+placed_button_instances_frame1: 0 (no DefineButton/2 characters in this file)
+
+=== SOUND PROFILE ===
+DefineSound_count: 0
+StartSound_count: 0
+codec decode implemented: no (this runtime never decodes any sound codec -- see docs/known-limitations.md priority #5)
+
+=== RENDERING FEATURE PROFILE (tag-presence proxy; DefineShape/2/3 fill styles inspected directly, DefineShape4 tag-count only -- parser doesn't support it) ===
+shape_tag_count (all versions): 338
+  DefineShape4_count (unparsed by this runtime): 26
+gradient_fill_styles_found: 9 (in 312 parsed DefineShape/2/3 tags)
+bitmap_fill_styles_found: 0
+sprite_tag_count: 116
+morphshape_tag_count: 16
+bitmap_tag_count (DefineBits/JPEG2/3/4/Lossless/2): 0
+text_tag_count (DefineText/2/DefineEditText): 0
+font_tag_count (DefineFont/2/3): 0
+PlaceObject3_count (blend modes/filters carrier -- neither is applied by this runtime): 0
+
+=== INTERACTIVITY PROFILE SUMMARY ===
+Button2_present: no
+onPress_string_found: no
+onRelease_string_found: no
+onRollOver_string_found: no
+onRollOut_string_found: no
+onClipEvent_string_found: no
+Key_isDown_context (Key string found): no
+Mouse_string_found: no
+Sound_string_found: no
+ExternalInterface_string_found: no

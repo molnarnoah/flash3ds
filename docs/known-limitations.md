@@ -567,6 +567,40 @@ per-placement Button runtime instance that used to head this list are all
 **DONE** — see Sub-fix 2/N, Sub-fix 3/N, Sub-fix 4/N, and Sub-fix 5/N
 above.
 
+**Refinement from the real-game-corpus phase (2026-08-18, analysis only —
+nothing below was implemented this phase):** `docs/real-game-compatibility.md`'s
+cross-game matrix (Hobo 1–7 + Extreme Pamplona, `tests/games/`) shows this
+priority actually needs **two independent dispatch mechanisms**, not one:
+
+1. **Native `DefineButton2` `condActionsV2` dispatch** — button
+   press/release/rollOver/etc. action lists compiled directly into the
+   tag's binary condition-flag records, no AS2 source-level handler
+   property involved. Confirmed via string-scan evidence: **all 7 Hobo
+   games** (`hobo.swf` plus all 6 sequels) use `DefineButton2` but show
+   **zero** occurrences of the literal strings `onPress`/`onRelease`/
+   `onRollOver`/`onRollOut`/`onClipEvent` anywhere in the decompressed
+   body — their button interactivity can only be this mechanism.
+   Implementing this alone unblocks **all 7 Hobo games identically** (the
+   family is structurally uniform on this specific feature — see the
+   Hobo-family comparison table) and has no bearing on Extreme Pamplona.
+2. **`object.onPress`/`onRelease = function(){}`-style property-handler
+   dispatch** — the generic event-handler-property mechanism `docs/events.md`
+   already scopes. Confirmed via the same string-scan evidence: **Extreme
+   Pamplona's main loader** (and only that file in this corpus) shows
+   `onPress`/`onRelease` **found** as literal strings — meaning at least
+   part of its interactivity is authored the AS2-property-handler way,
+   not (or not only) via `condActionsV2`. Implementing only mechanism 1
+   above would **not** unblock Extreme Pamplona's interactivity.
+
+Neither mechanism was implemented or even prototyped this phase — this is
+a scoping refinement to the existing "generic event dispatcher" plan
+(`docs/events.md`), based on new, real-content evidence that didn't exist
+before this phase's corpus was built. See `docs/real-game-compatibility.md`'s
+"If we implement feature X, which games does it help?" section for the
+full reasoning and every other corpus-derived, feature-to-game mapping
+(MP3 decode, `DefineMorphShape`, `DefineShape4`, `PlaceObject3`,
+`GlobalObject` built-ins, `CsmTextSettings`).
+
 
 **Classification: AVM1 + DISPLAY LIST (hit-testing needs `_width`/`_height`, itself blocked on bounding-box computation) + OBJECT MODEL.**
 

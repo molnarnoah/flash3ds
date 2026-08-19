@@ -26,6 +26,7 @@ add_executable(flash3ds_tests
     test_define_button_tag.cpp
     test_define_edit_text_tag.cpp
     test_button_instance.cpp
+    test_event_dispatch.cpp
 )
 
 target_include_directories(flash3ds_tests PRIVATE

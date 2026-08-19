@@ -1,0 +1,8 @@
+hobo1: INIT_OK  f1=OK(md5=656e1f19) f2=OK(md5=752b7802) f3=OK(md5=8ba7b335) f4=OK(md5=04e44f2d) f5=OK(md5=04e44f2d)
+hobo2: INIT_OK  f1=OK(md5=58c4dde9) f2=OK(md5=5ebb70cb) f3=OK(md5=fc78ed9a) f4=OK(md5=d0033574) f5=OK(md5=d0033574)
+hobo3: INIT_OK  f1=OK(md5=53837529) f2=OK(md5=ff2bc63b) f3=OK(md5=70845c25) f4=OK(md5=40f2bd4d) f5=OK(md5=40f2bd4d)
+hobo4: INIT_OK  f1=OK(md5=ae3f5697) f2=OK(md5=4f4bb5f7) f3=OK(md5=57c8bf81) f4=OK(md5=c1fa263f) f5=OK(md5=c1fa263f)
+hobo5: INIT_OK  f1=OK(md5=392c9c7c) f2=OK(md5=2c9df07c) f3=OK(md5=e3e44122) f4=OK(md5=0aa670cc) f5=OK(md5=0aa670cc)
+hobo6: INIT_OK  f1=OK(md5=463689c6) f2=OK(md5=f22bf948) f3=OK(md5=878c0c58) f4=OK(md5=ed55dabf) f5=OK(md5=ed55dabf)
+hobo7: INIT_OK  f1=OK(md5=270f744c) f2=OK(md5=3024f68e) f3=OK(md5=ec15ef36) f4=OK(md5=2408eebe) f5=OK(md5=2408eebe)
+extreme_pamplona: INIT_OK  f1=OK(md5=b4817b99) f2=OK(md5=25019742) f3=FAIL(exit=3) f4=FAIL(exit=3) f5=FAIL(exit=3)

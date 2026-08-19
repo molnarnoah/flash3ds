@@ -187,11 +187,55 @@ created — see `tests/swf/README.md`).
   diagnostic findings in `docs/buttons.md`'s "Real Hobo `DefineButton2`
   findings" section.
 
+## Real-game-corpus phase (2026-08-18) — Hobo 1–7 + Extreme Pamplona analysis
+
+- **253/253 tests passing** (unchanged from the ButtonInstance phase —
+  this phase made no changes to `src/`, only additive tooling: the new
+  `tools/swf_diagnostic/main.cpp` analysis tool and
+  `tools/real_game_harness/run_harness.sh` — zero regressions).
+- New: `swf_diagnostic`, a read-only, analysis-only CLI (tag histogram,
+  AVM1 opcode profile with correct `DefineFunction`/`DefineFunction2`/
+  `With` body-extent handling, AS2 API/identifier scan, button/sound/
+  rendering feature profile) — registered in `CMakeLists.txt` alongside
+  `flash_runtime`, builds clean, run against all 8 corpus games plus all
+  23 Extreme Pamplona content sub-SWFs (31 files total) with **zero
+  parse failures, zero crashes**.
+- New: `tools/real_game_harness/run_harness.sh` — loads each corpus game
+  via `flash_runtime --quiet` (init check) then `--render`s frames 1-5,
+  recording per-frame MD5 as a golden-output baseline
+  (`tests/games/_harness_baseline/harness_summary_2026-08-18.txt`). All 8
+  games: **INIT_OK**, zero runtime exceptions/crashes. Every Hobo file
+  (13 declared frames) renders all 5 requested frames cleanly; Extreme
+  Pamplona (2 declared frames) correctly rejects frames 3-5 as
+  out-of-range (`--render: frame 3 out of range [1, 2]`) — expected CLI
+  behavior, not a bug.
+- New real-content corpus established at `tests/games/` (manifests +
+  MD5 checksums + diagnostic output only — binaries stay external per
+  the project's existing convention, see `tests/games/README.md`):
+  Hobo 1 (= the pre-existing `hobo.swf` baseline, confirmed unchanged),
+  Hobo 2–7 (staged this phase from the user's device, ~5-8 MB each), and
+  the full 24-file Extreme Pamplona package (1 main loader + 23
+  `loadMovie`-style content sub-SWFs).
+- Full per-game statistics, the cross-game compatibility matrix, and the
+  "if we implement feature X, which games does it help?" analysis:
+  `docs/real-game-compatibility.md`.
+- **Not yet tested this phase:** dynamic/runtime behavior of any of the
+  new games (this phase is static analysis + init/render-only per its
+  explicit scope — no gameplay, no button-click interactivity, since
+  that runtime feature still doesn't exist); Extreme Pamplona's own
+  gameplay frames (only 2 frames exist in the main loader — its actual
+  levels are loaded from the 9 separate `level-*.swf` content files,
+  not analyzed for playability this phase); real Nintendo 3DS hardware
+  (see `docs/3ds-limitations.md`).
+
 ## Not yet tested (carried over from `docs/compatibility.md`, still open)
 
-- `hobo 2 - prison brawl.swf` through `hobo 7 - heaven.swf` (sequels).
 - `hobo.swf`'s own gameplay frames beyond the title screen — still
   unreachable, since button-click interactivity doesn't exist yet (see
-  `docs/known-limitations.md` priority #2).
-- Extreme Pamplona.
+  `docs/known-limitations.md` priority #2). Confirmed this phase: the
+  same is true for all 6 Hobo sequels (identical native-`condActionsV2`
+  button-interactivity model, see `docs/real-game-compatibility.md`).
+- Extreme Pamplona's actual gameplay (loader confirmed working; button
+  event dispatch — a second, different mechanism than Hobo's, see
+  `docs/real-game-compatibility.md` — still missing).
 - Real Nintendo 3DS hardware, for anything (see `docs/3ds-limitations.md`).

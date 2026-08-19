@@ -87,6 +87,7 @@
 #include "runtime/InputState.h"
 #include "runtime/Movie.h"
 #include "runtime/Timeline.h"
+#include "swf/DefineButtonTag.h"
 #include "swf/SwfRecords.h"
 
 namespace flash3ds::runtime {
@@ -167,11 +168,29 @@ public:
     void endDrag();
     void updateDrag();
 
-    // Called by MovieClipInstance::removeFromParent() so a removed clip
-    // never lingers as a dangling drag target — a no-op unless `clip` is
-    // the currently-dragged one.
-    void notifyRemoved(MovieClipInstance* clip) {
-        if (dragTarget_ == clip) dragTarget_ = nullptr;
+    // Called by MovieClipInstance::removeFromParent() (synchronously,
+    // BEFORE the clip is actually erased/destroyed — see that method's own
+    // comment) and by syncChildren()'s display-list-driven prune loop, so a
+    // removed clip never lingers as a dangling drag/hover/press target.
+    // Event-dispatch phase (2026-08-19) extension: also clears
+    // hoverClip_/pressedClip_ (Phase I AS2 property-handler targets) and,
+    // critically, hoverButton_/pressedButton_ whenever their OWNING clip
+    // (`button->parent()`) is `clip` — a button's own lifetime is tied to
+    // its parent's buttonInstances_ map (see MovieClipInstance.cpp), so if
+    // the parent is destroyed, every button it owns is destroyed with it;
+    // this call happens BEFORE that erase, while `button->parent()` is
+    // still safe to read, which is what makes clearing the pointer HERE
+    // (rather than trying to detect it after the fact) safe — see
+    // docs/events.md's "Event target safety" section.
+    void notifyRemoved(MovieClipInstance* clip);
+
+    // Called by syncChildren()'s buttonInstances_ prune loop (a button
+    // itself is only ever removed via that DISPLAY-LIST-driven path —
+    // never synchronously mid-dispatch, see docs/events.md — so this is
+    // the one call site that needs it).
+    void notifyButtonRemoved(ButtonInstance* button) {
+        if (hoverButton_ == button) hoverButton_ = nullptr;
+        if (pressedButton_ == button) pressedButton_ = nullptr;
     }
 
     // --- Phase 7: ExternalInterface (AS2 <-> host/native) -----------------
@@ -208,6 +227,38 @@ public:
     bool hasCallback(const std::string& name) const { return callbacks_.count(name) != 0; }
     avm1::Value invokeCallback(const std::string& name, const std::vector<avm1::Value>& args);
 
+    // --- Event-dispatch phase (2026-08-19): pointer-event dispatcher ------
+    // design: docs/events.md.
+    //
+    // ONE dispatcher covers both of this phase's real-corpus-driven
+    // mechanisms: DefineButton2 native condActionsV2 (Hobo 1-7's primary
+    // mechanism) and AS2 onPress/onRelease/onRollOver/onRollOut PROPERTY
+    // handlers (Extreme Pamplona's mechanism) — see docs/events.md's
+    // "Two mechanisms, one dispatcher" section for the evidence this split
+    // is based on (both this phase's corpus scan AND a fresh raw-byte
+    // condActionsV2 inspection done before writing this code).
+    //
+    // Called exactly once per full-tree tick, from the ROOT
+    // MovieClipInstance's advanceFrame() only (same "root-only, once per
+    // tick" precedent as updateDrag()/updateButtonStatesRecursive()) —
+    // `hitButton`/`hitClip` are the SAME single hitTestPoint() result
+    // advanceFrame() already computed for updateButtonStatesRecursive(),
+    // reused here rather than a second hit-test call (`hitClip` is only
+    // set when `hitButton` is null — a button hit always takes priority
+    // over a plain-clip hit, matching how hitTestPoint() itself already
+    // returns AT MOST one topmost result).
+    void dispatchPointerEvents(MovieClipInstance& root, ButtonInstance* hitButton,
+                                 MovieClipInstance* hitClip);
+
+    // Called once per tick (root-only, alongside dispatchPointerEvents) via
+    // MovieClipInstance::dispatchButtonKeyPressesRecursive() — checks every
+    // CURRENTLY PLACED button in the whole tree (keyboard triggers are not
+    // mouse-position-dependent) for a condActionsV2 record whose CondKeyPress
+    // field matches a key that was just pressed this tick (InputState edge
+    // detection — see condKeyPressToInputKeyCode()'s doc comment in the
+    // .cpp for the SWF-spec-specific key-code table this converts from).
+    void fireButtonKeyPressIfMatched(ButtonInstance& button);
+
 private:
     void registerCallback(const std::string& name, avm1::Value thisArg,
                            std::shared_ptr<avm1::Object> func) {
@@ -218,6 +269,51 @@ private:
         avm1::Value thisArg;
         std::shared_ptr<avm1::Object> func;
     };
+
+    // Runs `func` (must be a callable Function object; a no-op returning
+    // undefined otherwise) as an AS2 event-handler invocation: `thisVal` is
+    // the AS2 `this` binding (the PROPERTY HANDLER's owning object — a
+    // button's or clip's own scriptObject, matching real AS2's "this
+    // follows the object the property was invoked on" rule), while
+    // `hostBindingsTarget` is the MovieClipInstance any UNQUALIFIED
+    // MovieClip-affecting action (bare `gotoAndPlay()`, `stop()`, ...)
+    // inside the handler body acts on — see docs/events.md's "Execution
+    // target" section for exactly why these two are deliberately DIFFERENT
+    // objects for a button's property-handler call (thisVal = the button,
+    // hostBindingsTarget = the button's PARENT, since buttons have no
+    // timeline of their own) but the SAME object for a plain MovieClip's
+    // property-handler call (both = that clip). Mirrors run()'s own
+    // MovieClipHostBindings/Scope/ExecutionContext construction exactly
+    // (shared anonymous-namespace helper class, see the .cpp) — reuses
+    // Interpreter::callFunction() (Phase 7's existing public entry point
+    // for invoking an already-resolved Function value), NOT a new
+    // interpreter or call path.
+    avm1::Value callHandler(MovieClipInstance& hostBindingsTarget,
+                              const std::shared_ptr<avm1::Object>& func, avm1::Value thisVal);
+
+    // Looks up `name` (onPress/onRelease/onRollOver/onRollOut) as a
+    // prototype-chain-aware member (avm1::Object::getMember — covers both
+    // a direct `obj.onPress = fn` assignment AND a shared-prototype-based
+    // one) on `owner`'s AS2 identity object; calls it via callHandler() if
+    // it resolves to a callable Function, no-ops otherwise (including: not
+    // a function, e.g. a plain value some content assigned to the same
+    // name by coincidence — matches real AS2's "only invoke if truly
+    // callable" behavior).
+    void firePropertyHandler(MovieClipInstance& owner, const char* name);
+    void firePropertyHandler(ButtonInstance& owner, const char* name);
+
+    // Looks up every condActionsV2 record on `button.def()` whose
+    // `conditions` bitmask includes `cond` and runs each one's actionBytes
+    // via run() with `button.parent()` as the target (native condActionsV2
+    // dispatch — see docs/events.md's "Execution target" section for why
+    // this, unlike property-handler dispatch above, uses the SAME object
+    // for both `this` and the HostBindings target: real Flash button
+    // symbol on()-handler code has always executed in the timeline that
+    // CONTAINS the button, with no separate "this is the button" binding
+    // at all). A no-op if `button.parent()` is null (shouldn't happen in
+    // practice — every button is placed inside some clip's display list,
+    // including the root's).
+    void fireButtonCondition(ButtonInstance& button, swf::ButtonCondition cond);
 
     std::shared_ptr<avm1::Object> global_;
     std::unordered_map<uint16_t, std::vector<uint8_t>> initActionsByCharacter_;
@@ -235,6 +331,31 @@ private:
 
     std::unordered_map<std::string, HostFunction> hostFunctions_;
     std::unordered_map<std::string, Callback> callbacks_;
+
+    // --- Event-dispatch phase (2026-08-19) per-tick pointer state ---------
+    // Non-owning; kept in lockstep with reality via notifyRemoved()/
+    // notifyButtonRemoved() (see those methods' doc comments) so these
+    // never dangle across a tick boundary or a removal that happens
+    // synchronously mid-dispatch (docs/events.md's "Event target safety").
+    //
+    // hoverButton_/hoverClip_: whichever ONE of the two (never both — a
+    // button hit always takes priority, see dispatchPointerEvents()'s doc
+    // comment) the pointer was over as of the LAST tick's dispatch — used
+    // to detect roll-over/roll-out transitions this tick.
+    ButtonInstance* hoverButton_ = nullptr;
+    MovieClipInstance* hoverClip_ = nullptr;
+    // pressedButton_/pressedClip_: the button/clip that "captured" the
+    // CURRENT press (set on a mouse-pressed edge, cleared on the matching
+    // mouse-released edge) — real Flash's mouse-capture model: once you
+    // press down on a button, THAT SAME button keeps receiving Over/Out-
+    // Down transitions as the pointer drags around, even onto a DIFFERENT
+    // button, until release (see docs/events.md — `trackAsMenu`'s "pick up
+    // whichever button is currently under the pointer while held" override
+    // of this rule is deliberately NOT implemented: zero `trackAsMenu`
+    // buttons exist anywhere in the real-game corpus, confirmed by a
+    // dedicated probe before writing this code).
+    ButtonInstance* pressedButton_ = nullptr;
+    MovieClipInstance* pressedClip_ = nullptr;
 };
 
 class MovieClipInstance : public std::enable_shared_from_this<MovieClipInstance> {
@@ -443,6 +564,20 @@ private:
     // the root, via hitTestPoint(), before this call — see
     // advanceFrame()) — every OTHER button in the tree gets isOver=false.
     void updateButtonStatesRecursive(ButtonInstance* hitButton, bool mouseDown);
+
+    // CondKeyPress dispatch driver (event-dispatch phase, 2026-08-19) —
+    // mirrors updateButtonStatesRecursive()'s own "root-only, once per
+    // tick, recurse the WHOLE tree" shape exactly, but keyboard triggers
+    // are not mouse-position-dependent (unlike hover/press/release, which
+    // only ever apply to the SINGLE topmost hitTestPoint() result) — every
+    // currently-placed button anywhere in the tree must be checked every
+    // tick. Snapshots buttonInstances_/children_ into local shared_ptr
+    // vectors before dispatching into any of them (see docs/events.md's
+    // "Event target safety" section) — a dispatched keypress action can
+    // mutate a display list, and iterating a live map while calling into
+    // AVM1 is not safe, mirroring the exact same idiom advanceFrame()
+    // already uses for children_ before its own recursive descent.
+    void dispatchButtonKeyPressesRecursive();
 
     // The union of every currently-placed character/child's bounds, in
     // THIS instance's own local space (i.e. BEFORE this instance's own

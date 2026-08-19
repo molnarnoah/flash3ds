@@ -25,6 +25,136 @@ void setKeyConstant(avm1::Object& keyObj, const char* name, int code) {
     keyObj.setOwnProperty(name, avm1::Value::number(code));
 }
 
+// MovieClipHostBindings — this translation unit only (AVM1 code only ever
+// sees it through the abstract HostBindings seam). Originally a class local
+// to ScriptEnvironment::run() (Phase 5); promoted to file scope (event-
+// dispatch phase, 2026-08-19) so ScriptEnvironment::callHandler() — the new
+// entry point for invoking an already-resolved AS2 Function value (onPress/
+// onRelease/onRollOver/onRollOut property handlers, condActionsV2's
+// eventual `this`-vs-HostBindings-target split — see docs/events.md's
+// "Execution target" section) — can build one too, without duplicating this
+// whole class. Behavior is 100% unchanged from the original local version;
+// only its scope moved.
+class MovieClipHostBindings : public avm1::HostBindings {
+public:
+    MovieClipHostBindings(MovieClipInstance& natural, ScriptEnvironment& env)
+        : natural_(&natural), current_(&natural), env_(&env) {}
+
+    MovieClipInstance* resolve(const std::string& target) {
+        if (target.empty()) return current_;
+        MovieClipInstance* r = natural_->resolvePath(target);
+        return r ? r : nullptr;
+    }
+
+    void gotoFrame(uint32_t frameIndex) override {
+        // AVM1's GotoFrame/GotoFrame2 frame numbers are 0-based;
+        // Timeline's are 1-based (see Timeline.h).
+        if (current_) current_->timeline().gotoAndStop(frameIndex + 1);
+    }
+    void gotoLabel(const std::string& label) override {
+        if (current_) current_->timeline().gotoAndStop(label);
+    }
+    void play() override {
+        if (current_) current_->timeline().play();
+    }
+    void stop() override {
+        if (current_) current_->timeline().stop();
+    }
+    void nextFrame() override {
+        if (current_) current_->timeline().nextFrame();
+    }
+    void previousFrame() override {
+        if (current_) current_->timeline().prevFrame();
+    }
+
+    avm1::Value getProperty(const std::string& targetPath, int propertyIndex) override {
+        MovieClipInstance* mc = resolve(targetPath);
+        if (!mc) return avm1::Value::undefined();
+        switch (propertyIndex) {
+            case 0: return avm1::Value::number(mc->x());
+            case 1: return avm1::Value::number(mc->y());
+            case 2: return avm1::Value::number(mc->xScale());
+            case 3: return avm1::Value::number(mc->yScale());
+            case 4: return avm1::Value::number(mc->timeline().currentFrame());
+            case 5: return avm1::Value::number(mc->timeline().frameCount());
+            case 6: return avm1::Value::number(mc->alpha());
+            case 7: return avm1::Value::boolean(mc->visible());
+            case 8: return avm1::Value::number(mc->width());   // _width
+            case 9: return avm1::Value::number(mc->height());  // _height
+            case 10: return avm1::Value::number(mc->rotation());
+            case 11: return avm1::Value::string(mc->targetPath());
+            case 12: return avm1::Value::number(mc->timeline().frameCount());  // _framesloaded
+            case 13: return avm1::Value::string(mc->name());
+            case 14: return avm1::Value::string("");  // _droptarget — no drag model yet
+            case 15: return avm1::Value::string("");  // _url
+            case 20: return avm1::Value::number(mc->stageMouseX());  // _xmouse
+            case 21: return avm1::Value::number(mc->stageMouseY());  // _ymouse
+            default:
+                LOG_DEBUG("MOVIECLIP", "GetProperty: index %d not modeled — undefined",
+                          propertyIndex);
+                return avm1::Value::undefined();
+        }
+    }
+    void setProperty(const std::string& targetPath, int propertyIndex,
+                      const avm1::Value& value) override {
+        MovieClipInstance* mc = resolve(targetPath);
+        if (!mc) return;
+        switch (propertyIndex) {
+            case 0: mc->setX(value.toNumber()); break;
+            case 1: mc->setY(value.toNumber()); break;
+            case 2: mc->setXScale(value.toNumber()); break;
+            case 3: mc->setYScale(value.toNumber()); break;
+            case 6: mc->setAlpha(value.toNumber()); break;
+            case 7: mc->setVisible(value.toBoolean()); break;
+            case 10: mc->setRotation(value.toNumber()); break;
+            default:
+                LOG_DEBUG("MOVIECLIP", "SetProperty: index %d not modeled/read-only — ignored",
+                          propertyIndex);
+                break;
+        }
+    }
+
+    void cloneSprite(const std::string& targetPath, const std::string& newName,
+                      int depth) override {
+        MovieClipInstance* mc = resolve(targetPath);
+        if (!mc) {
+            LOG_WARN("MOVIECLIP", "CloneSprite: target '%s' not found", targetPath.c_str());
+            return;
+        }
+        mc->cloneSprite(newName, depth);
+    }
+    void removeSprite(const std::string& targetPath) override {
+        MovieClipInstance* mc = resolve(targetPath);
+        if (!mc) return;
+        mc->removeFromParent();
+    }
+    void startDrag(const std::string& targetPath, const DragOptions& options) override {
+        MovieClipInstance* mc = resolve(targetPath);
+        if (!mc) return;
+        env_->startDrag(mc, options);
+    }
+    void endDrag() override { env_->endDrag(); }
+
+    void setTarget(const std::string& targetPath) override {
+        if (targetPath.empty()) {
+            current_ = natural_;
+            return;
+        }
+        MovieClipInstance* resolved = natural_->resolvePath(targetPath);
+        if (resolved) {
+            current_ = resolved;
+        } else {
+            LOG_WARN("MOVIECLIP", "SetTarget: '%s' did not resolve — target unchanged",
+                      targetPath.c_str());
+        }
+    }
+
+private:
+    MovieClipInstance* natural_;
+    MovieClipInstance* current_;
+    ScriptEnvironment* env_;
+};
+
 }  // namespace
 
 // ===========================================================================
@@ -248,6 +378,239 @@ avm1::Value ScriptEnvironment::invokeCallback(const std::string& name,
     return avm1::Interpreter::callFunction(ctx, cb.func, cb.thisArg, args);
 }
 
+// ===========================================================================
+// Event-dispatch phase (2026-08-19) — pointer-event dispatcher.
+// Design: docs/events.md. See MovieClipInstance.h's doc comments on
+// dispatchPointerEvents()/fireButtonKeyPressIfMatched()/notifyRemoved()/
+// notifyButtonRemoved() for the full per-method contract; this block is the
+// implementation.
+// ===========================================================================
+
+namespace {
+
+// SWF spec's BUTTONCONDACTION "CondKeyPress" field uses ITS OWN small
+// key-code table (1=Left, 2=Right, 3=Home, 4=End, 5=Insert, 6=Delete,
+// 8=Backspace, 13=Enter, 14=Up, 15=Down, 16=PageUp, 17=PageDown, 18=Tab,
+// 19=Escape, 32-126=ASCII) — a DIFFERENT, SWF-spec-legacy table from AS2's
+// Key.* class constants (Key.END=35, Key.LEFT=37, ...) that InputState
+// models (see InputState.h's own header comment: "Key codes follow AS2's
+// Key class conventions"). Confirmed evidence-based, not assumed: a raw-
+// byte probe against the real corpus (before writing this code) found
+// EVERY Hobo game defines several DefineButton2 condActionsV2 records
+// whose ONLY condition is a bare CondKeyPress=4 with zero mouse condition
+// bits — under the SWF table that's "End"; treating 4 as a raw Key.*
+// code (which would be totally different — no assigned Key.* constant at
+// all) would silently make those never-fire. This helper is the one place
+// that conversion happens, so InputState/Key.* stays untouched (no
+// duplicate/incompatible key-code system introduced elsewhere).
+int condKeyPressToInputKeyCode(uint8_t condKeyPress) {
+    switch (condKeyPress) {
+        case 1: return InputState::kLeft;
+        case 2: return InputState::kRight;
+        case 3: return InputState::kHome;
+        case 4: return InputState::kEnd;
+        case 5: return InputState::kInsert;
+        case 6: return InputState::kDelete;
+        case 8: return InputState::kBackspace;
+        case 13: return InputState::kEnter;
+        case 14: return InputState::kUp;
+        case 15: return InputState::kDown;
+        case 16: return InputState::kPageUp;
+        case 17: return InputState::kPageDown;
+        case 18: return InputState::kTab;
+        case 19: return InputState::kEscape;
+        default:
+            // 32-126: ASCII — identical value in both tables, no
+            // conversion needed. 0, 7, 9-12, 20-31, 127+: reserved/unused
+            // in the SWF spec's table — never matches any real key.
+            return (condKeyPress >= 32 && condKeyPress <= 126) ? condKeyPress : 0;
+    }
+}
+
+}  // namespace
+
+void ScriptEnvironment::notifyRemoved(MovieClipInstance* clip) {
+    if (dragTarget_ == clip) dragTarget_ = nullptr;
+    if (hoverClip_ == clip) hoverClip_ = nullptr;
+    if (pressedClip_ == clip) pressedClip_ = nullptr;
+    // See the header's doc comment: called BEFORE `clip` (and everything it
+    // owns, including its buttonInstances_) is actually erased/destroyed,
+    // so reading button->parent() here is still safe — this is what makes
+    // clearing hoverButton_/pressedButton_ HERE (rather than trying to
+    // detect the dangling pointer after the fact) correct.
+    if (hoverButton_ && hoverButton_->parent() == clip) hoverButton_ = nullptr;
+    if (pressedButton_ && pressedButton_->parent() == clip) pressedButton_ = nullptr;
+}
+
+void ScriptEnvironment::fireButtonCondition(ButtonInstance& button, swf::ButtonCondition cond) {
+    MovieClipInstance* parent = button.parent();
+    if (!parent) return;
+    auto condBit = static_cast<uint16_t>(cond);
+    // Snapshot the condActionsV2 vector reference is safe to iterate
+    // directly (ButtonDef is SHARED IMMUTABLE data owned by
+    // CharacterDictionary — see ButtonInstance.h's class header — it is
+    // never mutated or destroyed for the lifetime of the loaded movie,
+    // unlike the per-placement runtime objects this dispatcher tracks).
+    for (const auto& ca : button.def().condActionsV2) {
+        if ((ca.conditions & condBit) == 0) continue;
+        LOG_DEBUG("BUTTON2", "charId=%u condition=0x%03x actionBytes=%zu — dispatching",
+                  button.characterId(), condBit, ca.actionBytes.size());
+        run(*parent, ca.actionBytes.data(), ca.actionBytes.size());
+    }
+}
+
+void ScriptEnvironment::fireButtonKeyPressIfMatched(ButtonInstance& button) {
+    MovieClipInstance* parent = button.parent();
+    if (!parent) return;
+    for (const auto& ca : button.def().condActionsV2) {
+        if (!ca.keyCode) continue;
+        int mapped = condKeyPressToInputKeyCode(*ca.keyCode);
+        if (mapped == 0 || !inputState_.isKeyPressed(mapped)) continue;
+        LOG_DEBUG("BUTTON2", "charId=%u CondKeyPress=%u (mapped key %d) actionBytes=%zu — dispatching",
+                  button.characterId(), *ca.keyCode, mapped, ca.actionBytes.size());
+        run(*parent, ca.actionBytes.data(), ca.actionBytes.size());
+    }
+}
+
+void ScriptEnvironment::firePropertyHandler(MovieClipInstance& owner, const char* name) {
+    avm1::Value fn = owner.scriptObject()->getMember(name);
+    if (!fn.isObject() || !fn.asObject() || !fn.asObject()->isFunction()) return;
+    LOG_DEBUG("EVENT", "target=%s type=%s — dispatching AS2 property handler",
+              owner.targetPath().c_str(), name);
+    callHandler(owner, fn.asObject(), avm1::Value::object(owner.scriptObject()));
+}
+
+void ScriptEnvironment::firePropertyHandler(ButtonInstance& owner, const char* name) {
+    MovieClipInstance* parent = owner.parent();
+    if (!parent) return;
+    avm1::Value fn = owner.scriptObject()->getMember(name);
+    if (!fn.isObject() || !fn.asObject() || !fn.asObject()->isFunction()) return;
+    LOG_DEBUG("EVENT", "target=button(charId=%u) type=%s — dispatching AS2 property handler",
+              owner.characterId(), name);
+    // hostBindingsTarget = the PARENT (bare gotoAndPlay()/stop()/... inside
+    // the handler act on the timeline containing the button); thisVal =
+    // the BUTTON's own scriptObject (real AS2 `this`-follows-the-property-
+    // owner rule) — see docs/events.md's "Execution target" section.
+    callHandler(*parent, fn.asObject(), avm1::Value::object(owner.scriptObject()));
+}
+
+void ScriptEnvironment::dispatchPointerEvents(MovieClipInstance& root, ButtonInstance* hitButton,
+                                                MovieClipInstance* hitClip) {
+    (void)root;
+    const bool mouseDown = inputState_.isMouseDown();
+    const bool mousePressed = inputState_.isMousePressed();
+    const bool mouseReleased = inputState_.isMouseReleased();
+
+    // --- 1) roll-over / roll-out (buttons) ---------------------------------
+    if (hitButton != hoverButton_) {
+        if (!pressedButton_) {
+            // Plain hover transition — nothing currently pressed.
+            if (hoverButton_) {
+                fireButtonCondition(*hoverButton_, swf::ButtonCondition::kOverUpToIdle);
+                // Re-read the member before the second dispatch call on the
+                // SAME object: the condActionsV2 action just run above could
+                // have removed hoverButton_'s parent clip synchronously
+                // (notifyRemoved() would have nulled the member already —
+                // see docs/events.md's "Event target safety" section).
+                if (hoverButton_) firePropertyHandler(*hoverButton_, "onRollOut");
+            }
+            if (hitButton) {
+                fireButtonCondition(*hitButton, swf::ButtonCondition::kIdleToOverUp);
+                if (hoverButton_ != hitButton || hoverButton_ == hitButton) {
+                    // hitButton is a local snapshot, not a member we clear
+                    // on removal — guard via pressedButton_/hoverButton_'s
+                    // own bookkeeping is not applicable here (hitButton
+                    // isn't tracked yet), so this specific dispatch pair
+                    // relies on fireButtonCondition/firePropertyHandler
+                    // each independently re-validating `button.parent()`
+                    // before touching it (both do — see their own bodies).
+                }
+                firePropertyHandler(*hitButton, "onRollOver");
+            }
+        } else {
+            // A press is in progress — drag-based Over/Out transitions
+            // apply ONLY to the CAPTURED button (real Flash mouse-capture
+            // semantics; trackAsMenu's "pick up whichever button is under
+            // the pointer" override is not implemented — see
+            // MovieClipInstance.h's pressedButton_ doc comment).
+            if (hitButton == pressedButton_) {
+                fireButtonCondition(*pressedButton_, swf::ButtonCondition::kOutDownToOverDown);
+            } else if (hoverButton_ == pressedButton_) {
+                fireButtonCondition(*pressedButton_, swf::ButtonCondition::kOverDownToOutDown);
+            }
+        }
+        hoverButton_ = hitButton;
+    }
+
+    // --- 2) press ------------------------------------------------------------
+    if (mousePressed) {
+        if (hitButton) {
+            pressedButton_ = hitButton;
+            fireButtonCondition(*hitButton, swf::ButtonCondition::kOverUpToOverDown);
+            if (pressedButton_ == hitButton) firePropertyHandler(*hitButton, "onPress");
+        } else {
+            pressedButton_ = nullptr;
+        }
+    }
+
+    // --- 3) release ------------------------------------------------------------
+    if (mouseReleased) {
+        if (pressedButton_) {
+            ButtonInstance* captured = pressedButton_;
+            if (hitButton == captured) {
+                fireButtonCondition(*captured, swf::ButtonCondition::kOverDownToOverUp);
+                if (pressedButton_ == captured) firePropertyHandler(*captured, "onRelease");
+            } else {
+                // Released while not over the button that captured the
+                // press ("release outside"/cancel). Corpus evidence: zero
+                // buttons in the real-game corpus define BOTH
+                // OverDownToIdle and OutDownToIdle on the same button (see
+                // docs/events.md), so firing only OverDownToIdle here
+                // (rather than also trying to distinguish "already dragged
+                // fully outside" via OutDownToIdle, which ButtonInstance's
+                // 3-state UP/OVER/DOWN model — deliberately not extended,
+                // see ButtonInstance.h — cannot cleanly distinguish) is a
+                // documented, corpus-justified simplification, not a gap
+                // discovered to matter yet.
+                fireButtonCondition(*captured, swf::ButtonCondition::kOverDownToIdle);
+                // No onReleaseOutside dispatch — not confirmed used by any
+                // corpus content's AS2 API scan (docs/real-game-compatibility.md).
+            }
+        }
+        pressedButton_ = nullptr;
+    }
+
+    // --- 4) plain-MovieClip AS2 property-handler dispatch (Extreme
+    // Pamplona: onPress/onRelease/onRollOver/onRollOut assigned directly to
+    // a MovieClip — not necessarily a Button2 character — a real, common
+    // AS2 "button-mode clip" pattern). Mirrors steps 1-3 above exactly,
+    // minus any condActionsV2 concept (plain clips have none). A button
+    // hit always takes priority in hitTestPoint() itself, so hitClip is
+    // only ever non-null when hitButton is null — these two blocks never
+    // fire for the SAME tick's SAME hit. ---------------------------------
+    if (hitClip != hoverClip_) {
+        if (hoverClip_) firePropertyHandler(*hoverClip_, "onRollOut");
+        if (hitClip) firePropertyHandler(*hitClip, "onRollOver");
+        hoverClip_ = hitClip;
+    }
+    if (mousePressed) {
+        if (hitClip) {
+            pressedClip_ = hitClip;
+            firePropertyHandler(*hitClip, "onPress");
+        } else {
+            pressedClip_ = nullptr;
+        }
+    }
+    if (mouseReleased && pressedClip_) {
+        MovieClipInstance* captured = pressedClip_;
+        if (hitClip == captured) firePropertyHandler(*captured, "onRelease");
+        pressedClip_ = nullptr;
+    }
+
+    (void)mouseDown;  // read via inputState_ directly by updateButtonStatesRecursive(); kept
+                       // here only for the doc-comment-visible local-variable trio above.
+}
+
 void ScriptEnvironment::scanInitActions(const Movie& movie) {
     for (const auto& tag : movie.tags) {
         if (static_cast<swf::TagCode>(tag.code) != swf::TagCode::DoInitAction) continue;
@@ -302,128 +665,6 @@ void ScriptEnvironment::updateDrag() {
 }
 
 avm1::Value ScriptEnvironment::run(MovieClipInstance& target, const uint8_t* code, size_t length) {
-    // MovieClipHostBindings is defined below (this translation unit only —
-    // AVM1 code only ever sees it through the abstract HostBindings seam).
-    class MovieClipHostBindings : public avm1::HostBindings {
-    public:
-        MovieClipHostBindings(MovieClipInstance& natural, ScriptEnvironment& env)
-            : natural_(&natural), current_(&natural), env_(&env) {}
-
-        MovieClipInstance* resolve(const std::string& target) {
-            if (target.empty()) return current_;
-            MovieClipInstance* r = natural_->resolvePath(target);
-            return r ? r : nullptr;
-        }
-
-        void gotoFrame(uint32_t frameIndex) override {
-            // AVM1's GotoFrame/GotoFrame2 frame numbers are 0-based;
-            // Timeline's are 1-based (see Timeline.h).
-            if (current_) current_->timeline().gotoAndStop(frameIndex + 1);
-        }
-        void gotoLabel(const std::string& label) override {
-            if (current_) current_->timeline().gotoAndStop(label);
-        }
-        void play() override {
-            if (current_) current_->timeline().play();
-        }
-        void stop() override {
-            if (current_) current_->timeline().stop();
-        }
-        void nextFrame() override {
-            if (current_) current_->timeline().nextFrame();
-        }
-        void previousFrame() override {
-            if (current_) current_->timeline().prevFrame();
-        }
-
-        avm1::Value getProperty(const std::string& targetPath, int propertyIndex) override {
-            MovieClipInstance* mc = resolve(targetPath);
-            if (!mc) return avm1::Value::undefined();
-            switch (propertyIndex) {
-                case 0: return avm1::Value::number(mc->x());
-                case 1: return avm1::Value::number(mc->y());
-                case 2: return avm1::Value::number(mc->xScale());
-                case 3: return avm1::Value::number(mc->yScale());
-                case 4: return avm1::Value::number(mc->timeline().currentFrame());
-                case 5: return avm1::Value::number(mc->timeline().frameCount());
-                case 6: return avm1::Value::number(mc->alpha());
-                case 7: return avm1::Value::boolean(mc->visible());
-                case 8: return avm1::Value::number(mc->width());   // _width
-                case 9: return avm1::Value::number(mc->height());  // _height
-                case 10: return avm1::Value::number(mc->rotation());
-                case 11: return avm1::Value::string(mc->targetPath());
-                case 12: return avm1::Value::number(mc->timeline().frameCount());  // _framesloaded
-                case 13: return avm1::Value::string(mc->name());
-                case 14: return avm1::Value::string("");  // _droptarget — no drag model yet
-                case 15: return avm1::Value::string("");  // _url
-                case 20: return avm1::Value::number(mc->stageMouseX());  // _xmouse
-                case 21: return avm1::Value::number(mc->stageMouseY());  // _ymouse
-                default:
-                    LOG_DEBUG("MOVIECLIP", "GetProperty: index %d not modeled — undefined",
-                              propertyIndex);
-                    return avm1::Value::undefined();
-            }
-        }
-        void setProperty(const std::string& targetPath, int propertyIndex,
-                          const avm1::Value& value) override {
-            MovieClipInstance* mc = resolve(targetPath);
-            if (!mc) return;
-            switch (propertyIndex) {
-                case 0: mc->setX(value.toNumber()); break;
-                case 1: mc->setY(value.toNumber()); break;
-                case 2: mc->setXScale(value.toNumber()); break;
-                case 3: mc->setYScale(value.toNumber()); break;
-                case 6: mc->setAlpha(value.toNumber()); break;
-                case 7: mc->setVisible(value.toBoolean()); break;
-                case 10: mc->setRotation(value.toNumber()); break;
-                default:
-                    LOG_DEBUG("MOVIECLIP", "SetProperty: index %d not modeled/read-only — ignored",
-                              propertyIndex);
-                    break;
-            }
-        }
-
-        void cloneSprite(const std::string& targetPath, const std::string& newName,
-                          int depth) override {
-            MovieClipInstance* mc = resolve(targetPath);
-            if (!mc) {
-                LOG_WARN("MOVIECLIP", "CloneSprite: target '%s' not found", targetPath.c_str());
-                return;
-            }
-            mc->cloneSprite(newName, depth);
-        }
-        void removeSprite(const std::string& targetPath) override {
-            MovieClipInstance* mc = resolve(targetPath);
-            if (!mc) return;
-            mc->removeFromParent();
-        }
-        void startDrag(const std::string& targetPath, const DragOptions& options) override {
-            MovieClipInstance* mc = resolve(targetPath);
-            if (!mc) return;
-            env_->startDrag(mc, options);
-        }
-        void endDrag() override { env_->endDrag(); }
-
-        void setTarget(const std::string& targetPath) override {
-            if (targetPath.empty()) {
-                current_ = natural_;
-                return;
-            }
-            MovieClipInstance* resolved = natural_->resolvePath(targetPath);
-            if (resolved) {
-                current_ = resolved;
-            } else {
-                LOG_WARN("MOVIECLIP", "SetTarget: '%s' did not resolve — target unchanged",
-                          targetPath.c_str());
-            }
-        }
-
-    private:
-        MovieClipInstance* natural_;
-        MovieClipInstance* current_;
-        ScriptEnvironment* env_;
-    };
-
     MovieClipHostBindings host(target, *this);
 
     avm1::Scope scope = avm1::Scope::topLevel(global_).pushed(target.scriptObject());
@@ -432,6 +673,20 @@ avm1::Value ScriptEnvironment::run(MovieClipInstance& target, const uint8_t* cod
     ctx.host = &host;
 
     return avm1::Interpreter::execute(ctx, code, length);
+}
+
+avm1::Value ScriptEnvironment::callHandler(MovieClipInstance& hostBindingsTarget,
+                                              const std::shared_ptr<avm1::Object>& func,
+                                              avm1::Value thisVal) {
+    if (!func || !func->isFunction()) return avm1::Value::undefined();
+    MovieClipHostBindings host(hostBindingsTarget, *this);
+    avm1::Scope scope = avm1::Scope::topLevel(global_).pushed(hostBindingsTarget.scriptObject());
+    avm1::ExecutionContext ctx(scope, global_);
+    ctx.thisValue = thisVal;
+    ctx.host = &host;
+    // No arguments — every handler this phase dispatches (onPress/
+    // onRelease/onRollOver/onRollOut) is real AS2's zero-argument form.
+    return avm1::Interpreter::callFunction(ctx, func, thisVal, {});
 }
 
 // ===========================================================================
@@ -965,6 +1220,13 @@ void MovieClipInstance::syncChildren() {
         const DisplayListEntry* entry = dl.find(it->first);
         bool stillValid = entry && entry->characterId == it->second->characterId();
         if (!stillValid) {
+            // Event-dispatch phase (2026-08-19): this display-list-driven
+            // removal path (distinct from removeFromParent()'s explicit
+            // RemoveSprite path, which goes through notifyRemoved() for the
+            // OWNING clip) can also drop a button that's currently tracked
+            // as hoverButton_/pressedButton_ — null those out BEFORE erase,
+            // same "notify before destroy" pattern notifyRemoved() uses.
+            env_->notifyButtonRemoved(it->second.get());
             for (auto nameIt = childNameToDepth_.begin(); nameIt != childNameToDepth_.end();) {
                 if (nameIt->second == it->first) nameIt = childNameToDepth_.erase(nameIt);
                 else ++nameIt;
@@ -1055,6 +1317,37 @@ void MovieClipInstance::updateButtonStatesRecursive(ButtonInstance* hitButton, b
     }
 }
 
+void MovieClipInstance::dispatchButtonKeyPressesRecursive() {
+    // Snapshot before dispatching — mirrors the EXISTING children_
+    // snapshot idiom advanceFrame() already uses just below this method
+    // (see its own comment: a fired condActionsV2 action block can run
+    // arbitrary AVM1, including RemoveSprite/CloneSprite/removeMovieClip,
+    // which can mutate buttonInstances_/children_ out from under a live
+    // iteration — walking a snapshot instead makes that safe). Snapshotting
+    // shared_ptrs (not raw pointers) also keeps each snapshotted object
+    // alive for the duration of this call even if its owning map entry is
+    // erased mid-dispatch (see docs/events.md's "Event target safety").
+    std::vector<std::shared_ptr<ButtonInstance>> buttonSnapshot;
+    buttonSnapshot.reserve(buttonInstances_.size());
+    for (auto& [depthValue, button] : buttonInstances_) {
+        (void)depthValue;
+        if (button) buttonSnapshot.push_back(button);
+    }
+    for (auto& button : buttonSnapshot) {
+        env_->fireButtonKeyPressIfMatched(*button);
+    }
+
+    std::vector<std::shared_ptr<MovieClipInstance>> childSnapshot;
+    childSnapshot.reserve(children_.size());
+    for (auto& [depthValue, child] : children_) {
+        (void)depthValue;
+        if (child) childSnapshot.push_back(child);
+    }
+    for (auto& child : childSnapshot) {
+        child->dispatchButtonKeyPressesRecursive();
+    }
+}
+
 void MovieClipInstance::advanceFrame() {
     if (timeline_->isPlaying()) {
         timeline_->advanceOneFrame();
@@ -1084,7 +1377,20 @@ void MovieClipInstance::advanceFrame() {
         // PHASE".
         auto hit = hitTestPoint(stageMouseX(), stageMouseY());
         ButtonInstance* hitButton = (hit && hit->button) ? hit->button : nullptr;
+        // A button hit always takes priority (see hitTestPoint()'s own
+        // contract, restated in HitTestResult's doc comment) — hitClip
+        // (for plain-MovieClip onPress/onRelease/onRollOver/onRollOut
+        // dispatch) is only set when nothing hit a button.
+        MovieClipInstance* hitClip = (!hitButton && hit) ? hit->clip : nullptr;
         updateButtonStatesRecursive(hitButton, env_->inputState().isMouseDown());
+        // Event-dispatch phase (2026-08-19, docs/events.md): drive the
+        // actual AS2/condActionsV2 dispatch from the same single root-only
+        // hit-test result updateButtonStatesRecursive() already used above
+        // — no second hit-test implementation. Root-only + once-per-tick
+        // for the same reason updateDrag()/updateButtonStatesRecursive()
+        // are: exactly one deterministic evaluation of the whole tree.
+        env_->dispatchPointerEvents(*this, hitButton, hitClip);
+        dispatchButtonKeyPressesRecursive();
     }
     // Copy the child list before recursing: a script that ran just above
     // (via runCurrentFrameScripts/syncChildren) could have removed a child

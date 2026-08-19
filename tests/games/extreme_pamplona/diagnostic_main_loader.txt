@@ -1,0 +1,279 @@
+[INFO ] [SWF] Signature=CWS Version=8 DeclaredLength=1390857
+[INFO ] [SWF] Decompressed CWS body: 1390849 bytes
+[INFO ] [SWF] FrameSize=800.0x400.0 px FrameRate=24.00 fps FrameCount=2
+[WARN ] [SWF] Unknown tag id=255 offset=26 length=1
+[WARN ] [SWF] Unknown tag id=253 offset=59779 length=495
+[WARN ] [SWF] Unknown tag id=253 offset=61804 length=10620
+[WARN ] [SWF] Unknown tag id=253 offset=78421 length=6688
+[WARN ] [SWF] Unknown tag id=253 offset=88328 length=637
+[WARN ] [SWF] Unknown tag id=253 offset=90659 length=741
+[WARN ] [SWF] Unknown tag id=253 offset=92983 length=3703
+[WARN ] [SWF] Unknown tag id=253 offset=98406 length=4455
+[WARN ] [SWF] Unknown tag id=253 offset=104181 length=5312
+[WARN ] [SWF] Unknown tag id=253 offset=111617 length=2320
+[WARN ] [SWF] Unknown tag id=253 offset=115847 length=983
+[WARN ] [SWF] Unknown tag id=253 offset=118549 length=1429
+[WARN ] [SWF] Unknown tag id=253 offset=121259 length=741
+[WARN ] [SWF] Unknown tag id=253 offset=123065 length=558
+[WARN ] [SWF] Unknown tag id=253 offset=125311 length=571
+[WARN ] [SWF] Unknown tag id=253 offset=126945 length=2171
+[WARN ] [SWF] Unknown tag id=253 offset=130875 length=815
+[WARN ] [SWF] Unknown tag id=253 offset=133170 length=6176
+[WARN ] [SWF] Unknown tag id=253 offset=142512 length=2109
+[WARN ] [SWF] Unknown tag id=253 offset=146660 length=507
+[WARN ] [SWF] Unknown tag id=253 offset=148849 length=1780
+[WARN ] [SWF] Unknown tag id=253 offset=152391 length=1373
+[WARN ] [SWF] Unknown tag id=253 offset=155682 length=885
+[WARN ] [SWF] Unknown tag id=253 offset=157725 length=1056
+[WARN ] [SWF] Unknown tag id=253 offset=160314 length=1892
+[WARN ] [SWF] Unknown tag id=253 offset=163938 length=1242
+[WARN ] [SWF] Unknown tag id=253 offset=166389 length=1880
+[WARN ] [SWF] Unknown tag id=253 offset=169489 length=2634
+[WARN ] [SWF] Unknown tag id=253 offset=174084 length=1192
+[WARN ] [SWF] Unknown tag id=253 offset=176484 length=1862
+[WARN ] [SWF] Unknown tag id=253 offset=180020 length=2526
+[WARN ] [SWF] Unknown tag id=253 offset=184707 length=881
+[WARN ] [SWF] Unknown tag id=253 offset=187108 length=1242
+[WARN ] [SWF] Unknown tag id=253 offset=190187 length=1792
+[WARN ] [SWF] Unknown tag id=253 offset=193339 length=2418
+[WARN ] [SWF] Unknown tag id=253 offset=197855 length=1189
+[WARN ] [SWF] Unknown tag id=253 offset=200322 length=813
+[WARN ] [SWF] Unknown tag id=253 offset=202314 length=633
+[WARN ] [SWF] Unknown tag id=253 offset=204039 length=1820
+[WARN ] [SWF] Unknown tag id=253 offset=207833 length=891
+[WARN ] [SWF] Unknown tag id=253 offset=209940 length=1890
+[WARN ] [SWF] Unknown tag id=253 offset=213675 length=1594
+[WARN ] [SWF] Unknown tag id=253 offset=216908 length=3300
+[WARN ] [SWF] Unknown tag id=253 offset=222446 length=1303
+[WARN ] [SWF] Unknown tag id=253 offset=225078 length=2028
+[WARN ] [SWF] Unknown tag id=253 offset=228611 length=1660
+[WARN ] [SWF] Unknown tag id=253 offset=231912 length=774
+[WARN ] [SWF] Unknown tag id=253 offset=234522 length=933
+[WARN ] [SWF] Unknown tag id=253 offset=236568 length=2121
+[WARN ] [SWF] Unknown tag id=253 offset=240979 length=3779
+[WARN ] [SWF] Unknown tag id=253 offset=246222 length=1007
+[WARN ] [SWF] Unknown tag id=253 offset=248393 length=1073
+[WARN ] [SWF] Unknown tag id=253 offset=250983 length=1352
+[WARN ] [SWF] Unknown tag id=253 offset=253547 length=1379
+[WARN ] [SWF] Unknown tag id=253 offset=256557 length=1136
+[WARN ] [SWF] Unknown tag id=253 offset=259159 length=1439
+[WARN ] [SWF] Unknown tag id=253 offset=261793 length=1329
+[WARN ] [SWF] Unknown tag id=253 offset=265044 length=632
+[WARN ] [SWF] Unknown tag id=253 offset=267375 length=1597
+[WARN ] [SWF] Unknown tag id=253 offset=270421 length=2470
+[WARN ] [SWF] Unknown tag id=253 offset=274486 length=1029
+[WARN ] [SWF] Unknown tag id=253 offset=277302 length=4320
+[WARN ] [SWF] Unknown tag id=253 offset=283687 length=1183
+[WARN ] [SWF] Unknown tag id=253 offset=286404 length=1350
+[WARN ] [SWF] Unknown tag id=253 offset=289687 length=1043
+[WARN ] [SWF] Unknown tag id=253 offset=292518 length=2947
+[WARN ] [SWF] Unknown tag id=253 offset=297674 length=639
+[WARN ] [SWF] Unknown tag id=253 offset=299698 length=2193
+[WARN ] [SWF] Unknown tag id=253 offset=303547 length=838
+[WARN ] [SWF] Unknown tag id=253 offset=305830 length=1193
+[WARN ] [SWF] Unknown tag id=253 offset=308245 length=1359
+[WARN ] [SWF] Unknown tag id=253 offset=311145 length=1207
+[WARN ] [SWF] Unknown tag id=253 offset=314226 length=879
+[WARN ] [SWF] Unknown tag id=253 offset=316261 length=992
+[WARN ] [SWF] Unknown tag id=253 offset=318812 length=969
+[WARN ] [SWF] Unknown tag id=253 offset=321358 length=4258
+[WARN ] [SWF] Unknown tag id=253 offset=327413 length=1136
+[WARN ] [SWF] Unknown tag id=253 offset=329816 length=4232
+[WARN ] [SWF] Unknown tag id=253 offset=335836 length=1307
+[WARN ] [SWF] Unknown tag id=253 offset=338445 length=962
+[WARN ] [SWF] Unknown tag id=253 offset=340920 length=975
+[WARN ] [SWF] Unknown tag id=253 offset=343770 length=1035
+[WARN ] [SWF] Unknown tag id=253 offset=346644 length=1990
+[WARN ] [SWF] Unknown tag id=253 offset=349988 length=1049
+[WARN ] [SWF] Unknown tag id=253 offset=352583 length=1155
+[WARN ] [SWF] Unknown tag id=253 offset=355605 length=1093
+[WARN ] [SWF] Unknown tag id=253 offset=358190 length=992
+[WARN ] [SWF] Unknown tag id=253 offset=360334 length=902
+[WARN ] [SWF] Unknown tag id=253 offset=362716 length=1572
+[WARN ] [SWF] Unknown tag id=253 offset=365925 length=1653
+[WARN ] [SWF] Unknown tag id=253 offset=369524 length=1556
+[WARN ] [SWF] Unknown tag id=253 offset=372459 length=1117
+[WARN ] [SWF] Unknown tag id=253 offset=374824 length=1935
+[WARN ] [SWF] Unknown tag id=253 offset=378120 length=879
+[WARN ] [SWF] Unknown tag id=253 offset=380866 length=1218
+[WARN ] [SWF] Unknown tag id=253 offset=383666 length=1013
+[WARN ] [SWF] Unknown tag id=253 offset=386511 length=778
+[WARN ] [SWF] Unknown tag id=253 offset=389053 length=967
+[WARN ] [SWF] Unknown tag id=253 offset=391788 length=2333
+[WARN ] [SWF] Unknown tag id=253 offset=395650 length=1072
+[WARN ] [SWF] Unknown tag id=253 offset=398026 length=1068
+[WARN ] [SWF] Unknown tag id=253 offset=400921 length=2233
+[WARN ] [SWF] Unknown tag id=253 offset=405043 length=2038
+[WARN ] [SWF] Unknown tag id=253 offset=409175 length=1206
+[WARN ] [SWF] Unknown tag id=253 offset=411694 length=1668
+[WARN ] [SWF] Unknown tag id=253 offset=414829 length=1587
+[WARN ] [SWF] Unknown tag id=253 offset=418189 length=868
+[WARN ] [SWF] Unknown tag id=253 offset=420843 length=1228
+[WARN ] [SWF] Unknown tag id=253 offset=423498 length=1446
+[WARN ] [SWF] Unknown tag id=253 offset=426575 length=1156
+[WARN ] [SWF] Unknown tag id=253 offset=429288 length=1523
+[WARN ] [SWF] Unknown tag id=253 offset=432492 length=1982
+[WARN ] [SWF] Unknown tag id=253 offset=436210 length=1201
+[WARN ] [SWF] Unknown tag id=253 offset=439018 length=1503
+[WARN ] [SWF] Unknown tag id=253 offset=442377 length=748
+[WARN ] [SWF] Unknown tag id=253 offset=444934 length=1332
+[WARN ] [SWF] Unknown tag id=253 offset=448361 length=537
+[WARN ] [SWF] Unknown tag id=253 offset=450274 length=5634
+[WARN ] [SWF] Unknown tag id=253 offset=457897 length=819
+[WARN ] [SWF] Unknown tag id=253 offset=462605 length=237
+[INFO ] [SWF] Loaded movie: 1060 tags, ActionScript=yes
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+[WARN ] [TIMELINE] 1 trailing tag(s) after the last ShowFrame have no frame to attach to
+PARSE_RESULT: OK
+
+=== HEADER ===
+file: /home/claude/game-corpus/extreme_pamplona/extreme-pamplona.swf
+swf_version: 8
+compression: zlib (CWS)
+declared_length: 1390857
+actual_file_size: 1000458
+decompressed_body_size: 1390849
+stage_width_px: 800.0
+stage_height_px: 400.0
+fps: 24.00
+declared_frame_count: 2
+has_actionscript_tag: yes
+
+=== ACTIONSCRIPT VERSION ===
+avm1_present: yes
+avm2_present (DoABC/DoABC2 tags): no
+DoAction_tag_count: 25
+DoInitAction_tag_count: 117
+DoABC_tag_count: 0
+
+=== TAG HISTOGRAM (recursive incl. nested DefineSprite streams; 6070 total tag occurrences) ===
+  PlaceObject2                     2001
+  ShowFrame                        1905
+  RemoveObject2                    450
+  PlaceObject3                     345
+  End                              220
+  DefineSprite                     219
+  DefineShape4                     135
+  ExportAssets                     131
+  Unknown(253)                     126
+  DoInitAction                     117
+  SoundStreamHead2                 103
+  DefineShape                      98
+  DefineShape3                     42
+  DefineEditText                   38
+  CsmTextSettings                  37
+  DefineShape2                     33
+  DoAction                         25
+  FrameLabel                       7
+  DefineButton2                    5
+  DefineFont3                      5
+  DefineFontAlignZones             5
+  DefineBitsLossless               4
+  DefineText                       4
+  DefineBitsLossless2              3
+  StartSound                       3
+  DefineBitsJpeg3                  2
+  DefineSound                      2
+  DefineBitsJpeg2                  1
+  FileAttributes                   1
+  Protect                          1
+  SetBackgroundColor               1
+  Unknown(255)                     1
+
+=== AVM1 OPCODE PROFILE (142 bytecode buffers scanned, 33741 total opcodes, 126 nested function bodies, 0 With blocks) ===
+  Push                  12949  [supported]
+  GetVariable            4840  [supported]
+  Jump                   2752  [supported]
+  SetVariable            2530  [supported]
+  If                     2530  [supported]
+  Not                    2312  [supported]
+  Equals                 2193  [supported]
+  Subtract               1309  [supported]
+  Add                    1221  [supported]
+  ConstantPool            341  [supported]
+  DefineLocal             241  [supported]
+  DefineFunction          126  [supported]
+  CallFunction            126  [supported]
+  Return                  126  [supported]
+  Add2                    126  [supported]
+  Stop                     11  [supported]
+  GotoFrame                 4  [supported]
+  Play                      4  [supported]
+
+=== AS2 API/IDENTIFIER SCAN (best-effort substring match over decompressed body; presence only, not proof of semantic usage) ===
+  Key                  FOUND
+  Mouse                not found
+  MovieClip            FOUND
+  Sound                FOUND
+  _root                FOUND
+  _parent              FOUND
+  _global              FOUND
+  gotoAndPlay          FOUND
+  gotoAndStop          FOUND
+  play                 FOUND
+  stop                 FOUND
+  removeMovieClip      FOUND
+  createEmptyMovieClip FOUND
+  duplicateMovieClip   FOUND
+  attachMovie          FOUND
+  loadMovie            not found
+  _x                   FOUND
+  _y                   FOUND
+  _xscale              FOUND
+  _yscale              FOUND
+  _rotation            FOUND
+  _alpha               FOUND
+  _visible             FOUND
+  _width               FOUND
+  _height              FOUND
+  onClipEvent          not found
+  onPress              FOUND
+  onRelease            FOUND
+  onRollOver           not found
+  onRollOut            not found
+  onMouseDown          not found
+  onMouseUp            not found
+  onMouseMove          not found
+  ExternalInterface    not found
+
+=== BUTTON PROFILE ===
+DefineButton_v1_count: 0
+DefineButton2_v2_count: 5
+total_button_records: 23
+buttons_with_explicit_hittest_state: 5
+buttons_falling_back_to_upstate_hit_area: 0
+placed_button_instances_frame1: 0
+
+=== SOUND PROFILE ===
+DefineSound_count: 2
+StartSound_count: 3
+codec decode implemented: no (this runtime never decodes any sound codec -- see docs/known-limitations.md priority #5)
+  format=MP3                  count=2
+
+=== RENDERING FEATURE PROFILE (tag-presence proxy; DefineShape/2/3 fill styles inspected directly, DefineShape4 tag-count only -- parser doesn't support it) ===
+shape_tag_count (all versions): 308
+  DefineShape4_count (unparsed by this runtime): 135
+gradient_fill_styles_found: 46 (in 173 parsed DefineShape/2/3 tags)
+bitmap_fill_styles_found: 20
+sprite_tag_count: 219
+morphshape_tag_count: 0
+bitmap_tag_count (DefineBits/JPEG2/3/4/Lossless/2): 10
+text_tag_count (DefineText/2/DefineEditText): 42
+font_tag_count (DefineFont/2/3): 5
+PlaceObject3_count (blend modes/filters carrier -- neither is applied by this runtime): 345
+
+=== INTERACTIVITY PROFILE SUMMARY ===
+Button2_present: yes
+onPress_string_found: yes
+onRelease_string_found: yes
+onRollOver_string_found: no
+onRollOut_string_found: no
+onClipEvent_string_found: no
+Key_isDown_context (Key string found): yes
+Mouse_string_found: no
+Sound_string_found: yes
+ExternalInterface_string_found: no
