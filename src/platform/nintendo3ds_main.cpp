@@ -214,7 +214,13 @@ enum class FatalError {
 // encoding of WHICH check failed, needing no font rendering (none is
 // available in this project -- see docs/architecture.md) or log access at
 // all: just count the squares and report the number back.
-void showFatalErrorScreen(IRenderer& top, IRenderer& bottom, FatalError error) {
+// `subCode` (0 = none) draws a SECOND row of squares on the BOTTOM screen
+// -- used for a sub-reason within one top-level FatalError category (e.g.
+// which of Nintendo3DSRomfs::OpenFailure's ~10 checks actually failed
+// inside a kRomfsOpenFailed). Kept on a different screen than the
+// top-level `error` count specifically so the two numbers can never be
+// misread as one combined count.
+void showFatalErrorScreen(IRenderer& top, IRenderer& bottom, FatalError error, int subCode = 0) {
     constexpr RgbaColor kErrorColor{200, 30, 30, 255};
     constexpr RgbaColor kMarkerColor{255, 255, 255, 255};
     const int markerCount = static_cast<int>(error);
@@ -232,6 +238,9 @@ void showFatalErrorScreen(IRenderer& top, IRenderer& bottom, FatalError error) {
         }
         top.endFrame();
         bottom.beginFrame(kErrorColor);
+        for (int i = 0; i < subCode; ++i) {
+            drawFilledRect(bottom, 12 + i * 24, 12, 16, 16, kMarkerColor);
+        }
         bottom.endFrame();
         Nintendo3DSRenderer::presentFrame();
 
@@ -296,11 +305,14 @@ int main(int argc, char** argv) {
     // during the fetch itself, so this ordering is a "keep it simple, one
     // clear owner per resource" choice, not a strict lifetime requirement).
     Nintendo3DSRomfs romfs;
-    if (!romfs.open(argv[0])) {
+    Nintendo3DSRomfs::OpenFailure romfsFailure = Nintendo3DSRomfs::OpenFailure::kNone;
+    if (!romfs.open(argv[0], &romfsFailure)) {
         LOG_ERROR("3DS", "Failed to open this app's own embedded RomFS section (see the "
                           "Nintendo3DSRomfs::open log line above for the specific reason) -- was "
-                          "this .3dsx built with --romfs=... ? (see CMakeLists.txt)");
-        showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kRomfsOpenFailed);
+                          "this .3dsx built with --romfs=... ? (see CMakeLists.txt) -- "
+                          "OpenFailure code=%d", static_cast<int>(romfsFailure));
+        showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kRomfsOpenFailed,
+                              static_cast<int>(romfsFailure));
         gfxExit();
         return 1;
     }

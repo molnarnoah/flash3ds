@@ -49,7 +49,7 @@ Nintendo3DSRomfs::~Nintendo3DSRomfs() {
     }
 }
 
-bool Nintendo3DSRomfs::open(const char* argv0) {
+bool Nintendo3DSRomfs::open(const char* argv0, OpenFailure* outFailure) {
     // Logged UNCONDITIONALLY, before any check below can bail out --
     // discovered while diagnosing a "loads then silently quits" report
     // (2026-08-19): every LOG_ERROR call after an early return was
@@ -61,15 +61,24 @@ bool Nintendo3DSRomfs::open(const char* argv0) {
     LOG_INFO("VC", "Nintendo3DSRomfs::open: envIsHomebrew=%d argv0=%s", envIsHomebrew() ? 1 : 0,
               argv0 ? argv0 : "(null)");
 
+    // Small local helper -- sets *outFailure (if given) and always returns
+    // false, so every failure path below is a single `return fail(...)`
+    // instead of repeating the "if (outFailure) *outFailure = ..." dance
+    // at each of the ~10 checks.
+    auto fail = [outFailure](OpenFailure reason) {
+        if (outFailure) *outFailure = reason;
+        return false;
+    };
+
     if (!envIsHomebrew()) {
         LOG_ERROR("VC", "Nintendo3DSRomfs::open: not a homebrew (3DSX) launch -- no embedded "
                         "RomFS section to read (see docs/3ds-toolchain.md)");
-        return false;
+        return fail(OpenFailure::kNotHomebrew);
     }
     if (!argv0) {
         LOG_ERROR("VC", "Nintendo3DSRomfs::open: argv[0] is null -- can't locate this .3dsx's "
                         "own file on the SD card");
-        return false;
+        return fail(OpenFailure::kNullArgv0);
     }
 
     // Mirrors romfsMountSelf()'s own two supported schemes exactly (see
@@ -91,14 +100,14 @@ bool Nintendo3DSRomfs::open(const char* argv0) {
         LOG_ERROR("VC", "Nintendo3DSRomfs::open: argv[0] ('%s') isn't an sdmc:/ or 3dslink:/ "
                         "path -- this launch method isn't supported by this reader",
                   path.c_str());
-        return false;
+        return fail(OpenFailure::kUnrecognizedArgv0Scheme);
     }
 
     uint16_t utf16Path[512];
     ssize_t units = utf8_to_utf16(utf16Path, reinterpret_cast<const uint8_t*>(path.c_str()), 511);
     if (units < 0) {
         LOG_ERROR("VC", "Nintendo3DSRomfs::open: failed to convert '%s' to UTF-16", path.c_str());
-        return false;
+        return fail(OpenFailure::kUtf16ConversionFailed);
     }
     utf16Path[units] = 0;
 
@@ -111,7 +120,7 @@ bool Nintendo3DSRomfs::open(const char* argv0) {
         LOG_ERROR("VC", "Nintendo3DSRomfs::open: FSUSER_OpenFileDirectly('%s') failed "
                         "(result=0x%08lx)",
                   path.c_str(), static_cast<unsigned long>(rc));
-        return false;
+        return fail(OpenFailure::kFileOpenFailed);
     }
 
     ThreeDsxHeader header{};
@@ -121,14 +130,14 @@ bool Nintendo3DSRomfs::open(const char* argv0) {
         LOG_ERROR("VC", "Nintendo3DSRomfs::open: '%s' is not a readable/valid .3dsx file",
                   path.c_str());
         FSFILE_Close(fd);
-        return false;
+        return fail(OpenFailure::kInvalid3dsxHeader);
     }
     if (header.headerSize < sizeof(header)) {
         LOG_ERROR("VC", "Nintendo3DSRomfs::open: '%s' has no embedded RomFS section -- it was "
                         "built without --romfs=... (see CMakeLists.txt's FLASH3DS_BUILD_3DS block)",
                   path.c_str());
         FSFILE_Close(fd);
-        return false;
+        return fail(OpenFailure::kNoRomfsSection);
     }
 
     fd_ = fd;
@@ -140,7 +149,7 @@ bool Nintendo3DSRomfs::open(const char* argv0) {
                   path.c_str());
         FSFILE_Close(fd_);
         open_ = false;
-        return false;
+        return fail(OpenFailure::kRomfsHeaderMalformed);
     }
 
     dirTable_.resize(header_.dirTableSize);
@@ -148,7 +157,7 @@ bool Nintendo3DSRomfs::open(const char* argv0) {
         LOG_ERROR("VC", "Nintendo3DSRomfs::open: failed to read RomFS directory table");
         FSFILE_Close(fd_);
         open_ = false;
-        return false;
+        return fail(OpenFailure::kDirTableReadFailed);
     }
 
     fileTable_.resize(header_.fileTableSize);
@@ -157,7 +166,7 @@ bool Nintendo3DSRomfs::open(const char* argv0) {
         LOG_ERROR("VC", "Nintendo3DSRomfs::open: failed to read RomFS file table");
         FSFILE_Close(fd_);
         open_ = false;
-        return false;
+        return fail(OpenFailure::kFileTableReadFailed);
     }
 
     LOG_INFO("VC", "Nintendo3DSRomfs: opened embedded RomFS (dirTable=%lu bytes, fileTable=%lu "

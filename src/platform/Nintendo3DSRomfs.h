@@ -60,15 +60,37 @@ public:
     Nintendo3DSRomfs(const Nintendo3DSRomfs&) = delete;
     Nintendo3DSRomfs& operator=(const Nintendo3DSRomfs&) = delete;
 
+    // Numbered failure reasons for open() below, in the exact order those
+    // checks run -- kept in the header (not just as LOG_ERROR text)
+    // because a platform's own diagnostic tooling isn't always reachable
+    // from wherever it's actually being tested (e.g. iOS emulators expose
+    // no LOG_ERROR/svcOutputDebugString viewer at all -- see
+    // nintendo3ds_main.cpp's showFatalErrorScreen(), which draws this
+    // count as on-screen squares for exactly that reason).
+    enum class OpenFailure {
+        kNone = 0,
+        kNotHomebrew = 1,       // envIsHomebrew() == false
+        kNullArgv0 = 2,
+        kUnrecognizedArgv0Scheme = 3,  // argv0 isn't "sdmc:/" or "3dslink:/"
+        kUtf16ConversionFailed = 4,
+        kFileOpenFailed = 5,    // FSUSER_OpenFileDirectly failed
+        kInvalid3dsxHeader = 6, // bad magic / short read
+        kNoRomfsSection = 7,    // headerSize says no extended header
+        kRomfsHeaderMalformed = 8,
+        kDirTableReadFailed = 9,
+        kFileTableReadFailed = 10,
+    };
+
     // Opens this running .3dsx's own embedded RomFS section (see class
     // comment). `argv0` is main()'s own argv[0] -- the same value
     // romfsMountSelf() itself would read from __system_argv[0], no need to
     // reference that libctru internal directly. Returns false (with a
-    // LOG_ERROR'd reason) if: this isn't a homebrew (3DSX) launch, the
+    // LOG_ERROR'd reason, AND -- if `outFailure` is non-null -- a specific
+    // OpenFailure code) if: this isn't a homebrew (3DSX) launch, the
     // .3dsx couldn't be reopened from the SD card, its 3DSX header is
     // malformed, or it has no embedded RomFS section at all (e.g. built
     // without --romfs=... -- see CMakeLists.txt).
-    bool open(const char* argv0);
+    bool open(const char* argv0, OpenFailure* outFailure = nullptr);
 
     // Reads a ROOT-level file's full contents into `outBytes`. Returns
     // false (outBytes left unchanged) if open() wasn't called/didn't
