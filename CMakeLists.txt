@@ -84,6 +84,9 @@ add_library(flash3ds_core
     src/avm1/GlobalObject.cpp
     src/avm1/ExecutionContext.cpp
     src/avm1/Interpreter.cpp
+    src/vc/IniDocument.cpp
+    src/vc/GameConfig.cpp
+    src/vc/GamePackage.cpp
 )
 
 target_include_directories(flash3ds_core PUBLIC
@@ -162,6 +165,7 @@ if(FLASH3DS_BUILD_3DS)
         src/platform/nintendo3ds_main.cpp
         src/renderer/Nintendo3DSRenderer.cpp
         src/platform/Nintendo3DSInput.cpp
+        src/platform/Nintendo3DSRomfs.cpp
         src/audio/Nintendo3DSAudioBackend.cpp
     )
     add_dependencies(flash3ds_3ds flash3ds_3ds_crt0)
@@ -192,14 +196,85 @@ if(FLASH3DS_BUILD_3DS)
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wno-unused-parameter>
     )
 
-    if(FLASH3DS_3DSXTOOL)
+    # --- Virtual Console resource layer: RomFS packaging ------------------
+    #
+    # The checked-in romfs/ directory (romfs/config.ini + romfs/game.swf --
+    # see docs/virtual-console.md) is embedded into the .3dsx via
+    # 3dsxtool's own --romfs= flag, read back at runtime by
+    # Nintendo3DSRomfs (see that class's header for why that's a bespoke
+    # reader rather than libctru's own romfsInit()). Swapping romfs/game.swf
+    # for a different (compatible) SWF and rebuilding repackages the RomFS
+    # section from the new file's bytes WITHOUT touching or recompiling any
+    # C++ -- see docs/virtual-console.md's "Replacing game.swf" section.
+    #
+    # 3dsxtool's own --romfs= implementation (see 3dstools/src/3dsxtool.cpp)
+    # unconditionally requires an --smdh= file too whenever EITHER flag is
+    # used (it does not validate the SMDH's actual CONTENTS at all -- it's
+    # embedded as an opaque blob, sized/positioned only), so a minimal
+    # placeholder SMDH (title/publisher text + a solid-color icon -- NOT a
+    # real banner/icon asset, and unrelated to CIAToolsR's own separate
+    # icon/banner requirements for CIA packaging, see docs/virtual-console.md's
+    # CIA packaging boundary section) is generated at build time.
+    set(FLASH3DS_ROMFS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/romfs")
+    find_program(FLASH3DS_PYTHON3 python3)
+
+    set(FLASH3DS_3DSX_OUT "${CMAKE_CURRENT_BINARY_DIR}/flash3ds_3ds.3dsx")
+
+    if(FLASH3DS_3DSXTOOL AND FLASH3DS_PYTHON3 AND EXISTS "${FLASH3DS_ROMFS_DIR}")
+        set(FLASH3DS_DEV_SMDH "${CMAKE_CURRENT_BINARY_DIR}/3ds-support/dev.smdh")
         add_custom_command(
-            TARGET flash3ds_3ds POST_BUILD
-            COMMAND "${FLASH3DS_3DSXTOOL}" "$<TARGET_FILE:flash3ds_3ds>"
-                    "$<TARGET_FILE_DIR:flash3ds_3ds>/flash3ds_3ds.3dsx"
-            COMMENT "Packaging flash3ds_3ds.3dsx"
+            OUTPUT "${FLASH3DS_DEV_SMDH}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/3ds-support"
+            COMMAND "${FLASH3DS_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_placeholder_smdh.py"
+                    "${FLASH3DS_DEV_SMDH}"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_placeholder_smdh.py"
+            COMMENT "Generating placeholder dev.smdh (required by 3dsxtool --romfs=)"
             VERBATIM
         )
+
+        # Deliberately a proper add_custom_command(OUTPUT ...) + an ALL
+        # add_custom_target DEPENDS-ing on it -- NOT a `TARGET ... POST_BUILD`
+        # hook (an earlier version of this used POST_BUILD, and it silently
+        # DIDN'T repackage the .3dsx when only romfs/ contents changed, since
+        # POST_BUILD only fires when the ELF itself relinks -- caught by this
+        # project's own "swap game.swf, rebuild, confirm the new content is
+        # actually in the .3dsx" verification pass, see
+        # docs/virtual-console.md's SWF-replacement test). Listing every file
+        # under romfs/ as an explicit DEPENDS means plain `cmake --build`
+        # alone correctly repackages the .3dsx whenever an EXISTING romfs/
+        # file's contents change (e.g. swapping romfs/game.swf for a
+        # different SWF) -- no C++ recompile, no manual extra step. Adding a
+        # brand-new file under romfs/ (rather than editing an existing one)
+        # does need a re-configure to be picked up by this GLOB, same as any
+        # other CMake file(GLOB ...) source list -- documented in
+        # docs/virtual-console.md, not something this build silently gets
+        # wrong.
+        file(GLOB_RECURSE FLASH3DS_ROMFS_FILES "${FLASH3DS_ROMFS_DIR}/*")
+
+        add_custom_command(
+            OUTPUT "${FLASH3DS_3DSX_OUT}"
+            COMMAND "${FLASH3DS_3DSXTOOL}" "$<TARGET_FILE:flash3ds_3ds>" "${FLASH3DS_3DSX_OUT}"
+                    "--smdh=${FLASH3DS_DEV_SMDH}"
+                    "--romfs=${FLASH3DS_ROMFS_DIR}"
+            DEPENDS flash3ds_3ds "${FLASH3DS_DEV_SMDH}" ${FLASH3DS_ROMFS_FILES}
+            COMMENT "Packaging flash3ds_3ds.3dsx (with RomFS: ${FLASH3DS_ROMFS_DIR})"
+            VERBATIM
+        )
+        add_custom_target(flash3ds_3ds_3dsx ALL DEPENDS "${FLASH3DS_3DSX_OUT}")
+    elseif(FLASH3DS_3DSXTOOL)
+        message(WARNING
+            "romfs/ directory or python3 not found -- flash3ds_3ds.3dsx will be "
+            "packaged WITHOUT an embedded RomFS section, and will fail to boot "
+            "(Nintendo3DSRomfs::open() will report no RomFS section present). "
+            "See docs/virtual-console.md.")
+        add_custom_command(
+            OUTPUT "${FLASH3DS_3DSX_OUT}"
+            COMMAND "${FLASH3DS_3DSXTOOL}" "$<TARGET_FILE:flash3ds_3ds>" "${FLASH3DS_3DSX_OUT}"
+            DEPENDS flash3ds_3ds
+            COMMENT "Packaging flash3ds_3ds.3dsx (NO RomFS)"
+            VERBATIM
+        )
+        add_custom_target(flash3ds_3ds_3dsx ALL DEPENDS "${FLASH3DS_3DSX_OUT}")
     else()
         message(WARNING
             "FLASH3DS_3DSXTOOL not found -- flash3ds_3ds will link to an "

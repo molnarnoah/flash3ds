@@ -6,8 +6,9 @@
 
 namespace flash3ds::platform {
 
-Nintendo3DSInput::Nintendo3DSInput(int screenWidthPixels, int screenHeightPixels)
-    : screenWidth_(screenWidthPixels), screenHeight_(screenHeightPixels) {}
+Nintendo3DSInput::Nintendo3DSInput(int screenWidthPixels, int screenHeightPixels,
+                                     const vc::InputMapping& mapping)
+    : screenWidth_(screenWidthPixels), screenHeight_(screenHeightPixels), mapping_(mapping) {}
 
 void Nintendo3DSInput::poll(runtime::InputState& state) {
     // hidScanInput() itself is the caller's responsibility (once per frame,
@@ -26,7 +27,16 @@ void Nintendo3DSInput::poll(runtime::InputState& state) {
     state.setViewportSize(screenWidth_, screenHeight_);
 
     // --- touch screen -> mouse ------------------------------------------
-    if (held & KEY_TOUCH) {
+    // Virtual Console layer (2026-08-19): both touchEnabled AND
+    // mouseEnabled must be true to feed InputState's pointer state at all
+    // — the 3DS has exactly one pointer-like input source (the touch
+    // digitizer), so these two independently-configurable flags (see
+    // vc::InputMapping, GameConfig.h) both gate the SAME underlying path
+    // here rather than two separate mechanisms. If disabled, InputState's
+    // mouse-down edge is explicitly cleared (same as the "not touched"
+    // branch below) rather than left stale.
+    const bool pointerEnabled = mapping_.touchEnabled && mapping_.mouseEnabled;
+    if (pointerEnabled && (held & KEY_TOUCH)) {
         touchPosition touch;
         hidTouchRead(&touch);
         double x = touch.px;
@@ -48,29 +58,67 @@ void Nintendo3DSInput::poll(runtime::InputState& state) {
     }
 
     // --- D-Pad / Circle Pad -> arrow keys --------------------------------
+    // Unlike the face/shoulder/start/select buttons below, D-Pad->arrow-key
+    // is NOT configurable — there's no natural alternative binding for a
+    // directional pad, and the Virtual Console spec only asks for A/B/X/Y/
+    // L/R/START/SELECT to be remappable (see config.ini's [input] section,
+    // docs/virtual-console.md).
     state.setKeyDown(runtime::InputState::kLeft, (held & KEY_LEFT) != 0);
     state.setKeyDown(runtime::InputState::kRight, (held & KEY_RIGHT) != 0);
     state.setKeyDown(runtime::InputState::kUp, (held & KEY_UP) != 0);
     state.setKeyDown(runtime::InputState::kDown, (held & KEY_DOWN) != 0);
 
-    // --- face buttons / START / SELECT -> reasonable-effort key-code
-    // stand-ins ------------------------------------------------------------
-    // A/B/X/Y/START/SELECT have no natural AS2 Key.* equivalent. A and
-    // START both map to Enter, B and SELECT both map to Escape (a common
-    // "confirm"/"cancel" convention), X/Y map to printable ASCII codes
-    // 'X'/'Y' — all as a documented, arbitrary convention content can
-    // rebind against if needed (see header comment).
-    state.setKeyDown(runtime::InputState::kEnter,
-                      (held & (KEY_A | KEY_START)) != 0);
-    state.setKeyDown(runtime::InputState::kEscape,
-                      (held & (KEY_B | KEY_SELECT)) != 0);
-    state.setKeyDown('X', (held & KEY_X) != 0);
-    state.setKeyDown('Y', (held & KEY_Y) != 0);
-    // L/R shoulder buttons (input-transitions phase, 2026-08-19) — see
-    // header comment for the same reasonable-effort-convention rationale
-    // X/Y above already use.
-    state.setKeyDown('L', (held & KEY_L) != 0);
-    state.setKeyDown('R', (held & KEY_R) != 0);
+    // --- face buttons / START / SELECT / L / R -> CONFIGURED InputState
+    // key codes (Virtual Console layer, 2026-08-19) --------------------
+    // Each physical button's target InputState key code now comes from
+    // `mapping_` (see vc::InputMapping, GameConfig.h) instead of being
+    // hardcoded — this class still owns 100% of the hid-polling/edge logic
+    // itself, only the TARGET key code became configurable. mapping_'s own
+    // default values reproduce this class's original hardcoded behavior
+    // (see this file's header comment for the one deliberate exception,
+    // X/Y's default).
+    //
+    // config.ini can legally map two DIFFERENT physical buttons to the
+    // SAME InputState key code (the documented default already does this:
+    // A and START both map to Key.ENTER, B and SELECT both to
+    // Key.ESCAPE — matching this class's original hardcoded behavior,
+    // which combined both with a single OR'd setKeyDown call). Calling
+    // setKeyDown() once per physical button independently would let a
+    // later call silently stomp an earlier one for the same code (e.g.
+    // "A held, START not held" would incorrectly clear Key.ENTER if the
+    // START entry were processed after the A entry) — so every physical
+    // button's flag is first OR-merged per DISTINCT target code below,
+    // and setKeyDown() is called at most once per distinct code, the
+    // first time that code is encountered (fixed A/B/X/Y/L/R/START/SELECT
+    // order, so behavior is deterministic even when multiple buttons that
+    // share a code are held in the same tick).
+    constexpr int kPhysicalButtonCount = 8;
+    const int targetCodes[kPhysicalButtonCount] = {
+        mapping_.aKeyCode,     mapping_.bKeyCode,      mapping_.xKeyCode, mapping_.yKeyCode,
+        mapping_.lKeyCode,     mapping_.rKeyCode,      mapping_.startKeyCode,
+        mapping_.selectKeyCode,
+    };
+    const bool physicalDown[kPhysicalButtonCount] = {
+        (held & KEY_A) != 0,     (held & KEY_B) != 0,     (held & KEY_X) != 0,
+        (held & KEY_Y) != 0,     (held & KEY_L) != 0,     (held & KEY_R) != 0,
+        (held & KEY_START) != 0, (held & KEY_SELECT) != 0,
+    };
+    for (int i = 0; i < kPhysicalButtonCount; ++i) {
+        bool alreadyHandled = false;
+        for (int j = 0; j < i; ++j) {
+            if (targetCodes[j] == targetCodes[i]) {
+                alreadyHandled = true;
+                break;
+            }
+        }
+        if (alreadyHandled) continue;
+
+        bool down = physicalDown[i];
+        for (int j = i + 1; j < kPhysicalButtonCount; ++j) {
+            if (targetCodes[j] == targetCodes[i]) down = down || physicalDown[j];
+        }
+        state.setKeyDown(targetCodes[i], down);
+    }
 
     // Edge detection: exactly one commit per poll() call (see header's
     // doc comment) — MUST be last, after every setKeyDown()/

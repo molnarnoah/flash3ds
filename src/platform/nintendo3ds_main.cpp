@@ -23,14 +23,19 @@
 //   - Quit is START+SELECT held together (not START alone, so START's own
 //     indicator on the bottom screen is actually visible/testable).
 //
-// Scope (documented, not silently narrowed): this phase plays back a single
-// EMBEDDED demo movie (src/platform/EmbeddedDemoSwf.h) rather than loading
-// an SWF from the SD card. Real file loading needs either direct FSUSER
-// calls or restoring libctru's archive_dev.c (excluded from this from-
-// source toolchain build over an unrelated sys/iosupport.h dependency —
-// see docs/3ds-toolchain.md) to wire up open()/read() against the SD
-// filesystem; that's a well-scoped, explicitly deferred follow-up, not a
-// blocker for validating the rest of the Phase 10 stack end-to-end.
+// Virtual Console resource layer (2026-08-19): this app no longer plays a
+// single EMBEDDED demo movie. It loads "config.ini" and (whatever
+// config.ini's [game] swf= names, "game.swf" by default) from this
+// project's own embedded RomFS section — see platform/Nintendo3DSRomfs.h
+// for how that's read WITHOUT libctru's own romfsInit() (excluded from
+// this from-source toolchain build, same sys/iosupport.h reason
+// archive_dev.c is — see docs/3ds-toolchain.md), vc/GamePackage.h for how
+// the fetched bytes become a runnable Movie, and docs/virtual-console.md
+// for the full design/RomFS layout/config.ini syntax. Swapping which SWF
+// plays no longer needs a C++ change or recompile — see that doc's
+// "Replacing game.swf" section — only repackaging the .3dsx's RomFS
+// section (CMakeLists.txt's FLASH3DS_BUILD_3DS block does this
+// automatically from the checked-in romfs/ directory on every build).
 //
 // This file is only compiled for the 3DS target (guarded by __3DS__).
 
@@ -43,25 +48,27 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 #include "audio/Nintendo3DSAudioBackend.h"
-#include "platform/EmbeddedDemoSwf.h"
 #include "platform/Log.h"
 #include "platform/Nintendo3DSInput.h"
+#include "platform/Nintendo3DSRomfs.h"
 #include "renderer/IRenderer.h"
 #include "renderer/Nintendo3DSRenderer.h"
 #include "renderer/SceneRenderer.h"
 #include "renderer/ShapeTessellator.h"
 #include "runtime/CharacterDictionary.h"
 #include "runtime/MovieClipInstance.h"
-#include "swf/SwfLoader.h"
 #include "swf/SwfRecords.h"
+#include "vc/GamePackage.h"
 
 using flash3ds::Log;
 using flash3ds::LogLevel;
 using flash3ds::audio::Nintendo3DSAudioBackend;
 using flash3ds::platform::Nintendo3DSInput;
+using flash3ds::platform::Nintendo3DSRomfs;
 using flash3ds::renderer::IRenderer;
 using flash3ds::renderer::Nintendo3DSRenderer;
 using flash3ds::renderer::PointTwips;
@@ -70,7 +77,7 @@ using flash3ds::runtime::CharacterDictionary;
 using flash3ds::runtime::MovieClipInstance;
 using flash3ds::runtime::ScriptEnvironment;
 using flash3ds::swf::RgbaColor;
-using flash3ds::swf::SwfLoader;
+using flash3ds::vc::GamePackage;
 
 namespace {
 
@@ -177,11 +184,90 @@ void drawButtonTestScreen(IRenderer& renderer, u32 held) {
     renderer.endFrame();
 }
 
+// Which of showFatalErrorScreen()'s callers is reporting -- see that
+// function's own comment for why this needs to be visually countable
+// rather than just logged. Numbered in the order main() checks them.
+enum class FatalError {
+    kRomfsOpenFailed = 1,
+    kInvalidMovie = 2,
+    kNoRootMovieClip = 3,
+};
+
+// Shows a solid-color error screen on both LCDs, with `errorCode` small
+// white squares drawn in the top screen's top-left corner, and blocks
+// until START+SELECT is held, instead of the app just vanishing.
+//
+// Added 2026-08-19 while diagnosing a "loads in Azahar, then freezes and
+// quits" report: every early-failure path here used to just call
+// gfxExit()/return after an invisible LOG_ERROR (see Log.cpp's
+// svcOutputDebugString addition, same date, for the other half of this
+// fix) -- so a config/RomFS/SWF failure and an actual crash were
+// indistinguishable to whoever was watching the screen. A solid red
+// screen that STAYS UP (rather than a black screen that vanishes) is a
+// clear, low-effort signal that this is a handled error, not a hang --
+// distinguishing "the app is telling you something's wrong" from "the app
+// died" is the whole point. The specific reason always still goes to
+// LOG_ERROR (visible via svcOutputDebugString in an emulator's own Log
+// Viewer, e.g. Citra/Azahar's Debug menu) -- but that's not reachable from
+// every platform testers might use (e.g. iOS emulators typically expose
+// no such log view), so the square count is a second, universally-visible
+// encoding of WHICH check failed, needing no font rendering (none is
+// available in this project -- see docs/architecture.md) or log access at
+// all: just count the squares and report the number back.
+// `subCode` (0 = none) draws a SECOND row of squares on the BOTTOM screen
+// -- used for a sub-reason within one top-level FatalError category (e.g.
+// which of Nintendo3DSRomfs::OpenFailure's ~10 checks actually failed
+// inside a kRomfsOpenFailed). Kept on a different screen than the
+// top-level `error` count specifically so the two numbers can never be
+// misread as one combined count.
+void showFatalErrorScreen(IRenderer& top, IRenderer& bottom, FatalError error, int subCode = 0) {
+    constexpr RgbaColor kErrorColor{200, 30, 30, 255};
+    constexpr RgbaColor kMarkerColor{255, 255, 255, 255};
+    const int markerCount = static_cast<int>(error);
+
+    while (aptMainLoop()) {
+        hidScanInput();
+        const u32 kHeld = hidKeysHeld();
+        if ((kHeld & KEY_START) && (kHeld & KEY_SELECT)) {
+            break;
+        }
+
+        top.beginFrame(kErrorColor);
+        for (int i = 0; i < markerCount; ++i) {
+            drawFilledRect(top, 12 + i * 24, 12, 16, 16, kMarkerColor);
+        }
+        top.endFrame();
+        bottom.beginFrame(kErrorColor);
+        for (int i = 0; i < subCode; ++i) {
+            drawFilledRect(bottom, 12 + i * 24, 12, 16, 16, kMarkerColor);
+        }
+        bottom.endFrame();
+        Nintendo3DSRenderer::presentFrame();
+
+        gspWaitForVBlank();
+    }
+}
+
+// Routes every Log::log() call through svcOutputDebugString as well as
+// whatever setSink() (stderr, by default) points at -- see Log.h's
+// setDebugCallback() doc comment for why this is needed at all on this
+// target specifically. svcOutputDebugString is an ordinary public libctru
+// SVC call, needs no filesystem/console setup, and Citra/Azahar's own Log
+// Viewer displays it; real hardware silently ignores it if nothing is
+// attached to observe it, so registering this is harmless either way.
+void logToDebugSvc(flash3ds::LogLevel level, const char* category, const char* message) {
+    (void)level;
+    char buf[560];
+    std::snprintf(buf, sizeof(buf), "[%s] %s", category, message);
+    svcOutputDebugString(buf, static_cast<s32>(std::strlen(buf)));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     (void)argc;
-    (void)argv;
+
+    flash3ds::Log::setDebugCallback(logToDebugSvc);
 
     // NOTE: no consoleInit()/consoleDebugInit() call here -- libctru's
     // console.c is one of the files this from-source toolchain build
@@ -201,20 +287,53 @@ int main(int argc, char** argv) {
     constexpr int kBottomWidth = 320;
     constexpr int kBottomHeight = 240;
 
-    auto movie = SwfLoader::loadSwf(flash3ds::platform::kEmbeddedDemoSwf,
-                                     flash3ds::platform::kEmbeddedDemoSwfSize);
-    // The embedded demo is generated by tools/gen_3ds_demo_swf.py and
-    // independently verified (byte-for-byte, via the desktop flash_runtime
-    // CLI's --render, before being committed -- see docs/3ds-toolchain.md)
-    // to load and parse successfully, so a failure here means the embed
-    // itself is corrupt, not a runtime-content issue. Treat it as fatal
-    // rather than threading a "maybe there's no movie" case through every
-    // object below (CharacterDictionary/ScriptEnvironment/MovieClipInstance/
-    // SceneRenderer all assume a valid Movie that outlives them, same as
-    // the desktop CLI's own main() does -- see tools/flash_runtime/main.cpp).
+    // Constructed up front (before any RomFS/config/SWF work below) purely
+    // so showFatalErrorScreen() has a screen to draw on for every failure
+    // path, including the very first one -- these are cheap to build
+    // (SoftwareRenderer allocation only, see Nintendo3DSRenderer.h) and
+    // were already unconditionally constructed later in this same
+    // function on the success path, just moved up.
+    Nintendo3DSRenderer topRenderer(kTopWidth, kTopHeight, GFX_TOP);
+    Nintendo3DSRenderer bottomRenderer(kBottomWidth, kBottomHeight, GFX_BOTTOM);
+
+    // --- Virtual Console resource layer: RomFS -> GamePackage -----------
+    // See Nintendo3DSRomfs.h for why this ISN'T libctru's own romfsInit(),
+    // and docs/virtual-console.md for the full design. `romfs` must
+    // outlive `movie` below (a real RomFS-loaded movie owns no bytes of
+    // its own -- Movie::data is a plain std::vector filled from the fetch
+    // callback's own copy -- but `romfs`'s FSFILE handle is only needed
+    // during the fetch itself, so this ordering is a "keep it simple, one
+    // clear owner per resource" choice, not a strict lifetime requirement).
+    Nintendo3DSRomfs romfs;
+    Nintendo3DSRomfs::OpenFailure romfsFailure = Nintendo3DSRomfs::OpenFailure::kNone;
+    if (!romfs.open(argv[0], &romfsFailure)) {
+        LOG_ERROR("3DS", "Failed to open this app's own embedded RomFS section (see the "
+                          "Nintendo3DSRomfs::open log line above for the specific reason) -- was "
+                          "this .3dsx built with --romfs=... ? (see CMakeLists.txt) -- "
+                          "OpenFailure code=%d", static_cast<int>(romfsFailure));
+        showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kRomfsOpenFailed,
+                              static_cast<int>(romfsFailure));
+        gfxExit();
+        return 1;
+    }
+
+    GamePackage package = flash3ds::vc::buildGamePackage(
+        [&romfs](const std::string& name, std::vector<uint8_t>& outBytes) {
+            return romfs.readFile(name, outBytes);
+        });
+
+    // "Invalid SWF: produce a clear runtime error" / "Missing game.swf:
+    // produce a clear runtime error" (docs/virtual-console.md) -- both
+    // cases are already surfaced as a specific, human-readable
+    // movie->errorMessage by buildGamePackage()/SwfLoader (see
+    // vc/GamePackage.cpp), so this check and its log line stay generic on
+    // purpose; the SPECIFIC reason is always in errorMessage, not
+    // hardcoded here.
+    auto& movie = package.movie;
     if (!movie || !movie->valid) {
-        LOG_ERROR("3DS", "Embedded demo movie failed to load/parse -- this is a build-time bug, "
-                          "not a content issue (see EmbeddedDemoSwf.h)");
+        LOG_ERROR("3DS", "Could not load '%s': %s", package.config.swfFilename.c_str(),
+                   movie ? movie->errorMessage.c_str() : "(no Movie produced)");
+        showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kInvalidMovie);
         gfxExit();
         return 1;
     }
@@ -225,21 +344,34 @@ int main(int argc, char** argv) {
     Nintendo3DSAudioBackend audioBackend;
     env.setAudioBackend(&audioBackend);
 
-    Nintendo3DSInput input(kTopWidth, kTopHeight);
+    // The touch digitizer is only a physical thing on the BOTTOM screen on
+    // real 3DS hardware -- config.ini's [touch] screen= selects which
+    // LOGICAL screen dimensions Nintendo3DSInput rescales raw touch
+    // coordinates into (see vc::InputMapping, GameConfig.h), defaulting to
+    // "bottom" (320x240), the hardware-accurate choice. This also fixes a
+    // pre-existing Phase 10 quirk documented in Nintendo3DSInput.h's own
+    // header comment: the embedded-demo app used to always pass the TOP
+    // screen's dimensions here regardless of which screen was actually
+    // being touched -- now genuinely configurable instead of hardcoded.
+    const int touchScreenWidth = package.config.input.touchUsesBottomScreen ? kBottomWidth : kTopWidth;
+    const int touchScreenHeight =
+        package.config.input.touchUsesBottomScreen ? kBottomHeight : kTopHeight;
+    Nintendo3DSInput input(touchScreenWidth, touchScreenHeight, package.config.input);
 
     auto root = MovieClipInstance::createRoot(*movie, characters, env);
     if (!root) {
-        LOG_ERROR("3DS", "Embedded demo movie parsed but produced no root MovieClip (no frames?)");
+        LOG_ERROR("3DS", "'%s' parsed but produced no root MovieClip (no frames?)",
+                   package.config.swfFilename.c_str());
+        showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kNoRootMovieClip);
         gfxExit();
         return 1;
     }
 
-    Nintendo3DSRenderer topRenderer(kTopWidth, kTopHeight, GFX_TOP);
-    Nintendo3DSRenderer bottomRenderer(kBottomWidth, kBottomHeight, GFX_BOTTOM);
     SceneRenderer scene(*movie, characters);
 
-    // Frame-rate pacing: the embedded demo declares 12fps; advance the
-    // movie's own timeline at that rate regardless of the 3DS's ~60Hz
+    // Frame-rate pacing: advance the loaded movie's own timeline at
+    // whatever frame rate ITS OWN header declares (falling back to 12fps
+    // only if that field is somehow zero), regardless of the 3DS's ~60Hz
     // vblank, so playback speed matches what the SWF actually specifies
     // rather than running 5x too fast. gspWaitForVBlank() is still called
     // every iteration (throttles the render/input loop to vsync, avoiding

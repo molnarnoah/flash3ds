@@ -31,6 +31,27 @@
 //     SELECT/D-Pad have SOME InputState key code to test edge detection
 //     against — previously L/R weren't fed into InputState at all.
 //
+// Virtual Console resource layer (2026-08-19): every mapping above is now
+// CONFIGURABLE via vc::InputMapping (src/vc/GameConfig.h), sourced from a
+// packaged game's config.ini [input]/[touch]/[mouse] sections — see
+// docs/virtual-console.md. This class still owns 100% of the actual
+// libctru hid polling/rescaling logic unchanged; the only thing that
+// became a constructor parameter is WHICH InputState key code each
+// physical button maps to, and whether touch/mouse are fed into
+// InputState at all. The mapping struct's own default values exactly
+// match this file's ORIGINAL hardcoded behavior for D-Pad/A/B/START/
+// SELECT (Key.LEFT/RIGHT/UP/DOWN, Key.ENTER, Key.ESCAPE), touch (enabled),
+// and mouse (enabled) — a caller that never touches config.ini gets
+// unchanged behavior for those. The one deliberate exception: X/Y's
+// documented default changed from literal ASCII 'X'/'Y' to Key.SPACE/
+// Key.SHIFT, to match vc::GameConfig's own documented default config.ini
+// (see GameConfig.h) — AS2 content is far more likely to test
+// Key.SPACE/Key.SHIFT than literal 'X'/'Y' character codes, and having
+// ONE canonical default (shared by "no config.ini present" and "config.ini
+// present with the documented example values") was worth this small,
+// clearly-documented behavior change over preserving the old accidental
+// default. L/R's default (ASCII 'L'/'R') is unchanged.
+//
 // Edge detection (input-transitions phase, 2026-08-19): poll() now calls
 // InputState::commitFrame() as its LAST step, once per call — see that
 // method's doc comment (runtime/InputState.h) for the full model. This is
@@ -51,6 +72,7 @@
 #include <3ds.h>
 
 #include "runtime/InputState.h"
+#include "vc/GameConfig.h"
 
 namespace flash3ds::platform {
 
@@ -73,7 +95,13 @@ public:
     // whatever movie is actually loaded (which may not even be known yet
     // at construction time — see docs/input.md). Just pass whatever screen
     // pixel dimensions are actually being touched/rendered to.
-    Nintendo3DSInput(int screenWidthPixels, int screenHeightPixels);
+    // `mapping` supplies the physical-button->InputState-keycode table and
+    // the touch/mouse enabled flags (see vc::InputMapping, GameConfig.h) —
+    // defaults to InputMapping{}'s own default values, which reproduce
+    // this class's original hardcoded behavior except for X/Y (see this
+    // file's header comment for why that one default changed).
+    Nintendo3DSInput(int screenWidthPixels, int screenHeightPixels,
+                      const vc::InputMapping& mapping = vc::InputMapping{});
 
     // Call once per frame, after hidScanInput(), before reading
     // InputState. Updates `state` in place.
@@ -82,6 +110,7 @@ public:
 private:
     int screenWidth_;
     int screenHeight_;
+    vc::InputMapping mapping_;
     // Raw (untransformed) touch-panel logical resolution, per libctru
     // convention (320x240) — used only if the caller's screen dimensions
     // differ, to rescale touch::px/py into the caller's space.
