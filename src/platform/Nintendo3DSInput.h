@@ -52,6 +52,17 @@
 // clearly-documented behavior change over preserving the old accidental
 // default. L/R's default (ASCII 'L'/'R') is unchanged.
 //
+// ZL/ZR/C-Stick (2026-08-24): New-3DS-only controls, polled the exact same
+// way as every other digital button above (they're just more bits in
+// hidKeysHeld() — libctru exposes KEY_ZL/KEY_ZR and four separate
+// KEY_CSTICK_UP/DOWN/LEFT/RIGHT held-bits; the latter are NOT merged into
+// KEY_UP/DOWN/LEFT/RIGHT the way the Circle Pad is, so C-Stick needs its
+// own four entries rather than piggybacking on the D-Pad's). All six are
+// configurable via vc::InputMapping exactly like L/R/A/B/X/Y/START/SELECT
+// — see GameConfig.h's InputMapping fields for the chosen defaults and why
+// C-Stick deliberately does NOT default to the same codes as the D-Pad's
+// fixed arrow-key mapping.
+//
 // Edge detection (input-transitions phase, 2026-08-19): poll() now calls
 // InputState::commitFrame() as its LAST step, once per call — see that
 // method's doc comment (runtime/InputState.h) for the full model. This is

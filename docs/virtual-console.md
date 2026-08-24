@@ -78,8 +78,14 @@ X=SPACE
 Y=SHIFT
 L=L
 R=R
+ZL=Z
+ZR=V
 START=ENTER
 SELECT=ESCAPE
+CSTICK_UP=I
+CSTICK_DOWN=K
+CSTICK_LEFT=J
+CSTICK_RIGHT=M
 
 [touch]
 enabled=true
@@ -162,7 +168,8 @@ with CIAToolsR's own separate icon/banner requirements — see section 8.
 ## 5. Input mapping
 
 `vc::InputMapping` (`src/vc/GameConfig.h`) holds one `int` per remappable
-physical button (A/B/X/Y/L/R/START/SELECT), reusing
+physical button (A/B/X/Y/L/R/ZL/ZR/START/SELECT/CSTICK_UP/CSTICK_DOWN/
+CSTICK_LEFT/CSTICK_RIGHT), reusing
 `runtime::InputState::KeyCode` for every named token (`ENTER`, `ESCAPE`,
 `SPACE`, `SHIFT`, ... — the exact same enum `InputState`, AVM1's `Key`
 object, and every other existing consumer already use) plus direct
@@ -196,6 +203,22 @@ value) to `Key.SPACE`/`Key.SHIFT`, to match this layer's own documented
 default `config.ini` (AS2 content is far more likely to test
 `Key.SPACE`/`Key.SHIFT` than literal `'X'`/`'Y'` character codes). L/R's
 default (`'L'`/`'R'`) is unchanged.
+
+**ZL/ZR/C-Stick (2026-08-24):** the New-3DS-only extra shoulder buttons
+and second analog stick are mapped exactly like every button above — same
+`applyKeyMapping()` parsing path, same `Nintendo3DSInput` OR-merge table.
+ZL/ZR default to `'Z'`/`'V'` (arbitrary, documented, rebindable — see
+`GameConfig.h`). The C-Stick is exposed by libctru as four independent
+digital held-bits (`KEY_CSTICK_UP`/`DOWN`/`LEFT`/`RIGHT`), **not** merged
+into `KEY_UP`/`DOWN`/`LEFT`/`RIGHT` the way the Circle Pad is — so it polls
+like four more ordinary buttons rather than a stick with its own analog
+reading, and each direction gets its own `CSTICK_UP`/`CSTICK_DOWN`/
+`CSTICK_LEFT`/`CSTICK_RIGHT` config.ini key (default `'I'`/`'K'`/`'J'`/
+`'M'`). These deliberately do NOT default to `Key.UP`/`DOWN`/`LEFT`/
+`RIGHT` (the D-Pad's own fixed target) — the D-Pad's arrow-key
+`setKeyDown()` calls happen outside the OR-merge pass, so sharing its
+codes by default would let the OR-merge pass silently overwrite whatever
+the D-Pad had just set that same tick.
 
 ## 6. Touch/mouse configuration
 
@@ -354,8 +377,10 @@ invented):**
   algorithm the ARM code implements (section 7) and against
   `docs/3ds-toolchain.md`'s own prior Phase-10 boot confirmation (Azahar)
   for everything this layer builds on top of unchanged.
-- `[input]` remapping covers A/B/X/Y/L/R/START/SELECT only — the D-Pad's
-  arrow-key mapping is fixed (see section 5).
+- `[input]` remapping covers A/B/X/Y/L/R/ZL/ZR/START/SELECT/C-Stick
+  (four directions) — the D-Pad/Circle-Pad's arrow-key mapping is fixed
+  (see section 5). *(Updated 2026-08-24: ZL/ZR/C-Stick were added this
+  session — previously only A/B/X/Y/L/R/START/SELECT were configurable.)*
 - Config values are read once at startup; there is no live-reload of
   `config.ini` while the app is running.
 

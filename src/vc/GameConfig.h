@@ -43,6 +43,39 @@ struct InputMapping {
     int startKeyCode = runtime::InputState::kEnter;
     int selectKeyCode = runtime::InputState::kEscape;
 
+    // ZL/ZR (2026-08-24): New-3DS-only extra shoulder buttons -- same
+    // "no natural Key.* equivalent, so a documented arbitrary printable-
+    // character default" convention L/R already established (see this
+    // struct's own header comment and Nintendo3DSInput.h). Deliberately
+    // NOT 'L'/'R' themselves (that would only be confusing once both the
+    // original and the New-3DS-only shoulder pair exist) -- 'Z' comes from
+    // the "Z trigger" naming a lot of other pads use for a similar third/
+    // fourth shoulder button; 'V' has no particular mnemonic beyond "free,
+    // unused, doesn't collide with any other field's default" and is kept
+    // that way in the doc rather than implying a meaning it doesn't have.
+    int zlKeyCode = 'Z';
+    int zrKeyCode = 'V';
+
+    // C-Stick (2026-08-24): New-3DS-only second analog stick. libctru
+    // exposes it as four independent HELD-key bits (KEY_CSTICK_UP/DOWN/
+    // LEFT/RIGHT), NOT merged into KEY_UP/DOWN/LEFT/RIGHT the way the
+    // Circle Pad is (see Nintendo3DSInput.cpp) -- so it polls exactly like
+    // any other digital button here, four of them. Deliberately given ITS
+    // OWN distinct default codes rather than defaulting to
+    // InputState::kUp/kDown/kLeft/kRight (the D-Pad/Circle-Pad's fixed,
+    // non-configurable target): D-Pad's arrow-key feed happens outside the
+    // OR-merge mechanism below (see poll()), so folding C-Stick into the
+    // same codes by default would make the LATER OR-merge pass silently
+    // overwrite whatever the D-Pad's earlier, unconditional setKeyDown()
+    // call had just set -- a real correctness hazard, not just a style
+    // choice. 'I'/'K'/'J'/'M' are an arbitrary-but-documented, rebindable-
+    // via-config.ini convention (same status as every other field here),
+    // chosen only to avoid colliding with any existing default above.
+    int cStickUpKeyCode = 'I';
+    int cStickDownKeyCode = 'K';
+    int cStickLeftKeyCode = 'J';
+    int cStickRightKeyCode = 'M';
+
     bool touchEnabled = true;
     // "bottom" (default, the real touch-digitizer screen on hardware) or
     // "top" -- accepted for generality/testability, but not physically
@@ -59,6 +92,11 @@ struct InputMapping {
                xKeyCode == other.xKeyCode && yKeyCode == other.yKeyCode &&
                lKeyCode == other.lKeyCode && rKeyCode == other.rKeyCode &&
                startKeyCode == other.startKeyCode && selectKeyCode == other.selectKeyCode &&
+               zlKeyCode == other.zlKeyCode && zrKeyCode == other.zrKeyCode &&
+               cStickUpKeyCode == other.cStickUpKeyCode &&
+               cStickDownKeyCode == other.cStickDownKeyCode &&
+               cStickLeftKeyCode == other.cStickLeftKeyCode &&
+               cStickRightKeyCode == other.cStickRightKeyCode &&
                touchEnabled == other.touchEnabled &&
                touchUsesBottomScreen == other.touchUsesBottomScreen &&
                mouseEnabled == other.mouseEnabled;

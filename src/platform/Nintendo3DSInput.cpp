@@ -92,16 +92,32 @@ void Nintendo3DSInput::poll(runtime::InputState& state) {
     // first time that code is encountered (fixed A/B/X/Y/L/R/START/SELECT
     // order, so behavior is deterministic even when multiple buttons that
     // share a code are held in the same tick).
-    constexpr int kPhysicalButtonCount = 8;
+    // ZL/ZR/C-Stick (2026-08-24) join this SAME OR-merge table rather than
+    // getting their own separate setKeyDown() calls — for exactly the
+    // reason the comment above already explains for A/START etc.: any
+    // future config.ini could map one of these six to a code an existing
+    // button already targets (or to each other), and only routing every
+    // configurable button through one shared per-code OR-merge pass keeps
+    // that safe. They are NOT mixed with the D-Pad's arrow-key setKeyDown()
+    // calls above, which is deliberate — see GameConfig.h's InputMapping
+    // C-Stick fields for why that would be a correctness hazard, not just
+    // a style choice.
+    constexpr int kPhysicalButtonCount = 14;
     const int targetCodes[kPhysicalButtonCount] = {
-        mapping_.aKeyCode,     mapping_.bKeyCode,      mapping_.xKeyCode, mapping_.yKeyCode,
-        mapping_.lKeyCode,     mapping_.rKeyCode,      mapping_.startKeyCode,
-        mapping_.selectKeyCode,
+        mapping_.aKeyCode,      mapping_.bKeyCode,          mapping_.xKeyCode,
+        mapping_.yKeyCode,      mapping_.lKeyCode,          mapping_.rKeyCode,
+        mapping_.startKeyCode,  mapping_.selectKeyCode,     mapping_.zlKeyCode,
+        mapping_.zrKeyCode,     mapping_.cStickUpKeyCode,   mapping_.cStickDownKeyCode,
+        mapping_.cStickLeftKeyCode, mapping_.cStickRightKeyCode,
     };
     const bool physicalDown[kPhysicalButtonCount] = {
-        (held & KEY_A) != 0,     (held & KEY_B) != 0,     (held & KEY_X) != 0,
-        (held & KEY_Y) != 0,     (held & KEY_L) != 0,     (held & KEY_R) != 0,
-        (held & KEY_START) != 0, (held & KEY_SELECT) != 0,
+        (held & KEY_A) != 0,           (held & KEY_B) != 0,
+        (held & KEY_X) != 0,           (held & KEY_Y) != 0,
+        (held & KEY_L) != 0,           (held & KEY_R) != 0,
+        (held & KEY_START) != 0,       (held & KEY_SELECT) != 0,
+        (held & KEY_ZL) != 0,          (held & KEY_ZR) != 0,
+        (held & KEY_CSTICK_UP) != 0,   (held & KEY_CSTICK_DOWN) != 0,
+        (held & KEY_CSTICK_LEFT) != 0, (held & KEY_CSTICK_RIGHT) != 0,
     };
     for (int i = 0; i < kPhysicalButtonCount; ++i) {
         bool alreadyHandled = false;

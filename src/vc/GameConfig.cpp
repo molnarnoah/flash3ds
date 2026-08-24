@@ -113,6 +113,15 @@ GameConfig GameConfig::fromIniText(const std::string& iniText) {
     applyKeyMapping(doc, "input", "R", config.input.rKeyCode);
     applyKeyMapping(doc, "input", "START", config.input.startKeyCode);
     applyKeyMapping(doc, "input", "SELECT", config.input.selectKeyCode);
+    // ZL/ZR/C-Stick (2026-08-24) -- same applyKeyMapping() path as every
+    // other button above; see GameConfig.h's InputMapping fields for why
+    // each one's default was chosen.
+    applyKeyMapping(doc, "input", "ZL", config.input.zlKeyCode);
+    applyKeyMapping(doc, "input", "ZR", config.input.zrKeyCode);
+    applyKeyMapping(doc, "input", "CSTICK_UP", config.input.cStickUpKeyCode);
+    applyKeyMapping(doc, "input", "CSTICK_DOWN", config.input.cStickDownKeyCode);
+    applyKeyMapping(doc, "input", "CSTICK_LEFT", config.input.cStickLeftKeyCode);
+    applyKeyMapping(doc, "input", "CSTICK_RIGHT", config.input.cStickRightKeyCode);
 
     applyBool(doc, "touch", "enabled", config.input.touchEnabled);
     if (auto screen = doc.getString("touch", "screen")) {

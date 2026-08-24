@@ -48,6 +48,12 @@ TEST_CASE(GameConfig_Defaults_MatchDocumentedConfigIniExample) {
     CHECK_EQ(config.input.rKeyCode, static_cast<int>('R'));
     CHECK_EQ(config.input.startKeyCode, InputState::kEnter);
     CHECK_EQ(config.input.selectKeyCode, InputState::kEscape);
+    CHECK_EQ(config.input.zlKeyCode, static_cast<int>('Z'));
+    CHECK_EQ(config.input.zrKeyCode, static_cast<int>('V'));
+    CHECK_EQ(config.input.cStickUpKeyCode, static_cast<int>('I'));
+    CHECK_EQ(config.input.cStickDownKeyCode, static_cast<int>('K'));
+    CHECK_EQ(config.input.cStickLeftKeyCode, static_cast<int>('J'));
+    CHECK_EQ(config.input.cStickRightKeyCode, static_cast<int>('M'));
     CHECK(config.input.touchEnabled);
     CHECK(config.input.touchUsesBottomScreen);
     CHECK(config.input.mouseEnabled);
@@ -160,6 +166,39 @@ TEST_CASE(GameConfig_LRMapping_Parses) {
     GameConfig config = GameConfig::fromIniText("[input]\nL=UP\nR=DOWN\n");
     CHECK_EQ(config.input.lKeyCode, InputState::kUp);
     CHECK_EQ(config.input.rKeyCode, InputState::kDown);
+}
+
+TEST_CASE(GameConfig_ZLZRMapping_Parses) {
+    GameConfig config = GameConfig::fromIniText("[input]\nZL=UP\nZR=DOWN\n");
+    CHECK_EQ(config.input.zlKeyCode, InputState::kUp);
+    CHECK_EQ(config.input.zrKeyCode, InputState::kDown);
+}
+
+TEST_CASE(GameConfig_CStickMapping_ParsesAllFourDirections) {
+    GameConfig config = GameConfig::fromIniText(
+        "[input]\n"
+        "CSTICK_UP=W\n"
+        "CSTICK_DOWN=S\n"
+        "CSTICK_LEFT=A\n"
+        "CSTICK_RIGHT=D\n");
+    CHECK_EQ(config.input.cStickUpKeyCode, static_cast<int>('W'));
+    CHECK_EQ(config.input.cStickDownKeyCode, static_cast<int>('S'));
+    CHECK_EQ(config.input.cStickLeftKeyCode, static_cast<int>('A'));
+    CHECK_EQ(config.input.cStickRightKeyCode, static_cast<int>('D'));
+}
+
+TEST_CASE(GameConfig_InvalidZLToken_FallsBackToFieldDefault_OthersUnaffected) {
+    GameConfig config = GameConfig::fromIniText(
+        "[input]\n"
+        "ZL=NOT_A_REAL_KEY\n"
+        "ZR=UP\n");
+    CHECK_EQ(config.input.zlKeyCode, static_cast<int>('Z'));  // invalid -- kept default
+    CHECK_EQ(config.input.zrKeyCode, InputState::kUp);        // valid -- parsed normally
+}
+
+TEST_CASE(GameConfig_InvalidCStickToken_FallsBackToFieldDefault) {
+    GameConfig config = GameConfig::fromIniText("[input]\nCSTICK_UP=TOOLONG\n");
+    CHECK_EQ(config.input.cStickUpKeyCode, static_cast<int>('I'));  // invalid -- kept default
 }
 
 TEST_CASE(GameConfig_SharedKeyCode_BothFieldsResolveToSameCode) {
