@@ -9,6 +9,7 @@
 // buffers with no HostBindings wired up.
 
 #include <cmath>
+#include <unordered_map>
 
 #include "Avm1TestFixtures.h"
 #include "SwfTestFixtures.h"
@@ -16,6 +17,7 @@
 #include "audio/IAudioBackend.h"
 #include "avm1/Value.h"
 #include "runtime/CharacterDictionary.h"
+#include "runtime/IFileLoader.h"
 #include "runtime/MovieClipInstance.h"
 #include "swf/PlaceObjectTag.h"
 #include "swf/SwfLoader.h"
@@ -24,6 +26,7 @@
 namespace swf_fixtures = flash3ds::test::fixtures;
 using flash3ds::avm1::Value;
 using flash3ds::runtime::CharacterDictionary;
+using flash3ds::runtime::IFileLoader;
 using flash3ds::runtime::MovieClipInstance;
 using flash3ds::runtime::ScriptEnvironment;
 using flash3ds::swf::SwfLoader;
@@ -112,6 +115,65 @@ std::vector<uint8_t> buildMovieWithNamedChild(uint16_t rootFrames, uint16_t spri
         tags.push_back({1 /* ShowFrame */, {}});
     }
     auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, rootFrames, tags);
+    return swf_fixtures::wrapFws(6, body);
+}
+
+// Roadmap Phase 4 (2026-08-21, loadMovie): a tiny in-memory IFileLoader —
+// maps URL strings to pre-built SWF byte buffers, so loadMovie() tests
+// don't need real filesystem I/O (that's what test_local_file_loader.cpp
+// covers instead, for LocalFileLoader itself).
+class MapFileLoader : public IFileLoader {
+public:
+    void add(const std::string& url, std::vector<uint8_t> bytes) {
+        files_[url] = std::move(bytes);
+    }
+    std::optional<std::vector<uint8_t>> loadFile(const std::string& url) override {
+        auto it = files_.find(url);
+        if (it == files_.end()) return std::nullopt;
+        return it->second;
+    }
+
+private:
+    std::unordered_map<std::string, std::vector<uint8_t>> files_;
+};
+
+// A 200x150px, `frameCount`-frame movie whose frame 1 DoAction body is
+// `actionBytes` — a distinct stage size/frame count from
+// buildRootScriptMovie()'s 100x100px/1-frame shape, so a loadMovie() test
+// can tell "the target clip's timeline was genuinely replaced" apart from
+// "it happened to look the same by coincidence."
+std::vector<uint8_t> buildLoadableSubMovie(uint16_t frameCount,
+                                             const std::vector<uint8_t>& actionBytes) {
+    std::vector<swf_fixtures::FixtureTag> tags;
+    if (!actionBytes.empty()) {
+        tags.push_back({static_cast<uint16_t>(TagCode::DoAction), actionBytes});
+    }
+    for (uint16_t f = 0; f < frameCount; ++f) tags.push_back({1 /* ShowFrame */, {}});
+    auto body = swf_fixtures::buildMovieBody(200 * 20, 150 * 20, 12.0, frameCount, tags);
+    return swf_fixtures::wrapFws(6, body);
+}
+
+// A 100x100px, 1-frame movie defining (but NOT placing) a sprite character
+// (id=20) and exporting it via ExportAssets under `linkageName` — used by
+// the Roadmap Phase 4 attachMovie() tests (2026-08-21): attachMovie()
+// needs a linkage-name-exported symbol to resolve, and (unlike
+// buildMovieWithNamedChild) the sprite must start UNPLACED so the test can
+// observe attachMovie() actually creating the instance, rather than one
+// already existing from a PlaceObject2 tag.
+std::vector<uint8_t> buildMovieWithExportedSprite(const std::string& linkageName,
+                                                    const std::vector<uint8_t>& actionBytes) {
+    std::vector<swf_fixtures::FixtureTag> nestedTags = {{1 /* ShowFrame */, {}}};
+    auto spriteBody = swf_fixtures::buildDefineSpriteBytes(/*characterId=*/20, 1, nestedTags);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSprite), spriteBody},
+        {56 /* ExportAssets */, swf_fixtures::buildExportAssetsBytes({{20, linkageName}})},
+    };
+    if (!actionBytes.empty()) {
+        tags.push_back({static_cast<uint16_t>(TagCode::DoAction), actionBytes});
+    }
+    tags.push_back({1 /* ShowFrame */, {}});
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
     return swf_fixtures::wrapFws(6, body);
 }
 
@@ -215,10 +277,30 @@ public:
         uint16_t soundId;
         int loopCount;
     };
+    // Roadmap Phase 3 (2026-08-21, MP3 decode) addition: records
+    // loadSound() calls too, so a test can verify real decoded PCM reached
+    // the backend (non-empty `samples`, plausible sampleRate/channels)
+    // BEFORE the matching playSound() call — see
+    // MovieClipInstance_StartSoundTag_Mp3Payload_DecodesAndLoadsPcmBeforePlay
+    // below. `samples` is copied (not just the pointer) since
+    // IAudioBackend::loadSound()'s contract only guarantees the pointer is
+    // valid for the duration of the call.
+    struct LoadCall {
+        uint16_t soundId;
+        std::vector<int16_t> samples;
+        int sampleRate;
+        int channels;
+    };
+    std::vector<LoadCall> loadCalls;
     std::vector<PlayCall> playCalls;
     std::vector<uint16_t> stopCalls;
     int stopAllCalls = 0;
 
+    void loadSound(uint16_t soundId, const int16_t* samples, size_t sampleCount, int sampleRate,
+                    int channels) override {
+        loadCalls.push_back({soundId, std::vector<int16_t>(samples, samples + sampleCount),
+                              sampleRate, channels});
+    }
     void playSound(uint16_t soundId, int loopCount) override {
         playCalls.push_back({soundId, loopCount});
     }
@@ -1289,6 +1371,83 @@ TEST_CASE(MovieClipInstance_ClipActions_LoadOnCreation_EnterFramePerTick_UnloadO
     CHECK_EQ(root->children().size(), static_cast<size_t>(0));
 }
 
+// Roadmap Phase 3 (2026-08-21, MP3 audio decode): end-to-end coverage that
+// a real MP3-format DefineSound + StartSound tag pair actually reaches
+// IAudioBackend::loadSound() with real, non-silent decoded PCM BEFORE
+// playSound() fires for it — not just that playSound() was called (that
+// much was already covered by the pre-Phase-3 test right below this one).
+TEST_CASE(MovieClipInstance_StartSoundTag_Mp3Payload_DecodesAndLoadsPcmBeforePlay) {
+    const auto& mp3Frames = swf_fixtures::sampleMp3AudioBytes();
+    std::vector<uint8_t> mp3SoundData;
+    mp3SoundData.push_back(0x00);  // SeekSamples low byte (unused by this runtime)
+    mp3SoundData.push_back(0x00);  // SeekSamples high byte
+    mp3SoundData.insert(mp3SoundData.end(), mp3Frames.begin(), mp3Frames.end());
+
+    // format=2 (swf::SoundFormat::kMp3), rate=3 (44100Hz), is16Bit=true,
+    // stereo=false -- matches sampleMp3AudioBytes()'s real encoding
+    // (mono, 44100Hz). sampleCount is the real decoded-frame count for
+    // this exact fixture (see test_mp3_decoder.cpp's
+    // DecodeMp3_RealPayload_ProducesNonSilentPcm, which decodes the same
+    // bytes and asserts on the same count indirectly) -- not load-bearing
+    // for this test (nothing here checks SoundDef::sampleCount), just
+    // realistic.
+    auto soundBody = swf_fixtures::buildDefineSoundBytes(
+        /*soundId=*/42, /*format=*/2, /*rate=*/3, /*is16Bit=*/true, /*stereo=*/false,
+        /*sampleCount=*/4608, mp3SoundData);
+    auto soundInfo =
+        swf_fixtures::buildSoundInfoBytes(false, false, std::nullopt, std::nullopt, std::nullopt);
+    auto startSoundBody = swf_fixtures::buildStartSoundBytes(42, soundInfo);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSound), soundBody},
+        {static_cast<uint16_t>(TagCode::StartSound), startSoundBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = swf_fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    SpyAudioBackend spy;
+    env.setAudioBackend(&spy);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    // loadSound() must have happened, with real decoded PCM, BEFORE
+    // playSound() -- both the ordering and the content matter here.
+    CHECK_EQ(spy.loadCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.loadCalls[0].soundId, static_cast<uint16_t>(42));
+    CHECK_EQ(spy.loadCalls[0].sampleRate, 44100);
+    CHECK_EQ(spy.loadCalls[0].channels, 1);
+    CHECK(spy.loadCalls[0].samples.size() >= 1000);
+    // Non-silence: at least one sample has real magnitude (mirrors
+    // test_mp3_decoder.cpp's rms()-based check, inlined here since this
+    // test's point is the runtime wiring, not re-deriving that decode
+    // itself works).
+    bool anyNonZero = false;
+    for (int16_t s : spy.loadCalls[0].samples) {
+        if (s != 0) {
+            anyNonZero = true;
+            break;
+        }
+    }
+    CHECK(anyNonZero);
+
+    CHECK_EQ(spy.playCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.playCalls[0].soundId, static_cast<uint16_t>(42));
+
+    // Second reference to the SAME soundId (simulated directly via
+    // playSoundById(), since building a second real StartSound-tag frame
+    // is unnecessary machinery for what this checks) must NOT decode
+    // again -- decode-on-demand-and-cache, not decode-per-trigger. Only
+    // playCalls should grow.
+    env.playSoundById(42, 1);
+    CHECK_EQ(spy.loadCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.playCalls.size(), static_cast<size_t>(2));
+}
+
 TEST_CASE(MovieClipInstance_StartSoundTag_DispatchesToAudioBackend) {
     auto soundBody =
         swf_fixtures::buildDefineSoundBytes(/*soundId=*/8, 0, 0, false, false, /*sampleCount=*/100);
@@ -1621,4 +1780,353 @@ TEST_CASE(MovieClipInstance_CallMethod_GetBytesLoadedAndTotal_ReportFullyLoadedF
     CHECK(loaded > 0.0);
     CHECK_EQ(loaded, total);
     CHECK_EQ(loaded, static_cast<double>(movie->declaredFileLength));
+}
+
+// ===========================================================================
+// Roadmap Phase 4 (2026-08-21): ExportAssets linkage + dynamic-instantiation
+// primitives (attachMovie/createEmptyMovieClip/duplicateMovieClip/
+// removeMovieClip/swapDepths/getNextHighestDepth) — see
+// docs/known-limitations.md L4.
+// ===========================================================================
+
+TEST_CASE(CharacterDictionary_FindByLinkageName_ResolvesExportedSprite) {
+    auto bytes = buildMovieWithExportedSprite("LinkedMC", {});
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+
+    const uint16_t* id = characters.findByLinkageName("LinkedMC");
+    CHECK(id != nullptr);
+    CHECK_EQ(*id, static_cast<uint16_t>(20));
+    CHECK(characters.findByLinkageName("NoSuchSymbol") == nullptr);
+}
+
+TEST_CASE(MovieClipInstance_AttachMovie_CreatesNamedChildAtDepth) {
+    // _root.attachMovie("LinkedMC", "child1", 5);
+    Asm a;
+    a.pushString("LinkedMC");
+    a.pushString("child1");
+    a.pushInt(5);
+    a.pushInt(3);  // numArgs
+    a.pushString("_root");
+    a.op(0x1C);  // ActionGetVariable
+    a.pushString("attachMovie");
+    a.op(0x52);  // ActionCallMethod
+    a.op(0x17);  // ActionPop — discard the returned MovieClip reference
+    auto bytes = buildMovieWithExportedSprite("LinkedMC", a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->children().size(), static_cast<size_t>(1));
+    auto it = root->children().find(5);
+    CHECK(it != root->children().end());
+    CHECK_EQ(it->second->name(), "child1");
+    CHECK_EQ(it->second->characterId(), static_cast<uint16_t>(20));
+}
+
+TEST_CASE(MovieClipInstance_AttachMovie_UnknownLinkageName_CreatesNothing) {
+    Asm a;
+    a.pushString("DoesNotExist");
+    a.pushString("child1");
+    a.pushInt(5);
+    a.pushInt(3);
+    a.pushString("_root");
+    a.op(0x1C);
+    a.pushString("attachMovie");
+    a.op(0x52);
+    a.op(0x17);
+    auto bytes = buildMovieWithExportedSprite("LinkedMC", a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->children().size(), static_cast<size_t>(0));
+}
+
+TEST_CASE(MovieClipInstance_CreateEmptyMovieClip_CreatesChildWithNoCharacter) {
+    // _root.createEmptyMovieClip("holder", 3);
+    Asm a;
+    a.pushString("holder");
+    a.pushInt(3);
+    a.pushInt(2);
+    a.pushString("_root");
+    a.op(0x1C);
+    a.pushString("createEmptyMovieClip");
+    a.op(0x52);
+    a.op(0x17);
+    auto bytes = buildRootScriptMovie(a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->children().size(), static_cast<size_t>(1));
+    auto it = root->children().find(3);
+    CHECK(it != root->children().end());
+    CHECK_EQ(it->second->name(), "holder");
+    CHECK_EQ(it->second->characterId(), static_cast<uint16_t>(0));
+}
+
+TEST_CASE(MovieClipInstance_DuplicateMovieClip_OopForm_CreatesNewChildAtDepth) {
+    // mc.duplicateMovieClip("mc2", 5) — the OOP CallMethod form, distinct
+    // from the bare ActionCloneSprite("mc","mc2",5) action-code form
+    // MovieClipInstance_CloneSprite_CreatesNewChildAtDepth already covers.
+    Asm a;
+    a.pushString("mc2");
+    a.pushInt(5);
+    a.pushInt(2);
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("duplicateMovieClip");
+    a.op(0x52);
+    a.op(0x17);
+    auto bytes = buildMovieWithNamedChild(1, 1, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->children().size(), static_cast<size_t>(2));
+    auto cloneIt = root->children().find(5);
+    CHECK(cloneIt != root->children().end());
+    CHECK_EQ(cloneIt->second->name(), "mc2");
+}
+
+TEST_CASE(MovieClipInstance_RemoveMovieClip_OopForm_RemovesNamedChild) {
+    // mc.removeMovieClip() — the OOP CallMethod form, distinct from the
+    // bare ActionRemoveSprite("mc") action-code form
+    // MovieClipInstance_RemoveSprite_RemovesNamedChild already covers.
+    Asm a;
+    a.pushInt(0);  // numArgs
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("removeMovieClip");
+    a.op(0x52);
+    a.op(0x17);
+    auto bytes = buildMovieWithNamedChild(1, 1, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->children().size(), static_cast<size_t>(0));
+}
+
+TEST_CASE(MovieClipInstance_SwapDepths_SwapsTwoNamedChildrenAndPreservesBothIdentities) {
+    // _root.createEmptyMovieClip("a", 1); _root.createEmptyMovieClip("b", 2);
+    // a.swapDepths(2);
+    // Real Flash semantics: the occupant at the target depth moves to the
+    // caller's OLD depth — a full swap, not a one-sided move.
+    Asm a;
+    a.pushString("a");
+    a.pushInt(1);
+    a.pushInt(2);
+    a.pushString("_root");
+    a.op(0x1C);
+    a.pushString("createEmptyMovieClip");
+    a.op(0x52);
+    a.op(0x17);
+
+    a.pushString("b");
+    a.pushInt(2);
+    a.pushInt(2);
+    a.pushString("_root");
+    a.op(0x1C);
+    a.pushString("createEmptyMovieClip");
+    a.op(0x52);
+    a.op(0x17);
+
+    a.pushInt(2);  // swapDepths(2)
+    a.pushInt(1);
+    a.pushString("a");
+    a.op(0x1C);
+    a.pushString("swapDepths");
+    a.op(0x52);
+    a.op(0x17);
+    auto bytes = buildRootScriptMovie(a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->children().size(), static_cast<size_t>(2));
+    auto atDepth1 = root->children().find(1);
+    auto atDepth2 = root->children().find(2);
+    CHECK(atDepth1 != root->children().end());
+    CHECK(atDepth2 != root->children().end());
+    CHECK_EQ(atDepth1->second->name(), "b");
+    CHECK_EQ(atDepth2->second->name(), "a");
+}
+
+TEST_CASE(MovieClipInstance_GetNextHighestDepth_EmptyClip_ReturnsZero) {
+    Asm a;
+    a.pushString("nextDepth");
+    a.pushInt(0);
+    a.pushString("_root");
+    a.op(0x1C);
+    a.pushString("getNextHighestDepth");
+    a.op(0x52);
+    a.op(0x1D);  // ActionSetVariable
+    auto bytes = buildRootScriptMovie(a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->scriptObject()->getOwnProperty("nextDepth").toNumber(), 0.0);
+}
+
+TEST_CASE(MovieClipInstance_GetNextHighestDepth_AfterPlacingChild_ReturnsOneAboveMax) {
+    // buildMovieWithNamedChild places "mc" at depth 1, so the next highest
+    // depth must be 2.
+    Asm a;
+    a.pushString("nextDepth");
+    a.pushInt(0);
+    a.pushString("_root");
+    a.op(0x1C);
+    a.pushString("getNextHighestDepth");
+    a.op(0x52);
+    a.op(0x1D);
+    auto bytes = buildMovieWithNamedChild(1, 1, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->scriptObject()->getOwnProperty("nextDepth").toNumber(), 2.0);
+}
+
+TEST_CASE(MovieClipInstance_LoadMovie_ReplacesTargetTimelineAndRunsNewScript) {
+    // sub.swf: 5 frames, frame 1 sets `loaded = true` on ITS OWN target
+    // (which becomes "mc" once loaded — env_->run(*this, ...) inside
+    // loadMovie() runs with the loading clip itself as the target).
+    Asm subScript;
+    subScript.pushString("loaded");
+    subScript.pushBool(true);
+    subScript.op(0x1D);  // ActionSetVariable
+    auto subBytes = buildLoadableSubMovie(5, subScript.build());
+
+    MapFileLoader loader;
+    loader.add("sub.swf", subBytes);
+
+    // Root: mc.loadMovie("sub.swf"); result = <its boolean return>;
+    Asm a;
+    a.pushString("result");
+    a.pushString("sub.swf");
+    a.pushInt(1);  // numArgs
+    a.pushString("mc");
+    a.op(0x1C);  // ActionGetVariable
+    a.pushString("loadMovie");
+    a.op(0x52);  // ActionCallMethod
+    a.op(0x1D);  // ActionSetVariable
+    auto bytes = buildMovieWithNamedChild(1, 1, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    env.setFileLoader(&loader);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(root->scriptObject()->getOwnProperty("result").toBoolean());
+
+    auto mcIt = root->children().find(1);
+    CHECK(mcIt != root->children().end());
+    auto mc = mcIt->second;
+    // Depth/name/parent preserved (real Flash's documented loadMovie()
+    // semantics), but the timeline itself was genuinely replaced (5
+    // frames, not the original sprite's 1) and the new content's own
+    // frame-1 script actually ran against `mc`.
+    CHECK_EQ(mc->name(), "mc");
+    CHECK_EQ(mc->depthInParent(), 1);
+    CHECK_EQ(mc->parent(), root.get());
+    CHECK_EQ(mc->timeline().frameCount(), static_cast<uint32_t>(5));
+    CHECK(mc->scriptObject()->getOwnProperty("loaded").toBoolean());
+}
+
+TEST_CASE(MovieClipInstance_LoadMovie_NoFileLoaderWired_ReturnsFalseAndLeavesClipUnchanged) {
+    // No setFileLoader() call — ScriptEnvironment's default NullFileLoader
+    // always fails, so this must return false and leave "mc" completely
+    // untouched (still its original 1-frame empty-sprite timeline).
+    Asm a;
+    a.pushString("result");
+    a.pushString("sub.swf");
+    a.pushInt(1);
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("loadMovie");
+    a.op(0x52);
+    a.op(0x1D);
+    auto bytes = buildMovieWithNamedChild(1, 1, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;  // no file loader wired up
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(!root->scriptObject()->getOwnProperty("result").toBoolean());
+
+    auto mcIt = root->children().find(1);
+    CHECK(mcIt != root->children().end());
+    CHECK_EQ(mcIt->second->timeline().frameCount(), static_cast<uint32_t>(1));
+}
+
+TEST_CASE(MovieClipInstance_LoadMovie_FetchedBytesNotAValidSwf_ReturnsFalseAndLeavesClipUnchanged) {
+    MapFileLoader loader;
+    loader.add("garbage.swf", std::vector<uint8_t>{0x00, 0x01, 0x02, 0x03});
+
+    Asm a;
+    a.pushString("result");
+    a.pushString("garbage.swf");
+    a.pushInt(1);
+    a.pushString("mc");
+    a.op(0x1C);
+    a.pushString("loadMovie");
+    a.op(0x52);
+    a.op(0x1D);
+    auto bytes = buildMovieWithNamedChild(1, 1, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    env.setFileLoader(&loader);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(!root->scriptObject()->getOwnProperty("result").toBoolean());
+
+    auto mcIt = root->children().find(1);
+    CHECK(mcIt != root->children().end());
+    CHECK_EQ(mcIt->second->timeline().frameCount(), static_cast<uint32_t>(1));
 }

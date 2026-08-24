@@ -198,16 +198,48 @@ void SceneRenderer::renderGlyph(const swf::Shape& glyphShape, const swf::RgbaCol
 
     scaled.records.reserve(glyphShape.records.size());
     for (const swf::ShapeRecord& r : glyphShape.records) {
-        swf::ShapeRecord sr = r;
-        sr.moveToXTwips = static_cast<int32_t>(std::lround(r.moveToXTwips * scale));
-        sr.moveToYTwips = static_cast<int32_t>(std::lround(r.moveToYTwips * scale));
-        sr.deltaXTwips = static_cast<int32_t>(std::lround(r.deltaXTwips * scale));
-        sr.deltaYTwips = static_cast<int32_t>(std::lround(r.deltaYTwips * scale));
-        sr.controlDeltaXTwips = static_cast<int32_t>(std::lround(r.controlDeltaXTwips * scale));
-        sr.controlDeltaYTwips = static_cast<int32_t>(std::lround(r.controlDeltaYTwips * scale));
-        sr.anchorDeltaXTwips = static_cast<int32_t>(std::lround(r.anchorDeltaXTwips * scale));
-        sr.anchorDeltaYTwips = static_cast<int32_t>(std::lround(r.anchorDeltaYTwips * scale));
-        scaled.records.push_back(sr);
+        // Type-aware copy (Roadmap Phase 2 "Compact ShapeRecord" fix,
+        // 2026-08-21): ShapeRecord's kStraightEdge/kCurvedEdge fields now
+        // share storage via a union, and kStyleChange's fields live behind
+        // a possibly-null styleChange pointer, so a blind field-by-field
+        // copy across all sub-type fields (the old approach, harmless only
+        // because the fields used to always coexist) is no longer safe —
+        // it would dereference a null styleChange for edge records. Switch
+        // on r.type and only touch the fields that are actually live.
+        swf::ShapeRecord sr;
+        sr.type = r.type;
+        switch (r.type) {
+            case swf::ShapeRecordType::kStyleChange: {
+                // r.styleChange is non-null (invariant from the parser).
+                // Deep-copy it (not just share the pointer) so we can scale
+                // moveTo without mutating the original glyph's own record.
+                sr.styleChange = std::make_shared<swf::ShapeStyleChange>(*r.styleChange);
+                sr.styleChange->moveToXTwips =
+                    static_cast<int32_t>(std::lround(r.styleChange->moveToXTwips * scale));
+                sr.styleChange->moveToYTwips =
+                    static_cast<int32_t>(std::lround(r.styleChange->moveToYTwips * scale));
+                break;
+            }
+            case swf::ShapeRecordType::kStraightEdge:
+                sr.edge.straightEdge.deltaXTwips =
+                    static_cast<int32_t>(std::lround(r.edge.straightEdge.deltaXTwips * scale));
+                sr.edge.straightEdge.deltaYTwips =
+                    static_cast<int32_t>(std::lround(r.edge.straightEdge.deltaYTwips * scale));
+                break;
+            case swf::ShapeRecordType::kCurvedEdge:
+                sr.edge.curvedEdge.controlDeltaXTwips =
+                    static_cast<int32_t>(std::lround(r.edge.curvedEdge.controlDeltaXTwips * scale));
+                sr.edge.curvedEdge.controlDeltaYTwips =
+                    static_cast<int32_t>(std::lround(r.edge.curvedEdge.controlDeltaYTwips * scale));
+                sr.edge.curvedEdge.anchorDeltaXTwips =
+                    static_cast<int32_t>(std::lround(r.edge.curvedEdge.anchorDeltaXTwips * scale));
+                sr.edge.curvedEdge.anchorDeltaYTwips =
+                    static_cast<int32_t>(std::lround(r.edge.curvedEdge.anchorDeltaYTwips * scale));
+                break;
+            case swf::ShapeRecordType::kEnd:
+                break;
+        }
+        scaled.records.push_back(std::move(sr));
     }
 
     TessellatedShape tess = tessellateShape(scaled);

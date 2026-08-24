@@ -63,23 +63,24 @@ TEST_CASE(ShapeWithStyle_Rectangle_ParsesFillStylesAndRecords) {
     // Expect: one StyleChange (MoveTo) record, three StraightEdge records.
     CHECK_EQ(shape.records.size(), static_cast<size_t>(4));
     CHECK(shape.records[0].type == ShapeRecordType::kStyleChange);
-    CHECK(shape.records[0].hasMoveTo);
-    CHECK_EQ(shape.records[0].moveToXTwips, 0);
-    CHECK_EQ(shape.records[0].moveToYTwips, 0);
-    CHECK(shape.records[0].fillStyle1.has_value());
-    CHECK_EQ(*shape.records[0].fillStyle1, static_cast<uint32_t>(1));
+    CHECK(shape.records[0].styleChange != nullptr);
+    CHECK(shape.records[0].styleChange->hasMoveTo);
+    CHECK_EQ(shape.records[0].styleChange->moveToXTwips, 0);
+    CHECK_EQ(shape.records[0].styleChange->moveToYTwips, 0);
+    CHECK(shape.records[0].styleChange->fillStyle1.has_value());
+    CHECK_EQ(*shape.records[0].styleChange->fillStyle1, static_cast<uint32_t>(1));
 
     CHECK(shape.records[1].type == ShapeRecordType::kStraightEdge);
-    CHECK_EQ(shape.records[1].deltaXTwips, 200 * 20);
-    CHECK_EQ(shape.records[1].deltaYTwips, 0);
+    CHECK_EQ(shape.records[1].edge.straightEdge.deltaXTwips, 200 * 20);
+    CHECK_EQ(shape.records[1].edge.straightEdge.deltaYTwips, 0);
 
     CHECK(shape.records[2].type == ShapeRecordType::kStraightEdge);
-    CHECK_EQ(shape.records[2].deltaXTwips, 0);
-    CHECK_EQ(shape.records[2].deltaYTwips, 100 * 20);
+    CHECK_EQ(shape.records[2].edge.straightEdge.deltaXTwips, 0);
+    CHECK_EQ(shape.records[2].edge.straightEdge.deltaYTwips, 100 * 20);
 
     CHECK(shape.records[3].type == ShapeRecordType::kStraightEdge);
-    CHECK_EQ(shape.records[3].deltaXTwips, -200 * 20);
-    CHECK_EQ(shape.records[3].deltaYTwips, 0);
+    CHECK_EQ(shape.records[3].edge.straightEdge.deltaXTwips, -200 * 20);
+    CHECK_EQ(shape.records[3].edge.straightEdge.deltaYTwips, 0);
 }
 
 TEST_CASE(ShapeWithStyle_WithLineStyle_ParsesLineStyleIndex) {
@@ -95,8 +96,9 @@ TEST_CASE(ShapeWithStyle_WithLineStyle_ParsesLineStyleIndex) {
     auto shape = readShapeWithStyle(r, 2);
     CHECK(!r.failed());
     CHECK_EQ(shape.lineStyles.size(), static_cast<size_t>(1));
-    CHECK(shape.records[0].lineStyleIndex.has_value());
-    CHECK_EQ(*shape.records[0].lineStyleIndex, static_cast<uint32_t>(1));
+    CHECK(shape.records[0].styleChange != nullptr);
+    CHECK(shape.records[0].styleChange->lineStyleIndex.has_value());
+    CHECK_EQ(*shape.records[0].styleChange->lineStyleIndex, static_cast<uint32_t>(1));
 }
 
 // Regression test for a Phase 9 (Hobo compatibility testing) bug: a
@@ -123,14 +125,15 @@ TEST_CASE(ShapeWithStyle_MidStreamNewStyles_ByteAlignsBeforeNewStyleArrays) {
     // Exactly one StyleChangeRecord, carrying the new (byte-aligned) styles.
     CHECK_EQ(shape.records.size(), static_cast<size_t>(1));
     CHECK(shape.records[0].type == ShapeRecordType::kStyleChange);
-    CHECK(shape.records[0].hasNewStyles);
+    CHECK(shape.records[0].styleChange != nullptr);
+    CHECK(shape.records[0].styleChange->hasNewStyles);
 
-    CHECK_EQ(shape.records[0].newFillStyles.size(), static_cast<size_t>(1));
-    CHECK(shape.records[0].newFillStyles[0].isSolid());
-    CHECK_EQ(shape.records[0].newFillStyles[0].type, FillStyleType::kSolid);
-    CHECK_EQ(shape.records[0].newFillStyles[0].solidColor.r, 0xAA);
-    CHECK_EQ(shape.records[0].newFillStyles[0].solidColor.g, 0xBB);
-    CHECK_EQ(shape.records[0].newFillStyles[0].solidColor.b, 0xCC);
+    CHECK_EQ(shape.records[0].styleChange->newFillStyles.size(), static_cast<size_t>(1));
+    CHECK(shape.records[0].styleChange->newFillStyles[0].isSolid());
+    CHECK_EQ(shape.records[0].styleChange->newFillStyles[0].type, FillStyleType::kSolid);
+    CHECK_EQ(shape.records[0].styleChange->newFillStyles[0].solidColor.r, 0xAA);
+    CHECK_EQ(shape.records[0].styleChange->newFillStyles[0].solidColor.g, 0xBB);
+    CHECK_EQ(shape.records[0].styleChange->newFillStyles[0].solidColor.b, 0xCC);
 
-    CHECK_EQ(shape.records[0].newLineStyles.size(), static_cast<size_t>(0));
+    CHECK_EQ(shape.records[0].styleChange->newLineStyles.size(), static_cast<size_t>(0));
 }

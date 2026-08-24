@@ -264,13 +264,23 @@ Carry-overs / explicitly deferred from earlier phases, in case a target
 title needs one of these sooner than its "natural" later phase:
 
 - `Sound.attachSound(name: String)` — the real AS2 linkage-name form —
-  needs `ExportAssets` tag parsing (currently unimplemented; only numeric
-  `attachSound(id)` resolves).
-- Audio codec decode (ADPCM/MP3/etc.) — needed for actual sound output;
-  neither `NullAudioBackend` nor Phase 10's `Nintendo3DSAudioBackend`
-  (real `ndsp` channel plumbing, but nothing to queue into it) can play
-  anything without this. The single highest-value carry-over if a target
-  title needs audible sound.
+  still not wired. **Partially unblocked** (compatibility-audit-phase
+  Roadmap Phase 4, 2026-08-21): `ExportAssets` tag parsing now exists
+  (`CharacterDictionary::findByLinkageName()`, see
+  `docs/known-limitations.md` L4) and is wired into `MovieClip.
+  attachMovie()`, but `Sound.attachSound(name)` itself was NOT updated to
+  use it this phase — only numeric `attachSound(id)` resolves. Wiring it
+  is now a small, unblocked follow-up rather than needing new parsing
+  work.
+- ~~Audio codec decode (MP3)~~ — **done** (compatibility-audit-phase
+  Roadmap Phase 3, 2026-08-21): real MP3 decode
+  (`src/audio/Mp3Decoder.h/.cpp`, vendored `third_party/minimp3`),
+  decode-on-demand-and-cache (`ScriptEnvironment::playSoundById()`), and
+  real `ndsp` PCM playback in `Nintendo3DSAudioBackend`. See
+  `docs/audio.md` and `docs/known-limitations.md` L1. **Still open:**
+  non-MP3 codecs (ADPCM/Nellymoser/Speex/uncompressed — no corpus title
+  needs them), a true counted `StartSound` loop repeat (currently plays
+  once), and on-device/emulator audible confirmation.
 - 3DS hardware/emulator verification (see `docs/3ds-toolchain.md`'s "What's
   verified vs. not") — Phase 10's code is real and toolchain-verified but
   has never actually run on a 3DS or Citra; this environment had access to
@@ -300,9 +310,20 @@ title needs one of these sooner than its "natural" later phase:
   `docs/compatibility.md`).
 - Only the specific OOP `MovieClip` methods a real failing script needed
   were added in Phase 9 (`stop`/`play`/`nextFrame`/`prevFrame`/
-  `gotoAndStop`/`gotoAndPlay`/`getBytesLoaded`/`getBytesTotal`) — the rest
-  of the AS2 `MovieClip` method surface (`swapDepths`/`hitTest`/
-  `duplicateMovieClip`/`attachMovie`/`loadMovie`/...) is still missing.
+  `gotoAndStop`/`gotoAndPlay`/`getBytesLoaded`/`getBytesTotal`).
+  `hitTest(x, y[, shapeFlag])` was added later (interactivity phase).
+  **Most of the rest added** (compatibility-audit-phase Roadmap Phase 4,
+  2026-08-21, per explicit user direction to build this as forward-looking
+  capability even though Extreme Pamplona's own main file can't call any
+  of it — see `docs/known-limitations.md` L3/L6): `attachMovie`,
+  `createEmptyMovieClip`, `duplicateMovieClip`/`removeMovieClip` (OOP
+  forms), `swapDepths`, `getNextHighestDepth`, and `loadMovie` (target-
+  clip-replacement form only — the `_level`-indexed sibling-movie form
+  remains unimplemented, see L6). **Still missing:** `unloadMovie`,
+  drawing API (`beginFill`/`lineTo`/`moveTo`/`curveTo`/`endFill`/`clear`/
+  `lineStyle`), `createTextField`, `localToGlobal`/`globalToLocal`/
+  `getRect`/`getBounds`/`setMask`, `hitTest(target)`'s 1-argument
+  DisplayObject-vs-DisplayObject form.
 
 Do NOT implement AVM2/ActionScript 3 — out of scope per the project spec.
 Keep following the TDD pattern: small test SWFs / programmatic fixtures,
@@ -386,30 +407,75 @@ docs" section — don't just assume this is resolved.
    priority #2 is stable.
 4. `DefineMorphShape`/`2` not resolved (confirmed 19x in real `hobo.swf`).
    **ON HOLD.**
-5. Audio codec decode. **ON HOLD.**
+5. ~~Audio codec decode.~~ **DONE** for MP3 (the format every corpus game
+   uses) — see the Roadmap Phase 3 entry in the carry-overs list above and
+   `docs/known-limitations.md` L1. This priority queue predates the
+   later `docs/implementation-roadmap.md` Phase 1-4 numbering (memory
+   audit + audio decode were pursued under explicit later user
+   instruction, ahead of where this older list had them queued) —
+   `docs/implementation-roadmap.md` is the current source of truth for
+   sequencing from here.
 
-## Virtual Console resource/configuration layer (2026-08-19, not one of the numbered phases)
+## Virtual Console resource/configuration layer (originally 2026-08-19; ported into this tree 2026-08-24)
 
-A new, separately-scoped layer sits on top of the runtime above (nothing
-below this section changed): `src/vc/` (`IniDocument`, `GameConfig`,
-`GamePackage` — all platform-independent, part of `flash3ds_core`) plus
-`src/platform/Nintendo3DSRomfs.h/.cpp` (3DS-only) let `flash3ds_3ds` load
-`game.swf`/`config.ini` from an embedded RomFS section (`romfs/` in the
-repo root) instead of a compiled-in `EmbeddedDemoSwf.h` array — so
-swapping which SWF plays, and how input maps to it, no longer needs a
-recompile. **Full design, RomFS-reader rationale (why not libctru's own
-`romfsInit()`), config.ini syntax, and the CIA-packaging boundary are all
-in `docs/virtual-console.md` — read that before touching this layer.**
-279 desktop tests total became 316 (37 new, covering the INI parser,
-`GameConfig`, and `GamePackage`); the 3DS cross-build still links clean
-(same 8 weak undefined symbols as Phase 10's own prior verification) and
-was verified byte-for-byte via an independent RomFS-section parse (no
-hardware/emulator access this session either). `EmbeddedDemoSwf.h`/
-`tools/gen_3ds_demo_swf.py`'s C++-header-emitting mode are no longer used
-by `nintendo3ds_main.cpp` but were left in the tree (harmless, and the
-script's SWF-building logic is now reused via `--swf-out` to generate the
-default `romfs/game.swf`) rather than deleted, since deletion wasn't asked
-for.
+A separately-scoped layer sits on top of the runtime above (nothing else in
+this file changed as a result of this work): `src/vc/` (`IniDocument`,
+`GameConfig`, `GamePackage` — all platform-independent, part of
+`flash3ds_core`) plus `src/platform/Nintendo3DSRomfs.h/.cpp` (3DS-only) let
+`flash3ds_3ds` load `game.swf`/`config.ini` from an embedded RomFS section
+(`romfs/` in the repo root) instead of a compiled-in `EmbeddedDemoSwf.h`
+array — so swapping which SWF plays, and how input maps to it, no longer
+needs a recompile. **Full design, RomFS-reader rationale, config.ini
+syntax, and the CIA-packaging boundary are all in
+`docs/virtual-console.md` — read that (including its 2026-08-24 addendum)
+before touching this layer.**
+
+**Provenance — read this before assuming this layer was built fresh in this
+session:** this repository and the user's local GitHub Desktop checkout
+(`G:\3DS\GITHUB\flash3ds`, connected to a real `origin` remote this
+sandbox never had) had silently diverged from a common ancestor. The local
+checkout had this Virtual Console layer (added there 2026-08-19) but never
+picked up this repository's own subsequent compatibility-audit-phase work
+(MP3 audio decode, `IFileLoader`/`LocalFileLoader`, the real-game-harness
+diagnostic tools, the M2 lazy-`CharacterDictionary` memory optimization).
+This repository had the opposite gap. A 2026-08-24 session compared both
+trees file-by-file, then read every VC-layer file out of the local
+checkout (via the device bridge) and re-integrated it here — never
+overwriting this repository's own later work. Three files needed a real
+merge, not a plain copy:
+
+- `src/platform/Nintendo3DSInput.h/.cpp` — gained the `vc::InputMapping`
+  constructor parameter (defaulted, so this alone would have compiled
+  unchanged either way).
+- `src/platform/nintendo3ds_main.cpp` — switched from playing a single
+  embedded demo movie to `GamePackage`/`Nintendo3DSRomfs`-based loading
+  (plus the `showFatalErrorScreen()` on-screen diagnostic added alongside
+  the original VC work) while keeping every `MemoryDiagnostics::checkpoint()`
+  call this repository's own M2 RAM phase had already added.
+- `src/platform/Log.h/.cpp` — gained the `setDebugCallback()` second output
+  path (routes `LOG_*` through `svcOutputDebugString` on-device, since
+  `stderr` is a silent no-op on the 3DS target) that this layer's own
+  `nintendo3ds_main.cpp` relies on.
+
+`CMakeLists.txt`/`tests/CMakeLists.txt` were merged the same way: this
+repository's existing tool/test entries (MP3, memory diagnostics,
+harness tools) were kept, and the VC layer's `src/vc/*.cpp` sources,
+`Nintendo3DSRomfs.cpp` (added to the `flash3ds_3ds` target), and RomFS/SMDH
+packaging block (replacing the older plain `3dsxtool` `POST_BUILD` step)
+were added alongside them. Verified after merging, in this repository:
+desktop `ctest` 348/348 passing (up from 316 before this layer existed
+here), and a full 3DS cross-build producing a `flash3ds_3ds.3dsx` with its
+RomFS section packaged, zero undefined symbols beyond the same 8 weak
+libctru/C++-runtime hooks every prior 3DS build already had.
+
+**Not yet done as part of this port:** `docs/current-state-audit*.md` and
+`docs/implementation-roadmap*.md` were NOT updated to mention this layer
+exists (they predate it and were written against this repository's other,
+independent line of work) — don't treat their absence of VC-layer content
+as this layer being unimplemented. The user's local GitHub Desktop folder
+has not yet been updated with any of this repository's own newer work
+(MP3/memory/harness tooling/this merge itself) — that sync is a separate,
+explicit step, not implied by this port.
 
 ## Build
 

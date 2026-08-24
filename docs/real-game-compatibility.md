@@ -720,3 +720,33 @@ only (1) fully solves Hobo-family interactivity but leaves Extreme
 Pamplona blocked; implementing only (2) does the reverse. This corpus
 did not exist before this phase, so this two-mechanism distinction was
 not previously visible from hobo.swf analysis alone.
+
+## Cat Ninja — added to corpus 2026-08-24
+
+Staged from the user's device (`G:\3DS\Új mappa\CatNinja.swf`) into
+`/home/claude/game-corpus/cat_ninja/cat_ninja.swf`, per task01.txt's
+instruction making it mandatory corpus. `swf_diagnostic` findings (all
+confirmed matching the previously-reported facts):
+
+- SWF version 10, zlib-compressed (CWS), stage 800x600px, 60fps,
+  `FrameCount=2`.
+- AVM2/AS3 (`DoABC2` x2) — **zero** `DefineShape`/`DefineSprite`/
+  `DefineButton` tags anywhere.
+- 63 `DefineBitsLossless2` bitmap tags, 18 `DefineSound` (MP3) tags.
+- `CharacterDictionary::build()` currently resolves only the 18 sound
+  characters (18, not 63+18) — bitmap tag parsing is roadmap Phase 10,
+  not started, so the 63 bitmaps are recognized by tag but produce no
+  character-dictionary entry at all yet (matches every other corpus
+  game's bitmap-tag handling — see `docs/compatibility-matrix.md`).
+- `--render 1`/`--render 2` succeed (identical output — a static 2-frame
+  file with no AVM1 timeline animation this runtime executes, since it's
+  AVM2 content); `--render 3` correctly fails ("frame out of range"),
+  matching its own declared `FrameCount=2` — not a bug.
+- Peak RSS (isolated `mem_profile_check`): 13.33MB before this phase's
+  Option-B change, 13.31MB after (near-zero change expected — see
+  `docs/memory-audit.md` §10 for why). **Its bitmap-heavy real memory
+  cost remains unmeasured** until roadmap Phase 10 (bitmap decode) lands.
+- Per this project's standing AVM1-priority scope (top-level `CLAUDE.md`):
+  Cat Ninja's AVM2 content is NOT executed and is not a target for AVM2
+  implementation — it is used purely as a RAM/loader/bitmap-tag-presence
+  diagnostic target, exactly as task01.txt specified.

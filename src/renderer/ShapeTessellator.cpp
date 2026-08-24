@@ -113,27 +113,30 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
     for (const swf::ShapeRecord& record : shape.records) {
         switch (record.type) {
             case swf::ShapeRecordType::kStyleChange: {
-                if (record.hasNewStyles) {
+                // Invariant established by readShapeRecordStream(): styleChange
+                // is always non-null when type == kStyleChange.
+                const swf::ShapeStyleChange& sc = *record.styleChange;
+                if (sc.hasNewStyles) {
                     // A new FILLSTYLEARRAY/LINESTYLEARRAY starts a fresh
                     // style scope (used by DefineShape's "one shape, many
                     // style groups" layering). Flush whatever subpath was
                     // open under the old styles first.
                     flushSubpath();
-                    activeFillStyles = &record.newFillStyles;
-                    activeLineStyles = &record.newLineStyles;
+                    activeFillStyles = &sc.newFillStyles;
+                    activeLineStyles = &sc.newLineStyles;
                     fillStyle0Index.reset();
                     fillStyle1Index.reset();
                     lineStyleIndex.reset();
                 }
 
-                if (record.fillStyle0) fillStyle0Index = record.fillStyle0;
-                if (record.fillStyle1) fillStyle1Index = record.fillStyle1;
-                if (record.lineStyleIndex) lineStyleIndex = record.lineStyleIndex;
+                if (sc.fillStyle0) fillStyle0Index = sc.fillStyle0;
+                if (sc.fillStyle1) fillStyle1Index = sc.fillStyle1;
+                if (sc.lineStyleIndex) lineStyleIndex = sc.lineStyleIndex;
 
-                if (record.hasMoveTo) {
+                if (sc.hasMoveTo) {
                     flushSubpath();
-                    currentX = record.moveToXTwips;
-                    currentY = record.moveToYTwips;
+                    currentX = sc.moveToXTwips;
+                    currentY = sc.moveToYTwips;
                     subpath.push_back(PointTwips{currentX, currentY});
                     subpathFillStyle0Index = fillStyle0Index;
                     subpathFillStyle1Index = fillStyle1Index;
@@ -157,8 +160,8 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
                     subpathFillStyle1Index = fillStyle1Index;
                     subpathLineStyleIndex = lineStyleIndex;
                 }
-                currentX += record.deltaXTwips;
-                currentY += record.deltaYTwips;
+                currentX += record.edge.straightEdge.deltaXTwips;
+                currentY += record.edge.straightEdge.deltaYTwips;
                 subpath.push_back(PointTwips{currentX, currentY});
                 break;
             }
@@ -171,10 +174,10 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
                     subpathLineStyleIndex = lineStyleIndex;
                 }
                 PointTwips start{currentX, currentY};
-                PointTwips control{currentX + record.controlDeltaXTwips,
-                                    currentY + record.controlDeltaYTwips};
-                PointTwips anchor{control.x + record.anchorDeltaXTwips,
-                                   control.y + record.anchorDeltaYTwips};
+                PointTwips control{currentX + record.edge.curvedEdge.controlDeltaXTwips,
+                                    currentY + record.edge.curvedEdge.controlDeltaYTwips};
+                PointTwips anchor{control.x + record.edge.curvedEdge.anchorDeltaXTwips,
+                                   control.y + record.edge.curvedEdge.anchorDeltaYTwips};
                 flattenQuadraticBezier(subpath, start, control, anchor, curveSubdivisions);
                 currentX = anchor.x;
                 currentY = anchor.y;

@@ -19,6 +19,7 @@
 #include <string>
 
 #include "platform/Log.h"
+#include "platform/MemoryDiagnostics.h"
 #include "renderer/SceneRenderer.h"
 #include "renderer/SoftwareRenderer.h"
 #include "runtime/CharacterDictionary.h"
@@ -46,7 +47,13 @@ void printUsage(const char* argv0) {
                   "  --debug             enable verbose [SWF] tag-by-tag logging\n"
                   "  --quiet             suppress logging, print only the summary report\n"
                   "  --timeline          print a per-frame display-list summary (Phase 2)\n"
-                  "  --render F OUT.ppm  render frame F to a binary PPM file (Phase 3)\n",
+                  "  --render F OUT.ppm  render frame F to a binary PPM file (Phase 3)\n"
+                  "  --memdiag           log MemoryDiagnostics checkpoints (see\n"
+                  "                      src/platform/MemoryDiagnostics.h) during --render;\n"
+                  "                      this is the same mechanism the real 3DS build uses\n"
+                  "                      (there, held by holding L at boot) -- useful for\n"
+                  "                      verifying the checkpoint machinery itself on desktop\n"
+                  "                      before trusting its on-device numbers\n",
                   argv0);
 }
 
@@ -66,7 +73,11 @@ void printUsage(const char* argv0) {
 // Returns false (and prints an error) on any failure.
 bool renderFrameToPpm(const flash3ds::runtime::Movie& movie, uint32_t frameIndex,
                        const std::string& outPath) {
+    namespace memdiag = flash3ds::platform;
+    memdiag::checkpoint("startup (renderFrameToPpm entered)");
+
     CharacterDictionary characters = CharacterDictionary::build(movie);
+    memdiag::checkpoint("after CharacterDictionary::build");
     ScriptEnvironment env;
 
     auto root = MovieClipInstance::createRoot(movie, characters, env);
@@ -74,6 +85,7 @@ bool renderFrameToPpm(const flash3ds::runtime::Movie& movie, uint32_t frameIndex
         std::fprintf(stderr, "--render: could not build the MovieClip tree (movie invalid or has no frames)\n");
         return false;
     }
+    memdiag::checkpoint("after MovieClipInstance::createRoot");
     uint32_t totalFrames = root->timeline().frameCount();
     if (frameIndex < 1 || frameIndex > totalFrames) {
         std::fprintf(stderr, "--render: frame %u out of range [1, %u]\n", frameIndex, totalFrames);
@@ -83,6 +95,7 @@ bool renderFrameToPpm(const flash3ds::runtime::Movie& movie, uint32_t frameIndex
     for (uint32_t f = 1; f < frameIndex && f < totalFrames; ++f) {
         root->advanceFrame();
     }
+    memdiag::checkpoint("after first frame (advanceFrame to target)");
 
     int width = std::max(1, static_cast<int>(std::lround(movie.frameSize.widthPixels())));
     int height = std::max(1, static_cast<int>(std::lround(movie.frameSize.heightPixels())));
@@ -90,11 +103,13 @@ bool renderFrameToPpm(const flash3ds::runtime::Movie& movie, uint32_t frameIndex
     SoftwareRenderer renderer(width, height);
     SceneRenderer scene(movie, characters);
     scene.render(*root, renderer, width, height);
+    memdiag::checkpoint("after first render (SceneRenderer::render)");
 
     if (!renderer.writePpm(outPath)) {
         std::fprintf(stderr, "--render: failed to write '%s'\n", outPath.c_str());
         return false;
     }
+    memdiag::checkpoint("shutdown (peak reflects this render)");
 
     std::printf("\n-- Render -- wrote frame %u of %u (%dx%d px) to %s\n", root->timeline().currentFrame(),
                  totalFrames, width, height, outPath.c_str());
@@ -148,6 +163,7 @@ int main(int argc, char** argv) {
     LogLevel level = LogLevel::kInfo;
     bool showTimeline = false;
     bool doRender = false;
+    bool memDiag = false;
     uint32_t renderFrame = 0;
     std::string renderOutPath;
 
@@ -159,6 +175,8 @@ int main(int argc, char** argv) {
             level = LogLevel::kNone;
         } else if (arg == "--timeline") {
             showTimeline = true;
+        } else if (arg == "--memdiag") {
+            memDiag = true;
         } else if (arg == "--render") {
             if (i + 2 >= argc) {
                 std::fprintf(stderr, "--render requires two arguments: <frame> <out.ppm>\n");
@@ -184,6 +202,10 @@ int main(int argc, char** argv) {
     }
 
     Log::setLevel(level);
+    if (memDiag) {
+        flash3ds::platform::setEnabled(true);
+        flash3ds::platform::resetPeak();
+    }
 
     auto movie = SwfLoader::loadSwfFile(path);
 

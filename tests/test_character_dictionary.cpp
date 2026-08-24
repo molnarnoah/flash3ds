@@ -256,6 +256,75 @@ TEST_CASE(CharacterDictionary_Build_ResolvesDefineButton) {
               static_cast<size_t>(1));
 }
 
+// --- Roadmap Phase 5 (RAM Option B, 2026-08-24): lazy/on-demand parsing --
+
+TEST_CASE(CharacterDictionary_LazyParse_RepeatedFindReturnsSamePointer) {
+    // If find() re-parsed on every call instead of caching, two calls could
+    // still coincidentally return equal *content*, but the underlying
+    // storage would not generally be the same object. Pointer identity
+    // across repeated find() calls is the direct, observable proof that the
+    // second call hit the parsed_ cache rather than re-parsing the tag.
+    auto bytes = buildMovieWithShapeAndSprite();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto dict = CharacterDictionary::build(*movie);
+
+    const auto* first = dict.find(10);
+    const auto* second = dict.find(10);
+    CHECK(first != nullptr);
+    CHECK_EQ(first, second);
+}
+
+TEST_CASE(CharacterDictionary_LazyParse_SizeCountsPendingAndParsedIdentically) {
+    // size() must mean "how many distinct character IDs did build() see",
+    // unaffected by whether any of them have actually been parsed yet --
+    // existing call sites (mem_profile_check, tests) rely on this being the
+    // discovery count, not a "how much work has happened so far" counter.
+    auto bytes = buildMovieWithShapeAndSprite();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    auto dict = CharacterDictionary::build(*movie);
+
+    CHECK_EQ(dict.size(), static_cast<size_t>(2));
+    const auto* shapeCharacter = dict.find(10);  // promotes id=10 from pending_ to parsed_
+    CHECK(shapeCharacter != nullptr);
+    CHECK_EQ(dict.size(), static_cast<size_t>(2));  // unchanged by the promotion
+}
+
+TEST_CASE(CharacterDictionary_LazyParse_MalformedBodyFailsAtFindNotAtBuild) {
+    // A tag whose leading CharacterId is readable (2 bytes) but whose
+    // remaining body is too short/malformed for a full parse must still be
+    // *discovered* by build() (peekLeadingCharacterId only needs those 2
+    // bytes) -- the actual parse failure is only observed lazily, on the
+    // first find(). This is the direct regression test for "build() no
+    // longer eagerly parses", as distinct from the pre-existing "malformed
+    // input never crashes" guarantee (which this also still upholds).
+    std::vector<uint8_t> brokenShapeBody = {40, 0, 0xFF};  // characterId=40, then garbage
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineShape2), brokenShapeBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto dict = CharacterDictionary::build(*movie);
+
+    // Discovered (peeked) even though it can never actually parse.
+    CHECK_EQ(dict.size(), static_cast<size_t>(1));
+
+    // The real parse failure only happens here, and must fail cleanly
+    // (nullptr, no crash) rather than propagate an exception or corrupt
+    // state -- matches the pre-Phase-5 malformed-input contract.
+    const auto* character = dict.find(40);
+    CHECK(character == nullptr);
+
+    // A failed lazy parse must not be retried forever on every call (it's
+    // fine for it to keep returning nullptr, but it must not, say, grow
+    // unbounded state) -- calling find() again is safe and still nullptr.
+    CHECK(dict.find(40) == nullptr);
+}
+
 TEST_CASE(CharacterDictionary_Build_ResolvesDefineEditText) {
     auto editTextBody = fixtures::buildDefineEditTextBytes(
         33, 50 * 20, 20 * 20, std::nullopt, std::nullopt, std::nullopt, "myVar", std::nullopt);

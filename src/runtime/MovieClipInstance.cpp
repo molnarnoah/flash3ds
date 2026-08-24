@@ -11,6 +11,7 @@
 #include "platform/Log.h"
 #include "runtime/ButtonInstance.h"
 #include "runtime/CharacterBounds.h"
+#include "swf/SwfLoader.h"
 #include "swf/TagCode.h"
 
 namespace flash3ds::runtime {
@@ -263,7 +264,7 @@ ScriptEnvironment::ScriptEnvironment() : global_(avm1::GlobalObject::create()) {
                          }
                          int loopCount =
                              args.size() > 1 ? std::max(1, static_cast<int>(args[1].toNumber())) : 1;
-                         audioBackend_->playSound(static_cast<uint16_t>(idVal.toNumber()), loopCount);
+                         playSoundById(static_cast<uint16_t>(idVal.toNumber()), loopCount);
                          return avm1::Value::undefined();
                      })));
     soundProto->setOwnProperty(
@@ -629,6 +630,74 @@ const std::vector<uint8_t>* ScriptEnvironment::takeInitActionsOnce(uint16_t char
     return &it->second;
 }
 
+const std::optional<audio::DecodedAudio>& ScriptEnvironment::ensureSoundDecoded(
+    uint16_t soundId) {
+    auto cached = decodedSoundCache_.find(soundId);
+    if (cached != decodedSoundCache_.end()) {
+        return cached->second;
+    }
+
+    // Insert-then-fill (rather than filling a local and inserting once at
+    // the end) so every early-return path below shares one
+    // "cache the negative result" line instead of repeating it.
+    auto [it, inserted] = decodedSoundCache_.emplace(soundId, std::nullopt);
+    (void)inserted;  // always true here (cached lookup above already missed)
+
+    const CharacterDef* def = characters_ ? characters_->find(soundId) : nullptr;
+    const swf::SoundDef* soundDef = def ? std::get_if<swf::SoundDef>(def) : nullptr;
+    if (!soundDef) {
+        return it->second;  // not a DefineSound character at all
+    }
+    if (soundDef->format != swf::SoundFormat::kMp3) {
+        // ADPCM/Nellymoser/Speex/uncompressed decode isn't implemented yet
+        // — see docs/known-limitations.md L1. Logged once (here, at first
+        // reference), not once per playSoundById() call.
+        LOG_DEBUG("AUDIO",
+                  "ScriptEnvironment: soundId=%u uses an unsupported codec (format=%d) -- no "
+                  "decode, playSound() will still fire",
+                  soundId, static_cast<int>(soundDef->format));
+        return it->second;
+    }
+    if (!movie_ || soundDef->dataOffset + soundDef->dataLength > movie_->data.size()) {
+        LOG_WARN("AUDIO", "ScriptEnvironment: soundId=%u has out-of-range sample data, skipping decode",
+                  soundId);
+        return it->second;
+    }
+
+    const uint8_t* raw = movie_->data.data() + soundDef->dataOffset;
+    it->second = audio::decodeSwfMp3Sound(raw, soundDef->dataLength);
+    if (!it->second) {
+        LOG_WARN("AUDIO", "ScriptEnvironment: soundId=%u MP3 decode failed", soundId);
+    }
+    return it->second;
+}
+
+void ScriptEnvironment::playSoundById(uint16_t soundId, int loopCount) {
+    // Checked BEFORE ensureSoundDecoded() (which populates the cache as a
+    // side effect) so this reliably distinguishes "this is the first-ever
+    // reference to soundId" from "already decoded (or already known
+    // undecodable) on a previous call" — loadSound() should only ever
+    // reach the backend once per distinct soundId, per playSoundById()'s
+    // own doc comment; a backend like Nintendo3DSAudioBackend keeps its
+    // own copy of the PCM once loaded, so re-sending it on every replay
+    // would be pure waste (and, worse, would keep re-copying into 3DS
+    // linear-heap memory on every trigger of a frequently-replayed sound).
+    bool alreadyKnown = decodedSoundCache_.count(soundId) != 0;
+    const std::optional<audio::DecodedAudio>& decoded = ensureSoundDecoded(soundId);
+    if (decoded && !alreadyKnown) {
+        audioBackend_->loadSound(soundId, decoded->samples.data(), decoded->samples.size(),
+                                  decoded->sampleRate, decoded->channels);
+    }
+    audioBackend_->playSound(soundId, loopCount);
+}
+
+std::pair<const Movie*, const CharacterDictionary*> ScriptEnvironment::ownLoadedMovie(
+    std::unique_ptr<Movie> movie, std::unique_ptr<CharacterDictionary> characters) {
+    loadedMovies_.push_back(std::move(movie));
+    loadedCharacterDicts_.push_back(std::move(characters));
+    return {loadedMovies_.back().get(), loadedCharacterDicts_.back().get()};
+}
+
 void ScriptEnvironment::startDrag(MovieClipInstance* clip,
                                     const avm1::HostBindings::DragOptions& options) {
     if (!clip) return;
@@ -671,6 +740,7 @@ avm1::Value ScriptEnvironment::run(MovieClipInstance& target, const uint8_t* cod
     avm1::ExecutionContext ctx(scope, global_);
     ctx.thisValue = avm1::Value::object(target.scriptObject());
     ctx.host = &host;
+    ctx.callTraceSink = callTraceSink;
 
     return avm1::Interpreter::execute(ctx, code, length);
 }
@@ -684,6 +754,7 @@ avm1::Value ScriptEnvironment::callHandler(MovieClipInstance& hostBindingsTarget
     avm1::ExecutionContext ctx(scope, global_);
     ctx.thisValue = thisVal;
     ctx.host = &host;
+    ctx.callTraceSink = callTraceSink;
     // No arguments — every handler this phase dispatches (onPress/
     // onRelease/onRollOver/onRollOut) is real AS2's zero-argument form.
     return avm1::Interpreter::callFunction(ctx, func, thisVal, {});
@@ -713,6 +784,7 @@ std::shared_ptr<MovieClipInstance> MovieClipInstance::createRoot(
 
     env.scanInitActions(movie);
     env.bindCharacters(characters);
+    env.bindMovie(movie);
 
     std::shared_ptr<MovieClipInstance> root(new MovieClipInstance(
         movie, characters, env, nullptr, "", 0, std::move(timeline)));
@@ -1090,6 +1162,123 @@ bool MovieClipInstance::handleNativeGet(const std::string& name, avm1::Value& ou
         return true;
     }
 
+    // AS2-visible dynamic-instantiation / depth-management methods (Roadmap
+    // Phase 4, 2026-08-21 — see docs/known-limitations.md L4). All five
+    // are thin wrappers around the primitives added alongside
+    // CharacterDictionary::findByLinkageName()/attachCharacter()/
+    // createEmptyChild()/swapDepthsWith()/nextHighestDepth() — see those
+    // methods' own doc comments in MovieClipInstance.h for exact semantics.
+    // `this` is already the clip the method was called on (CallMethod
+    // dispatch resolves `someClip.foo(...)` to `someClip`'s own
+    // scriptObject_ before invoking handleNativeGet on it), so — unlike
+    // the bare action-code CloneSprite/RemoveSprite forms above, which
+    // take an explicit target-path string and must resolve() it — none of
+    // these need path resolution.
+    if (name == "attachMovie" || name == "createEmptyMovieClip" ||
+        name == "duplicateMovieClip" || name == "removeMovieClip" ||
+        name == "swapDepths" || name == "getNextHighestDepth" || name == "loadMovie") {
+        auto* self = const_cast<MovieClipInstance*>(this);
+        std::weak_ptr<MovieClipInstance> weakSelf = self->shared_from_this();
+        std::string methodName = name;
+        out = avm1::Value::object(avm1::makeNativeFunction(
+            methodName,
+            [weakSelf, methodName](avm1::ExecutionContext&, const avm1::Value&,
+                                    const std::vector<avm1::Value>& args) -> avm1::Value {
+                auto mc = weakSelf.lock();
+                if (!mc) return avm1::Value::undefined();
+                if (methodName == "attachMovie") {
+                    // attachMovie(idOrLinkageName: String, newName: String,
+                    // depth: Number, [initObject: Object]) — real AS2's id
+                    // argument is always the library symbol's *linkage*
+                    // name (set in the Flash IDE's "Linkage" properties),
+                    // never a raw numeric character ID, so only the
+                    // String form is resolved here.
+                    if (args.size() < 3 || !args[0].isString()) {
+                        LOG_WARN("MOVIECLIP",
+                                  "attachMovie: expected (linkageName: String, newName: "
+                                  "String, depth: Number[, initObject])");
+                        return avm1::Value::undefined();
+                    }
+                    const uint16_t* characterId =
+                        mc->characters_->findByLinkageName(args[0].toString());
+                    if (!characterId) {
+                        LOG_WARN("MOVIECLIP",
+                                  "attachMovie: no ExportAssets linkage entry for '%s'",
+                                  args[0].toString().c_str());
+                        return avm1::Value::undefined();
+                    }
+                    std::string newName = args[1].toString();
+                    int32_t depth = static_cast<int32_t>(args[2].toNumber());
+                    std::shared_ptr<avm1::Object> initObject =
+                        (args.size() > 3 && args[3].isObject()) ? args[3].asObject() : nullptr;
+                    auto child = mc->attachCharacter(*characterId, newName, depth, initObject);
+                    return child ? avm1::Value::object(child->scriptObject_)
+                                  : avm1::Value::undefined();
+                } else if (methodName == "createEmptyMovieClip") {
+                    // createEmptyMovieClip(newName: String, depth: Number)
+                    if (args.size() < 2) {
+                        LOG_WARN("MOVIECLIP",
+                                  "createEmptyMovieClip: expected (newName: String, depth: "
+                                  "Number)");
+                        return avm1::Value::undefined();
+                    }
+                    auto child = mc->createEmptyChild(args[0].toString(),
+                                                        static_cast<int32_t>(args[1].toNumber()));
+                    return child ? avm1::Value::object(child->scriptObject_)
+                                  : avm1::Value::undefined();
+                } else if (methodName == "duplicateMovieClip") {
+                    // duplicateMovieClip(newName: String, depth: Number) —
+                    // real AS2's third (initObject) argument is not
+                    // supported by cloneSprite() (which just clones `this`
+                    // at a new depth, matching CloneSprite's own action-
+                    // code semantics) — same limitation either call form
+                    // has.
+                    if (args.size() < 2) {
+                        LOG_WARN("MOVIECLIP",
+                                  "duplicateMovieClip: expected (newName: String, depth: "
+                                  "Number)");
+                        return avm1::Value::undefined();
+                    }
+                    auto child = mc->cloneSprite(args[0].toString(),
+                                                   static_cast<int32_t>(args[1].toNumber()));
+                    return child ? avm1::Value::object(child->scriptObject_)
+                                  : avm1::Value::undefined();
+                } else if (methodName == "removeMovieClip") {
+                    mc->removeFromParent();
+                } else if (methodName == "swapDepths") {
+                    // swapDepths(target: Number | MovieClip). Real AS2 also
+                    // accepts another MovieClip instance (swaps with ITS
+                    // current depth) — supported here by reading the
+                    // target object's own _x-style native "depth" via its
+                    // depthInParent_ is not reachable through avm1::Object,
+                    // so only the Number-depth form is implemented; passing
+                    // an object logs and no-ops rather than guessing.
+                    if (args.empty() || !args[0].isNumber()) {
+                        LOG_WARN("MOVIECLIP",
+                                  "swapDepths(MovieClip) (object-target form) is not "
+                                  "implemented — only swapDepths(depth: Number) is "
+                                  "supported");
+                        return avm1::Value::undefined();
+                    }
+                    mc->swapDepthsWith(static_cast<int32_t>(args[0].toNumber()));
+                } else if (methodName == "getNextHighestDepth") {
+                    return avm1::Value::number(mc->nextHighestDepth());
+                } else if (methodName == "loadMovie") {
+                    // loadMovie(url: String) — see loadMovie()'s own doc
+                    // comment in MovieClipInstance.h for exactly what this
+                    // does and doesn't cover (the target-clip-replacement
+                    // form only, no `_level` sibling-movie loading).
+                    if (args.empty() || !args[0].isString()) {
+                        LOG_WARN("MOVIECLIP", "loadMovie: expected (url: String)");
+                        return avm1::Value::boolean(false);
+                    }
+                    return avm1::Value::boolean(mc->loadMovie(args[0].toString()));
+                }
+                return avm1::Value::undefined();
+            }));
+        return true;
+    }
+
     auto it = childNameToDepth_.find(name);
     if (it != childNameToDepth_.end()) {
         auto childIt = children_.find(it->second);
@@ -1169,7 +1358,7 @@ void MovieClipInstance::runCurrentFrameSounds() {
         int loopCount = event.info.hasLoops && event.info.loopCount
                              ? std::max<int>(1, *event.info.loopCount)
                              : 1;
-        env_->audioBackend().playSound(event.soundId, loopCount);
+        env_->playSoundById(event.soundId, loopCount);
     }
 }
 
@@ -1586,6 +1775,266 @@ void MovieClipInstance::removeFromParent() {
     // reference in the common case) — do it last, and don't touch any
     // member after this line.
     parent_->children_.erase(depthInParent_);
+}
+
+std::shared_ptr<MovieClipInstance> MovieClipInstance::attachCharacter(
+    uint16_t characterId, const std::string& newName, int32_t depth,
+    const std::shared_ptr<avm1::Object>& initObject) {
+    const CharacterDef* def = characters_->find(characterId);
+    if (!def || !std::holds_alternative<SpriteDef>(*def)) {
+        LOG_WARN("MOVIECLIP", "attachMovie: character %u is not a sprite/MovieClip symbol",
+                  characterId);
+        return nullptr;
+    }
+
+    swf::PlaceObjectRecord record;
+    record.version = 2;
+    record.depth = depth;
+    record.move = false;
+    record.characterId = characterId;
+    // A freshly-attached clip starts at the identity transform (real
+    // Flash's attachMovie() places the new clip at (0,0), full scale, no
+    // rotation — the caller repositions it afterward via _x/_y/etc, same
+    // as this project's own tests would expect) — deliberately NOT
+    // inheriting `this`'s own matrix/colorTransform, unlike cloneSprite()
+    // (which clones a SIBLING of itself and so keeps its transform).
+    timeline_->mutableDisplayListForScripting().applyPlaceObject(record);
+
+    auto existing = children_.find(depth);
+    if (existing != children_.end()) {
+        for (auto nameIt = childNameToDepth_.begin(); nameIt != childNameToDepth_.end();) {
+            if (nameIt->second == depth) nameIt = childNameToDepth_.erase(nameIt);
+            else ++nameIt;
+        }
+        children_.erase(existing);
+    }
+
+    const SpriteDef& spriteDef = std::get<SpriteDef>(*def);
+    auto childTimeline = Timeline::build(*movie_, spriteDef.tags);
+    if (!childTimeline) return nullptr;
+
+    std::shared_ptr<MovieClipInstance> child(new MovieClipInstance(
+        *movie_, *characters_, *env_, this, newName, depth, std::move(childTimeline)));
+    child->characterId_ = characterId;
+    child->wireScriptObject();
+
+    children_[depth] = child;
+    if (!newName.empty()) childNameToDepth_[newName] = depth;
+
+    // initObject's OWN (non-inherited) properties are copied onto the new
+    // clip BEFORE initializeNewlyCreated() runs its first frame — matches
+    // real Flash's documented attachMovie(..., initObject) timing (the
+    // init values are visible to the clip's own onClipEvent(load)/frame-1
+    // scripts, not applied after the fact).
+    if (initObject) {
+        for (const auto& [propName, propValue] : initObject->ownProperties()) {
+            child->scriptObject_->setMember(propName, propValue);
+        }
+    }
+
+    child->initializeNewlyCreated();
+    return child;
+}
+
+std::shared_ptr<MovieClipInstance> MovieClipInstance::createEmptyChild(const std::string& newName,
+                                                                          int32_t depth) {
+    swf::PlaceObjectRecord record;
+    record.version = 2;
+    record.depth = depth;
+    record.move = false;
+    record.characterId = 0;  // no backing character — see this method's own doc comment
+    timeline_->mutableDisplayListForScripting().applyPlaceObject(record);
+
+    auto existing = children_.find(depth);
+    if (existing != children_.end()) {
+        for (auto nameIt = childNameToDepth_.begin(); nameIt != childNameToDepth_.end();) {
+            if (nameIt->second == depth) nameIt = childNameToDepth_.erase(nameIt);
+            else ++nameIt;
+        }
+        children_.erase(existing);
+    }
+
+    auto emptyTimeline = Timeline::build(*movie_, {});
+    if (!emptyTimeline) return nullptr;
+
+    std::shared_ptr<MovieClipInstance> child(new MovieClipInstance(
+        *movie_, *characters_, *env_, this, newName, depth, std::move(emptyTimeline)));
+    // characterId_ stays 0 (default) — deliberately: there is no character
+    // to resolve for an empty clip. See createEmptyChild()'s own header
+    // comment for why this is safe (SceneRenderer never looks a
+    // MovieClipInstance's own characterId up; only its display list).
+    child->wireScriptObject();
+
+    children_[depth] = child;
+    if (!newName.empty()) childNameToDepth_[newName] = depth;
+
+    child->initializeNewlyCreated();
+    return child;
+}
+
+void MovieClipInstance::swapDepthsWith(int32_t otherDepth) {
+    if (!parent_) {
+        LOG_WARN("MOVIECLIP", "swapDepths: the root clip has no parent display list to swap within");
+        return;
+    }
+    if (otherDepth == depthInParent_) return;  // no-op, matches real Flash
+
+    // depthInParent_ gets overwritten below once `this` is moved to
+    // otherDepth, so the old depth (where any displaced occupant must be
+    // re-placed) has to be captured now.
+    const int32_t oldDepth = depthInParent_;
+
+    DisplayList& dl = parent_->timeline_->mutableDisplayListForScripting();
+    const DisplayListEntry* myEntry = dl.find(depthInParent_);
+    if (!myEntry) {
+        LOG_WARN("MOVIECLIP", "swapDepths: this clip has no display-list entry at depth %d",
+                  depthInParent_);
+        return;
+    }
+    swf::PlaceObjectRecord myRecord;
+    myRecord.version = 2;
+    myRecord.move = false;
+    myRecord.characterId = myEntry->characterId;
+    myRecord.matrix = myEntry->matrix;
+    myRecord.colorTransform = myEntry->colorTransform;
+    myRecord.name = name_;
+
+    // Capture the target depth's occupant (if any) BEFORE either
+    // PlaceObject call below mutates the display list out from under it.
+    const DisplayListEntry* otherEntryPtr = dl.find(otherDepth);
+    std::optional<swf::PlaceObjectRecord> otherRecord;
+    auto otherChildIt = parent_->children_.find(otherDepth);
+    std::shared_ptr<MovieClipInstance> otherChild =
+        otherChildIt != parent_->children_.end() ? otherChildIt->second : nullptr;
+    std::string otherName = otherChild ? otherChild->name_ : std::string();
+    if (otherEntryPtr) {
+        swf::PlaceObjectRecord rec;
+        rec.version = 2;
+        rec.move = false;
+        rec.characterId = otherEntryPtr->characterId;
+        rec.matrix = otherEntryPtr->matrix;
+        rec.colorTransform = otherEntryPtr->colorTransform;
+        rec.name = otherName;
+        otherRecord = rec;
+    }
+
+    // Move `this` to otherDepth, and (if occupied) move the previous
+    // occupant to `this`'s old depth — real Flash's documented swap
+    // semantics ("the current occupant is moved to this clip's old
+    // depth"), not a simple erase.
+    dl.remove(depthInParent_);
+    if (otherChild) parent_->children_.erase(otherDepth);
+    for (auto nameIt = parent_->childNameToDepth_.begin();
+         nameIt != parent_->childNameToDepth_.end();) {
+        if (nameIt->second == depthInParent_ || nameIt->second == otherDepth) {
+            nameIt = parent_->childNameToDepth_.erase(nameIt);
+        } else {
+            ++nameIt;
+        }
+    }
+
+    myRecord.depth = otherDepth;
+    dl.applyPlaceObject(myRecord);
+    parent_->children_[otherDepth] = shared_from_this();
+    if (!name_.empty()) parent_->childNameToDepth_[name_] = otherDepth;
+    depthInParent_ = otherDepth;
+
+    // Re-place the displaced occupant (if any) at `this`'s vacated OLD
+    // depth — the symmetric half of the swap that placing `this` at
+    // otherDepth (just above) already performed for `this` itself.
+    if (otherRecord) {
+        otherRecord->depth = oldDepth;
+        dl.applyPlaceObject(*otherRecord);
+    }
+    if (otherChild) {
+        parent_->children_[oldDepth] = otherChild;
+        otherChild->depthInParent_ = oldDepth;
+        if (!otherName.empty()) parent_->childNameToDepth_[otherName] = oldDepth;
+    }
+}
+
+int32_t MovieClipInstance::nextHighestDepth() const {
+    const auto& entries = timeline_->displayList().entries();
+    if (entries.empty()) return 0;
+    int32_t maxDepth = entries.begin()->first;
+    for (const auto& [depthValue, entry] : entries) {
+        (void)entry;
+        maxDepth = std::max(maxDepth, depthValue);
+    }
+    return maxDepth + 1;
+}
+
+bool MovieClipInstance::loadMovie(const std::string& url) {
+    std::optional<std::vector<uint8_t>> bytes = env_->fileLoader().loadFile(url);
+    if (!bytes) {
+        LOG_WARN("MOVIECLIP", "loadMovie('%s'): fetch failed — target clip left unchanged",
+                  url.c_str());
+        return false;
+    }
+
+    std::unique_ptr<Movie> newMovie = swf::SwfLoader::loadSwf(bytes->data(), bytes->size());
+    if (!newMovie || !newMovie->valid) {
+        LOG_WARN("MOVIECLIP",
+                  "loadMovie('%s'): fetched bytes did not parse as a valid SWF — target clip "
+                  "left unchanged",
+                  url.c_str());
+        return false;
+    }
+
+    auto newCharacters = std::make_unique<CharacterDictionary>(CharacterDictionary::build(*newMovie));
+    auto newTimeline = Timeline::build(*newMovie);
+    if (!newTimeline || newTimeline->frameCount() == 0) {
+        LOG_WARN("MOVIECLIP",
+                  "loadMovie('%s'): parsed SWF has no usable timeline — target clip left "
+                  "unchanged",
+                  url.c_str());
+        return false;
+    }
+
+    // Everything above can still fail cleanly with `this` untouched. From
+    // here on, the load has succeeded and the target clip's existing
+    // content is torn down for real — mirrors syncChildren()'s own
+    // removal-loop teardown (onClipEvent(unload) + notifyRemoved() per
+    // child, notifyButtonRemoved() per button) rather than just discarding
+    // the maps, so nothing lingers as a dangling drag/hover/press target.
+    for (auto& [depthValue, child] : children_) {
+        (void)depthValue;
+        if (!child) continue;
+        child->runClipEvent(swf::ClipEventFlag::kUnload);
+        env_->notifyRemoved(child.get());
+    }
+    for (auto& [depthValue, button] : buttonInstances_) {
+        (void)depthValue;
+        if (button) env_->notifyButtonRemoved(button.get());
+    }
+    children_.clear();
+    buttonInstances_.clear();
+    childNameToDepth_.clear();
+
+    // Own the freshly-parsed Movie/CharacterDictionary for the rest of
+    // this ScriptEnvironment's lifetime (see ownLoadedMovie()'s own doc
+    // comment for why), then rebind `this` clip's non-owning movie_/
+    // characters_ pointers to them and swap in the new Timeline. `this`'s
+    // own depthInParent_/name_/parent_/matrix_/colorTransform_ are
+    // deliberately left untouched — matches real Flash's documented
+    // "loaded content replaces the target clip's own content, keeping its
+    // depth/position/name" behavior.
+    auto [ownedMovie, ownedCharacters] =
+        env_->ownLoadedMovie(std::move(newMovie), std::move(newCharacters));
+    movie_ = ownedMovie;
+    characters_ = ownedCharacters;
+    timeline_ = std::move(newTimeline);
+
+    // See this method's own header comment for why DoInitAction bodies ARE
+    // (re)scanned for the new movie's characters, but the env-wide Sound
+    // movie_/characters_ binding is deliberately NOT rebound here.
+    env_->scanInitActions(*movie_);
+
+    // Place-before-script ordering, same as createRoot()/advanceFrame().
+    syncChildren();
+    runCurrentFrameScripts();
+    runCurrentFrameSounds();
+    return true;
 }
 
 }  // namespace flash3ds::runtime

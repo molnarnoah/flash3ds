@@ -14,6 +14,8 @@ namespace flash3ds::audio {
 
 class NullAudioBackend : public IAudioBackend {
 public:
+    void loadSound(uint16_t soundId, const int16_t* samples, size_t sampleCount, int sampleRate,
+                    int channels) override;
     void playSound(uint16_t soundId, int loopCount) override;
     void stopSound(uint16_t soundId) override;
     void stopAllSounds() override;

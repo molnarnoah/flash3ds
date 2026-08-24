@@ -58,6 +58,7 @@ GAMES=(
     "hobo6|/home/claude/game-corpus/hobo6/hobo6.swf"
     "hobo7|/home/claude/game-corpus/hobo7/hobo7.swf"
     "extreme_pamplona|/home/claude/game-corpus/extreme_pamplona/extreme-pamplona.swf"
+    "cat_ninja|/home/claude/game-corpus/cat_ninja/cat_ninja.swf"
 )
 
 for entry in "${GAMES[@]}"; do

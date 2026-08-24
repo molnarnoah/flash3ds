@@ -76,14 +76,17 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "audio/IAudioBackend.h"
+#include "audio/Mp3Decoder.h"
 #include "audio/NullAudioBackend.h"
 #include "avm1/HostBindings.h"
 #include "avm1/Value.h"
 #include "runtime/CharacterDictionary.h"
 #include "runtime/DisplayList.h"
+#include "runtime/IFileLoader.h"
 #include "runtime/InputState.h"
 #include "runtime/Movie.h"
 #include "runtime/Timeline.h"
@@ -114,6 +117,17 @@ public:
     avm1::Value run(MovieClipInstance& target, const uint8_t* code, size_t length);
 
     const std::shared_ptr<avm1::Object>& globalObject() const { return global_; }
+
+    // Roadmap Phase 4 (2026-08-21) diagnostic hook — OPTIONAL, nullptr by
+    // default (zero behavior change unless a caller explicitly sets it).
+    // Mirrors avm1::ExecutionContext::callTraceSink's own doc comment:
+    // threaded into every ExecutionContext this ScriptEnvironment creates
+    // (run()/callHandler()) so a diagnostic tool can observe every real,
+    // runtime-resolved CallMethod/NewObject/etc. a movie's scripts
+    // actually execute, without needing a static (and, per
+    // docs/known-limitations.md L6, defeatable-by-obfuscation) bytecode
+    // disassembly.
+    std::function<void(const std::string&)> callTraceSink;
 
     // Scans `movie`'s top-level tags for DoInitAction and records each
     // one's action bytes keyed by the character (SpriteId) they're
@@ -148,6 +162,30 @@ public:
     }
     audio::IAudioBackend& audioBackend() { return *audioBackend_; }
 
+    // Roadmap Phase 4 (2026-08-21, loadMovie — see docs/known-limitations.md
+    // L4): defaults to a NullFileLoader (logs, loads nothing), same
+    // "zero-setup-required" precedent as audioBackend_ above. Call
+    // setFileLoader() to point MovieClip.loadMovie() at a real
+    // implementation (LocalFileLoader for desktop/tests; see
+    // runtime/LocalFileLoader.h). Non-owning — same lifetime convention as
+    // setAudioBackend().
+    void setFileLoader(IFileLoader* loader) {
+        fileLoader_ = loader ? loader : &nullFileLoader_;
+    }
+    IFileLoader& fileLoader() { return *fileLoader_; }
+
+    // Roadmap Phase 4: owns every Movie/CharacterDictionary loadMovie()
+    // parses for the lifetime of this ScriptEnvironment (never freed mid-
+    // session — MovieClipInstance holds non-owning raw pointers into these
+    // throughout the codebase, see Movie::movie_/characters_'s own "outlives
+    // everything" convention, so something has to keep a loaded sub-movie
+    // alive for as long as any MovieClipInstance might still reference it;
+    // simply never freeing it, matching this project's small-scope-homebrew
+    // "don't build a GC for this" precedent, is the simplest safe answer).
+    // Returns the (Movie*, CharacterDictionary*) pair now owned here.
+    std::pair<const Movie*, const CharacterDictionary*> ownLoadedMovie(
+        std::unique_ptr<Movie> movie, std::unique_ptr<CharacterDictionary> characters);
+
     // Lets AVM1's native Sound object resolve a numeric attachSound() ID
     // against real DefineSound character data (see Phase 6 limitations
     // note on MovieClipInstance's class header: attachSound(name:String) —
@@ -157,6 +195,31 @@ public:
     // assumption as everything else here.
     void bindCharacters(const CharacterDictionary& characters) { characters_ = &characters; }
     const CharacterDictionary* characters() const { return characters_; }
+
+    // Non-owning, same "outlives everything" lifetime assumption as
+    // bindCharacters() — needed so playSoundById() below can read a
+    // SoundDef's raw (still-compressed) bytes out of Movie::data. Called
+    // once by MovieClipInstance::createRoot(), alongside bindCharacters().
+    void bindMovie(const Movie& movie) { movie_ = &movie; }
+
+    // Roadmap Phase 3 (2026-08-21, MP3 audio decode — see
+    // docs/known-limitations.md L1): the single entry point every StartSound
+    // tag dispatch and AVM1 Sound.start() call goes through (replacing a
+    // direct audioBackend().playSound() call). Decodes `soundId`'s audio
+    // ON FIRST REFERENCE and caches the result (decode-on-demand, not
+    // decode-all-up-front — deliberately, given docs/memory-audit.md's
+    // still-open memory-cost findings: a game that never triggers a given
+    // sound never pays to decode it), then hands the decoded PCM to the
+    // current IAudioBackend via loadSound() before calling playSound() —
+    // exactly once per distinct soundId, not once per trigger; a second
+    // playSoundById() call for an already-decoded soundId skips straight to
+    // playSound(). Only MP3-format DefineSound characters actually decode
+    // right now (ADPCM/Nellymoser/Speex remain unimplemented, see L1); for
+    // anything else (unresolvable soundId, non-MP3 format, or a decode
+    // failure) this still calls playSound() — matching Phase 6's original
+    // "the backend at least gets told this was triggered" behavior, now
+    // just without any PCM behind it.
+    void playSoundById(uint16_t soundId, int loopCount);
 
     // ActionStartDrag/ActionEndDrag's real (Phase 6) implementation: tracks
     // at most one dragged clip at a time (matches real Flash — starting a
@@ -323,6 +386,26 @@ private:
     audio::NullAudioBackend nullAudioBackend_;
     audio::IAudioBackend* audioBackend_ = &nullAudioBackend_;
     const CharacterDictionary* characters_ = nullptr;
+    const Movie* movie_ = nullptr;
+
+    NullFileLoader nullFileLoader_;
+    IFileLoader* fileLoader_ = &nullFileLoader_;
+    // See ownLoadedMovie()'s own doc comment: these just accumulate for the
+    // lifetime of this ScriptEnvironment, never pruned.
+    std::vector<std::unique_ptr<Movie>> loadedMovies_;
+    std::vector<std::unique_ptr<CharacterDictionary>> loadedCharacterDicts_;
+
+    // Decode-on-demand cache keyed by soundId (see playSoundById()'s own
+    // comment for why decode-on-demand rather than eager). std::nullopt
+    // means "already attempted, decode failed or wasn't applicable" — so a
+    // sound that can't be decoded is only ever attempted once, not on
+    // every single trigger.
+    std::unordered_map<uint16_t, std::optional<audio::DecodedAudio>> decodedSoundCache_;
+
+    // Decodes soundId on first reference (see playSoundById()); returns the
+    // cached result (which may itself be an absent std::optional, for "we
+    // already tried and it didn't decode") on every call after the first.
+    const std::optional<audio::DecodedAudio>& ensureSoundDecoded(uint16_t soundId);
 
     MovieClipInstance* dragTarget_ = nullptr;
     avm1::HostBindings::DragOptions dragOptions_;
@@ -536,6 +619,103 @@ public:
     // implementation, exposed here so tests can drive them directly too.
     std::shared_ptr<MovieClipInstance> cloneSprite(const std::string& newName, int32_t depth);
     void removeFromParent();
+
+    // Roadmap Phase 4 (2026-08-21, dynamic instantiation — see
+    // docs/known-limitations.md L3): AS2 MovieClip.attachMovie()'s real
+    // primitive. Instantiates `characterId` (which MUST resolve to a
+    // SpriteDef — a MovieClip library symbol, exactly like cloneSprite()'s
+    // own constraint, since attachMovie always returns a MovieClip) as a
+    // new child of `this` (not of `this`'s parent — the key difference
+    // from cloneSprite(), which clones INTO its own parent as a sibling of
+    // itself) at `depth`, replacing any existing occupant there (matches
+    // real Flash's own "attachMovie into an occupied depth replaces it"
+    // behavior, same as cloneSprite's). Returns nullptr (logged) if
+    // `characterId` doesn't resolve or isn't a sprite. `initObject`, if
+    // non-null, has its own properties shallow-copied onto the new clip's
+    // scriptObject BEFORE its first frame's scripts run (matches real
+    // Flash's documented attachMovie(..., initObject) timing).
+    std::shared_ptr<MovieClipInstance> attachCharacter(
+        uint16_t characterId, const std::string& newName, int32_t depth,
+        const std::shared_ptr<avm1::Object>& initObject);
+
+    // AS2 MovieClip.createEmptyMovieClip()'s real primitive: a new child
+    // of `this` with NO backing character (no shape/sprite content of its
+    // own — see SceneRenderer::renderClip()'s own comment on why an empty
+    // display list already renders as "nothing" with no special-casing
+    // needed) at `depth`, ready to have further clips attachMovie()'d or
+    // duplicateMovieClip()'d into it. Always succeeds (nothing to fail to
+    // resolve, unlike attachCharacter()).
+    std::shared_ptr<MovieClipInstance> createEmptyChild(const std::string& newName,
+                                                           int32_t depth);
+
+    // AS2 MovieClip.swapDepths(target)'s real primitive: swaps `this`'s
+    // depth (within its parent's display list) with `otherDepth`'s current
+    // occupant, if any (an empty target depth just moves `this` there,
+    // matching real Flash — "if you specify a depth that is already
+    // occupied, the current occupant is moved to this clip's old depth").
+    // No-op (logged) if `this` is the root clip (nothing to swap within).
+    void swapDepthsWith(int32_t otherDepth);
+
+    // AS2 MovieClip.getNextHighestDepth()'s real primitive: 1 + the
+    // highest depth currently occupied in `this` clip's OWN display list
+    // (both statically-placed and dynamically-attached/created content —
+    // both go through the same DisplayList, see attachCharacter()/
+    // createEmptyChild()'s own applyPlaceObject() calls), or 0 if nothing
+    // is placed yet. A caller (e.g. game code trying to attachMovie()
+    // several clips without depth collisions) is expected to use this
+    // rather than guessing at a free depth.
+    int32_t nextHighestDepth() const;
+
+    // AS2 MovieClip.loadMovie(url)'s real primitive. Real Flash's
+    // loadMovie() has TWO forms — a full `_level`-indexed sibling-movie
+    // load (_levelN.loadMovie(...)), and the far more common "load into an
+    // existing target clip, replacing its own content while keeping its
+    // depth/position/name" form (targetClip.loadMovie(...)) — this
+    // implements ONLY the second, simpler form (see docs/known-limitations.md
+    // L4's "loadMovie scoping decision" for why the `_level` form was
+    // deemed too large a lift for this phase: it would need SceneRenderer
+    // to walk multiple independent root movies, plus non-trivial
+    // Movie/CharacterDictionary ownership-lifetime questions that this
+    // form sidesteps by keeping everything inside the existing single-root
+    // tree).
+    //
+    // On success: fetches `url` via ScriptEnvironment::fileLoader(), parses
+    // it as a fresh SWF (SwfLoader::loadSwf), builds a fresh
+    // CharacterDictionary for it, hands both to
+    // ScriptEnvironment::ownLoadedMovie() (so they outlive this call — see
+    // that method's own doc comment), tears down `this` clip's ENTIRE
+    // existing content (every current child/button, each properly
+    // unloaded via the same notifyRemoved()/notifyButtonRemoved() path
+    // syncChildren()'s own prune loop uses — see the .cpp), rebinds
+    // `this`'s own movie_/characters_ pointers to the freshly-loaded pair,
+    // replaces `this`'s Timeline with one built from the new movie's
+    // top-level tags, then runs the new content's frame-1 scripts (mirrors
+    // createRoot()'s own "place children before running frame 1" order).
+    // `this`'s OWN depth/position/name/parent are left untouched — matches
+    // real Flash's documented "loaded content replaces the target clip's
+    // own content, keeping its depth/position/name" behavior.
+    //
+    // Returns false (logged) without changing anything if: no IFileLoader
+    // is wired up (NullFileLoader — see ScriptEnvironment::setFileLoader()),
+    // the fetch fails, or the fetched bytes don't parse as a valid SWF.
+    // `this`'s prior content is left completely untouched in every failure
+    // case — a failed loadMovie() never leaves a clip half-torn-down.
+    //
+    // KNOWN LIMITATION (documented, not silently glossed over): the new
+    // movie's DoInitAction bodies ARE scanned into ScriptEnvironment (so
+    // sprites newly instantiated from the loaded movie's own character
+    // dictionary get their init actions), but ScriptEnvironment's single
+    // env-wide movie_/characters_ binding (used by Sound.attachSound(id)/
+    // playSoundById() for numeric-ID sound resolution) is NOT rebound to
+    // the loaded sub-movie — it stays pointed at whichever movie
+    // originally called ScriptEnvironment::bindMovie()/bindCharacters()
+    // (almost always the true top-level root). A loaded sub-movie's OWN
+    // sound characters therefore won't resolve by numeric ID through that
+    // path; this is a real, narrow gap, not an oversight — see
+    // docs/known-limitations.md L4 for the full writeup and why widening
+    // ScriptEnvironment's binding to be per-MovieClipInstance rather than
+    // env-wide is out of scope for this phase.
+    bool loadMovie(const std::string& url);
 
 private:
     MovieClipInstance(const Movie& movie, const CharacterDictionary& characters,

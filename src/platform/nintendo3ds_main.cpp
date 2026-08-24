@@ -9,7 +9,7 @@
 //
 // This app now drives BOTH screens every frame and doubles as a hardware
 // input/audio smoke test:
-//   - TOP screen: the embedded demo SWF, rendered exactly as before.
+//   - TOP screen: the loaded game's SWF, rendered exactly as before.
 //   - BOTTOM screen: a live button/circle-pad/touch visualization (see
 //     drawButtonTestScreen() below) — every mapped input lights up on
 //     screen the instant it's pressed/moved/touched, independent of
@@ -23,19 +23,24 @@
 //   - Quit is START+SELECT held together (not START alone, so START's own
 //     indicator on the bottom screen is actually visible/testable).
 //
-// Virtual Console resource layer (2026-08-19): this app no longer plays a
-// single EMBEDDED demo movie. It loads "config.ini" and (whatever
-// config.ini's [game] swf= names, "game.swf" by default) from this
-// project's own embedded RomFS section — see platform/Nintendo3DSRomfs.h
-// for how that's read WITHOUT libctru's own romfsInit() (excluded from
-// this from-source toolchain build, same sys/iosupport.h reason
-// archive_dev.c is — see docs/3ds-toolchain.md), vc/GamePackage.h for how
-// the fetched bytes become a runnable Movie, and docs/virtual-console.md
-// for the full design/RomFS layout/config.ini syntax. Swapping which SWF
-// plays no longer needs a C++ change or recompile — see that doc's
-// "Replacing game.swf" section — only repackaging the .3dsx's RomFS
-// section (CMakeLists.txt's FLASH3DS_BUILD_3DS block does this
-// automatically from the checked-in romfs/ directory on every build).
+// Virtual Console resource layer (2026-08-19, ported forward into this tree
+// 2026-08-24 — see CLAUDE.md's "Virtual Console layer" section for the full
+// provenance note): this app no longer plays a single EMBEDDED demo movie.
+// It loads "config.ini" and (whatever config.ini's [game] swf= names,
+// "game.swf" by default) from this project's own embedded RomFS section —
+// see platform/Nintendo3DSRomfs.h for how that's read WITHOUT libctru's own
+// romfsInit() (excluded from this from-source toolchain build, same sys/
+// iosupport.h reason archive_dev.c is — see docs/3ds-toolchain.md),
+// vc/GamePackage.h for how the fetched bytes become a runnable Movie, and
+// docs/virtual-console.md for the full design/RomFS layout/config.ini
+// syntax. Swapping which SWF plays no longer needs a C++ change or
+// recompile — see that doc's "Replacing game.swf" section — only
+// repackaging the .3dsx's RomFS section (CMakeLists.txt's
+// FLASH3DS_BUILD_3DS block does this automatically from the checked-in
+// romfs/ directory on every build). EmbeddedDemoSwf.h is no longer used by
+// this file but is left in the tree (harmless — see
+// tools/gen_3ds_demo_swf.py's --swf-out mode, which now generates
+// romfs/game.swf instead of a C++ header).
 //
 // This file is only compiled for the 3DS target (guarded by __3DS__).
 
@@ -53,6 +58,7 @@
 
 #include "audio/Nintendo3DSAudioBackend.h"
 #include "platform/Log.h"
+#include "platform/MemoryDiagnostics.h"
 #include "platform/Nintendo3DSInput.h"
 #include "platform/Nintendo3DSRomfs.h"
 #include "renderer/IRenderer.h"
@@ -279,6 +285,22 @@ int main(int argc, char** argv) {
     // unobserved -- with no console wired up).
     gfxInitDefault();
 
+    // M2 RAM-validation phase (2026-08-24): hold L at boot to enable
+    // MemoryDiagnostics checkpoint logging for this run (see
+    // MemoryDiagnostics.h -- disabled by default so a normal run pays zero
+    // extra cost/log spam; no persistent config file exists yet -- that's a
+    // later, separate roadmap phase -- so a boot-held-button toggle is the
+    // smallest mechanism that actually works today). LOG_* output has no
+    // on-screen console (see this function's own note above), so this is
+    // only observable via whatever captures stderr/svcOutputDebugString
+    // (e.g. an emulator's log console).
+    hidScanInput();
+    if (hidKeysHeld() & KEY_L) {
+        flash3ds::platform::setEnabled(true);
+        flash3ds::platform::resetPeak();
+    }
+    flash3ds::platform::checkpoint("startup (gfxInitDefault done)");
+
     // Top screen: 400x240 logical pixels (standard 3DS top-screen
     // resolution; the wide/800px mode is not used here). Bottom screen:
     // 320x240 logical pixels (standard 3DS bottom-screen resolution).
@@ -316,6 +338,7 @@ int main(int argc, char** argv) {
         gfxExit();
         return 1;
     }
+    flash3ds::platform::checkpoint("after RomFS open");
 
     GamePackage package = flash3ds::vc::buildGamePackage(
         [&romfs](const std::string& name, std::vector<uint8_t>& outBytes) {
@@ -337,12 +360,15 @@ int main(int argc, char** argv) {
         gfxExit();
         return 1;
     }
+    flash3ds::platform::checkpoint("after SWF load (movie parsed + valid)");
 
     CharacterDictionary characters = CharacterDictionary::build(*movie);
+    flash3ds::platform::checkpoint("after CharacterDictionary::build");
     ScriptEnvironment env;
 
     Nintendo3DSAudioBackend audioBackend;
     env.setAudioBackend(&audioBackend);
+    flash3ds::platform::checkpoint("after audio backend initialization");
 
     // The touch digitizer is only a physical thing on the BOTTOM screen on
     // real 3DS hardware -- config.ini's [touch] screen= selects which
@@ -366,8 +392,11 @@ int main(int argc, char** argv) {
         gfxExit();
         return 1;
     }
+    flash3ds::platform::checkpoint("after MovieClipInstance::createRoot (root clip built)");
 
     SceneRenderer scene(*movie, characters);
+    bool loggedFirstFrame = false;
+    bool loggedFirstRender = false;
 
     // Frame-rate pacing: advance the loaded movie's own timeline at
     // whatever frame rate ITS OWN header declares (falling back to 12fps
@@ -411,9 +440,17 @@ int main(int argc, char** argv) {
         if (++vblankCounter >= vblanksPerSwfFrame) {
             vblankCounter = 0;
             root->advanceFrame();
+            if (!loggedFirstFrame) {
+                loggedFirstFrame = true;
+                flash3ds::platform::checkpoint("after first frame (advanceFrame)");
+            }
         }
 
         scene.render(*root, topRenderer, kTopWidth, kTopHeight);
+        if (!loggedFirstRender) {
+            loggedFirstRender = true;
+            flash3ds::platform::checkpoint("after first render (SceneRenderer::render)");
+        }
         drawButtonTestScreen(bottomRenderer, kHeld);
         // Present BOTH screens together -- see Nintendo3DSRenderer::
         // presentFrame()'s comment for why this must be called exactly
@@ -423,6 +460,7 @@ int main(int argc, char** argv) {
         gspWaitForVBlank();
     }
 
+    flash3ds::platform::checkpoint("shutdown (peak reflects the whole session)");
     audioBackend.stopAllSounds();
     gfxExit();
     return 0;

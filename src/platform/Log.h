@@ -46,12 +46,13 @@ public:
     // header has no platform-specific type anywhere in it -- so a
     // platform backend can register e.g. an on-device debug-output SVC
     // call without flash3ds_core itself gaining any platform dependency.
-    // Pass nullptr to clear. See docs/virtual-console.md's "3DS RomFS
-    // failure diagnostics" note for why this exists: on the 3DS target,
-    // setSink()'s default (stderr) is a silent no-op (newlib's _write is
-    // deliberately left unimplemented -- see docs/3ds-toolchain.md), so
-    // without a second path every LOG_ERROR on that target was completely
-    // invisible.
+    // Pass nullptr to clear. Ported forward 2026-08-24 from the Virtual
+    // Console layer's own 2026-08-19 diagnostic fix (see CLAUDE.md's
+    // "Virtual Console layer" section): on the 3DS target, setSink()'s
+    // default (stderr) is a silent no-op (newlib's _write is deliberately
+    // left unimplemented -- see docs/3ds-toolchain.md), so without a
+    // second path every LOG_ERROR on that target was completely invisible
+    // -- discovered while diagnosing a "loads then silently quits" report.
     using DebugCallback = void (*)(LogLevel level, const char* category, const char* message);
     static void setDebugCallback(DebugCallback callback);
 

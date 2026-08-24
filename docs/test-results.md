@@ -239,3 +239,28 @@ created — see `tests/swf/README.md`).
   event dispatch — a second, different mechanism than Hobo's, see
   `docs/real-game-compatibility.md` — still missing).
 - Real Nintendo 3DS hardware, for anything (see `docs/3ds-limitations.md`).
+
+## M2 RAM-validation phase (2026-08-24)
+
+- **311/311 tests passing** (up from 304 pre-phase) — 7 new tests: 4 lazy
+  CharacterDictionary-parsing regressions
+  (`tests/test_character_dictionary.cpp`) + 3 `MemoryDiagnostics` unit
+  tests (`tests/test_memory_diagnostics.cpp`). Zero regressions.
+- **9-game render harness** (`tools/real_game_harness/run_harness.sh`,
+  Cat Ninja added to the `GAMES` array this phase): byte-identical frame
+  MD5s before/after Phase 5 (Option B lazy parsing) for every game,
+  including Extreme Pamplona's and Cat Ninja's pre-existing out-of-range-
+  frame failures (both reproduced identically — Cat Ninja's `FrameCount=2`
+  makes `--render 3` correctly fail, not a bug).
+- **3DS cross-build:** clean rebuild after Phase 5 + `MemoryDiagnostics`
+  landed. Required one CMakeLists.txt fix (`flash3ds_core` needed
+  `FLASH3DS_LIBCTRU_INCLUDE` added to its own include path for the first
+  time, since `MemoryDiagnostics.cpp` is the first `flash3ds_core`
+  translation unit that needs `<3ds.h>` when built for `__3DS__` — see
+  `docs/memory-audit.md` §11). Zero undefined non-weak symbols
+  (`arm-none-eabi-nm -u build_3ds/flash3ds_3ds | grep -v " w \| W "`
+  prints nothing). New `.3dsx`: 443552 bytes, SHA-256
+  `53aa3fefdb9fc232253ddeed96c2c7477d7c6a74a6d2a38448ba07e61f6db7b9`.
+- **Not run this phase, same standing limitation as every prior phase:**
+  on Azahar or real hardware — no emulator/device access from this
+  environment.

@@ -14,6 +14,18 @@ namespace flash3ds::avm1 {
 
 namespace {
 
+// --- ExecutionContext::callTraceSink formatting helper (Roadmap Phase 4,
+// 2026-08-21 — see that field's own doc comment) --------------------------
+
+std::string formatTraceArgs(const std::vector<Value>& args) {
+    std::string s;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (i) s += ", ";
+        s += args[i].isString() ? ("\"" + args[i].toString() + "\"") : args[i].toString();
+    }
+    return s;
+}
+
 // --- small numeric helpers ------------------------------------------------
 
 double readFloat32(swf::SwfReader& r) {
@@ -224,6 +236,7 @@ Value invokeFunction(ExecutionContext& callerCtx, const std::shared_ptr<Object>&
     newCtx.traceSink = callerCtx.traceSink;
     newCtx.randomSource = callerCtx.randomSource;
     newCtx.clockSource = callerCtx.clockSource;
+    newCtx.callTraceSink = callerCtx.callTraceSink;
     newCtx.callDepthCounter = depthCounter;
     newCtx.thisValue = thisVal;
 
@@ -485,13 +498,19 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 swf::SwfReader r2(data.data(), data.size());
                 std::string url = r2.readCString();
                 std::string target = r2.readCString();
+                if (ctx.callTraceSink) {
+                    ctx.callTraceSink("GetURL url=\"" + url + "\" target=\"" + target + "\"");
+                }
                 LOG_DEBUG("AVM1", "GetURL('%s','%s') — browser navigation out of scope for a 3DS runtime",
                           url.c_str(), target.c_str());
                 break;
             }
             case ActionCode::GetURL2: {
-                ctx.stack.pop();  // Target
-                ctx.stack.pop();  // URL
+                Value target = ctx.stack.pop();
+                Value url = ctx.stack.pop();
+                if (ctx.callTraceSink) {
+                    ctx.callTraceSink("GetURL2 url=" + url.toString() + " target=" + target.toString());
+                }
                 LOG_DEBUG("AVM1", "GetURL2 — browser navigation out of scope for a 3DS runtime");
                 break;
             }
@@ -929,6 +948,9 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 double numArgsRaw = ctx.stack.pop().toNumber();
                 std::vector<Value> args = popArgs(ctx.stack, numArgsRaw);
                 std::string className = classNameVal.toString();
+                if (ctx.callTraceSink) {
+                    ctx.callTraceSink("NewObject new " + className + "(" + formatTraceArgs(args) + ")");
+                }
 
                 if (className == "Object") {
                     ctx.stack.push(Value::object(std::make_shared<Object>()));
@@ -1018,6 +1040,9 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 double numArgsRaw = ctx.stack.pop().toNumber();
                 std::vector<Value> args = popArgs(ctx.stack, numArgsRaw);
                 std::string name = nameVal.toString();
+                if (ctx.callTraceSink) {
+                    ctx.callTraceSink("CallFunction " + name + "(" + formatTraceArgs(args) + ")");
+                }
                 Value funcVal = ctx.scope.getVariable(name);
                 if (funcVal.isObject() && funcVal.asObject() && funcVal.asObject()->isFunction()) {
                     ctx.stack.push(invokeFunction(ctx, funcVal.asObject(), Value::undefined(), args));
@@ -1039,6 +1064,10 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                     break;
                 }
                 std::string methodName = methodNameVal.toString();
+                if (ctx.callTraceSink) {
+                    ctx.callTraceSink("CallMethod " + objectVal.toString() + "." + methodName + "(" +
+                                       formatTraceArgs(args) + ")");
+                }
                 Value funcVal = (methodNameVal.isUndefined() || methodName.empty())
                                      ? objectVal
                                      : objectVal.asObject()->getMember(methodName);
@@ -1058,6 +1087,10 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
 
                 Value ctorVal;
                 std::string methodName = methodNameVal.toString();
+                if (ctx.callTraceSink) {
+                    ctx.callTraceSink("NewMethod new " + objectVal.toString() + "." + methodName + "(" +
+                                       formatTraceArgs(args) + ")");
+                }
                 if (objectVal.isObject() && objectVal.asObject()) {
                     ctorVal = (methodNameVal.isUndefined() || methodName.empty())
                                   ? objectVal

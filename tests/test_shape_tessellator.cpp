@@ -1,3 +1,5 @@
+#include <memory>
+
 #include "TestFramework.h"
 #include "renderer/ShapeTessellator.h"
 
@@ -10,6 +12,7 @@ using flash3ds::swf::RgbaColor;
 using flash3ds::swf::Shape;
 using flash3ds::swf::ShapeRecord;
 using flash3ds::swf::ShapeRecordType;
+using flash3ds::swf::ShapeStyleChange;
 
 namespace {
 
@@ -26,25 +29,26 @@ Shape makeRectangleShape(int32_t widthTwips, int32_t heightTwips, RgbaColor fill
 
     ShapeRecord moveTo;
     moveTo.type = ShapeRecordType::kStyleChange;
-    moveTo.hasMoveTo = true;
-    moveTo.moveToXTwips = 0;
-    moveTo.moveToYTwips = 0;
-    moveTo.fillStyle1 = 1;
+    moveTo.styleChange = std::make_shared<ShapeStyleChange>();
+    moveTo.styleChange->hasMoveTo = true;
+    moveTo.styleChange->moveToXTwips = 0;
+    moveTo.styleChange->moveToYTwips = 0;
+    moveTo.styleChange->fillStyle1 = 1;
     shape.records.push_back(moveTo);
 
     ShapeRecord right;
     right.type = ShapeRecordType::kStraightEdge;
-    right.deltaXTwips = widthTwips;
+    right.edge.straightEdge.deltaXTwips = widthTwips;
     shape.records.push_back(right);
 
     ShapeRecord down;
     down.type = ShapeRecordType::kStraightEdge;
-    down.deltaYTwips = heightTwips;
+    down.edge.straightEdge.deltaYTwips = heightTwips;
     shape.records.push_back(down);
 
     ShapeRecord left;
     left.type = ShapeRecordType::kStraightEdge;
-    left.deltaXTwips = -widthTwips;
+    left.edge.straightEdge.deltaXTwips = -widthTwips;
     shape.records.push_back(left);
 
     return shape;
@@ -114,13 +118,14 @@ TEST_CASE(TessellateShape_LineOnly_ProducesStrokeNoFill) {
 
     ShapeRecord moveTo;
     moveTo.type = ShapeRecordType::kStyleChange;
-    moveTo.hasMoveTo = true;
-    moveTo.lineStyleIndex = 1;
+    moveTo.styleChange = std::make_shared<ShapeStyleChange>();
+    moveTo.styleChange->hasMoveTo = true;
+    moveTo.styleChange->lineStyleIndex = 1;
     shape.records.push_back(moveTo);
 
     ShapeRecord edge;
     edge.type = ShapeRecordType::kStraightEdge;
-    edge.deltaXTwips = 500;
+    edge.edge.straightEdge.deltaXTwips = 500;
     shape.records.push_back(edge);
 
     auto tess = tessellateShape(shape);
@@ -142,16 +147,17 @@ TEST_CASE(TessellateShape_CurvedEdge_SubdividesIntoMultiplePoints) {
 
     ShapeRecord moveTo;
     moveTo.type = ShapeRecordType::kStyleChange;
-    moveTo.hasMoveTo = true;
-    moveTo.fillStyle1 = 1;
+    moveTo.styleChange = std::make_shared<ShapeStyleChange>();
+    moveTo.styleChange->hasMoveTo = true;
+    moveTo.styleChange->fillStyle1 = 1;
     shape.records.push_back(moveTo);
 
     ShapeRecord curve;
     curve.type = ShapeRecordType::kCurvedEdge;
-    curve.controlDeltaXTwips = 100;
-    curve.controlDeltaYTwips = 0;
-    curve.anchorDeltaXTwips = 100;
-    curve.anchorDeltaYTwips = 100;
+    curve.edge.curvedEdge.controlDeltaXTwips = 100;
+    curve.edge.curvedEdge.controlDeltaYTwips = 0;
+    curve.edge.curvedEdge.anchorDeltaXTwips = 100;
+    curve.edge.curvedEdge.anchorDeltaYTwips = 100;
     shape.records.push_back(curve);
 
     auto tess = tessellateShape(shape, /*curveSubdivisions=*/4);

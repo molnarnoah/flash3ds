@@ -1,708 +1,675 @@
-# Known Limitations — Prioritized
+# Known Limitations — flash3ds-runtime
 
-**Compatibility-audit phase (2026-08-18).** Built from the ground-truth
-audit behind `docs/compatibility-matrix.md`/`docs/avm1-compatibility.md`.
-Five highest-impact limitations, ranked by how much they block real content
-(primarily `hobo.swf`, the project's primary compatibility target — see
-`docs/compatibility.md`). Each entry below states the failure-classification
-taxonomy category (per the audit-phase charter: PARSER, TAG SUPPORT,
-TIMELINE, DISPLAY LIST, RENDERER, AVM1, OBJECT MODEL, INPUT, AUDIO, TEXT,
-FONT, EXTERNALINTERFACE, MEMORY, PERFORMANCE, 3DS PLATFORM, UNKNOWN).
+**Rebuilt 2026-08-21 as part of a complete current-state audit** (see
+`docs/current-state-audit.md`). Every item below was checked against the
+actual current source tree this turn — not carried forward from this
+file's own prior text uncritically. The prior version of this file (before
+this rebuild) is preserved in `git log`/`git diff` for full historical
+narrative (STEP-by-STEP writeups for each interactivity sub-fix, etc.);
+this rebuild keeps that context brief and pointers explicit rather than
+re-pasting it.
 
-## Priority #1 — ColorTransform/`_alpha` never applied to rendered pixels — **FIXED THIS PHASE**
-
-**Classification: RENDERER.**
-
-### STEP 1 — Audit
-
-`MovieClipInstance` and `DisplayListEntry` both store a real, script-mutable
-`swf::ColorTransform` (`_alpha` maps directly to `colorTransform_.alphaMult`
-— `MovieClipInstance.h:295-296`), populated from `PlaceObject2`'s
-`CXFORMWITHALPHA` field. But `SceneRenderer` — audited line by line — never
-once read `colorTransform()`/`.alpha()` anywhere in its render call chain.
-Confirmed by grep: zero references to color-transform/alpha in
-`src/renderer/`. A prior doc (`docs/compatibility.md`, Phase 9) claimed
-`hobo.swf`'s "PLAY!" button visibly "fades in by frame 5" — this looked, at
-first read, like a contradiction worth resolving (either the claim was
-wrong, or there's a second, undiscovered code path applying alpha).
-
-### STEP 2-3 — Reproduction, isolation
-
-Minimal repro: place a `DefineSprite` character, set its `_alpha` (or, at
-the AVM1 layer, have a script assign `_alpha = 50`), render, and check
-whether the rendered pixel color is blended toward the background or comes
-out as the shape's raw, fully-opaque color. Before the fix: always fully
-opaque, regardless of `_alpha`. Isolated entirely to `src/renderer/
-SceneRenderer.cpp` — no other subsystem involved (the *storage* and
-*script-mutability* of `_alpha` were already correct, per
-`tests/test_movieclip_instance.cpp`'s existing property tests).
-
-### STEP 4-5 — Fix
-
-Added `swf::concatColorTransform(parent, child)` (`src/swf/SwfRecords.h/
-.cpp`) — composes color transforms down the display tree, mirroring the
-existing `concatMatrix`. Added `swf::applyColorTransform(color, ct)`
-(`src/swf/ShapeRecords.h/.cpp`, alongside `RgbaColor`) — applies `output =
-input * mult + add` per channel, clamped to `[0,255]`, with an identity
-fast-path. Threaded an effective, world-composed `ColorTransform` alongside
-the existing `worldMatrix` through every `SceneRenderer` render entry point
-(`renderClip`/`renderCharacter`/`renderShapeCharacter`/`renderTextCharacter`/
-`renderEditTextCharacter`/`renderGlyph`), applied at the exact point each
-tessellated polygon/stroke/glyph color is resolved, immediately before
-`IRenderer::fillPolygon`/`strokePolyline`. Composition happens once per
-MovieClip child (parent cxform ∘ child's own `colorTransform()`) and once
-per leaf character (parent cxform ∘ the `DisplayListEntry`'s own
-`colorTransform`, populated from that placement's `CXFORMWITHALPHA` if
-present) — matching exactly how `worldMatrix` composition already works.
-
-### STEP 6 — Desktop test
-
-Added two regression tests, `SceneRenderer_MovieClipInstanceAlpha_
-BlendsRenderedColorWithBackground` and `SceneRenderer_
-MovieClipInstanceAlphaZero_RendersFullyTransparent`
-(`tests/test_scene_renderer.cpp`): a nested-sprite fixture's child clip has
-its `_alpha` set (50% and 0% respectively) via the same C++ setter real AS2
-`_alpha = x;` compiles down to, then the rendered pixel is checked against
-the expected alpha-blended-with-white-background color. Both pass. Full
-suite: **189/189 passing** (up from 187 before these two additions), zero
-regressions.
-
-**Independent real-content verification:** rendered `hobo.swf` frames 1-5
-with the desktop CLI both before and after the fix and diffed byte-for-byte
-— **100% identical output**, meaning `hobo.swf`'s frame-1-5 content never
-actually exercises a non-identity `ColorTransform`/`_alpha` change on any
-placed character. This means the Phase 9 doc's "PLAY! fading in by frame 5"
-observation, whatever its cause, **is not attributable to ColorTransform** —
-there IS a real visual difference between frame 1 and frame 5 in that
-region (device px bbox ~(167,308)-(301,355), 4189 pixels changed), but it
-must come from a different mechanism (most likely a different/additional
-shape placed on a later frame). This is flagged as an open, not-fully-
-resolved correction to the record in `docs/compatibility-matrix.md`, not
-asserted as solved.
-
-### STEP 7-8 — 3DS build
-
-`cmake --build build_3ds` succeeds cleanly with the fix (only pre-existing,
-unrelated newlib ABI-note/`_close`-not-implemented warnings, identical to
-before this change). New `.3dsx` built successfully. **Not yet tested on
-real hardware or Azahar this phase** — delivered to the user for that
-confirmation, matching the same "code-complete, toolchain-verified, not yet
-hardware-confirmed" caveat every prior 3DS-side change in this project has
-carried honestly.
-
-### STEP 9 — Regression test
-
-Done — see STEP 6. Both new tests are permanent, run every `ctest` cycle.
-
-### STEP 10 — What now works / what remains
-
-**Now works:** any content using `_alpha` (script-driven fades, tweens,
-damage-flash effects) or a `PlaceObject2` `CXFORMWITHALPHA` (author-placed
-partial transparency/tint) renders correctly for the first time. This is a
-broadly-applicable fix — alpha fades are one of the most common visual
-techniques in Flash content generally, independent of any one target title.
-
-**Remains:** the specific mechanism behind `hobo.swf`'s observed frame-1-5
-visual change in the button region is still uncharacterized (see above) —
-candidate follow-up, not chased further this phase per the "don't fix
-multiple things at once" rule. `ColorTransform` composition itself has not
-been independently cross-checked against a real Flash-authored nested-CXFORM
-case beyond this project's own regression tests (same caveat class as the
-AVM1 "unverified assumption" list in `docs/avm1-compatibility.md`).
+**Schema per item:** ID · Subsystem · Status · Source location · Evidence
+· Affected SWFs (from the real corpus, `docs/real-game-compatibility.md`)
+· Severity · Dependency · Proposed fix · Ghidra evidence · JPEXS evidence
+· Test required.
 
 ---
 
-## Priority #2 — No mouse/button interactivity (blocks all real gameplay progression)
-
-**Interactivity phase (2026-08-18): this priority is now the SOLE focus**
-per explicit user instruction — Priorities #3-5 below are deliberately on
-hold until this one reaches a stable state (see `CLAUDE.md`). Full audit:
-`docs/interactivity-audit.md`. First sub-fix, done this turn (STEP 1-10
-below); remaining sub-items tracked in `docs/interactivity-audit.md` §8 and
-NOT yet started.
-
-### Sub-fix 1/N — `_width`/`_height` hardcoded to 0 — **FIXED THIS TURN**
-
-**Classification: DISPLAY LIST (bounding-box geometry).**
-
-**STEP 1 — Audit.** Confirmed (again, independently, this turn) that both
-`MovieClipInstance::handleNativeGet()`'s `_width`/`_height` branch and
-`MovieClipHostBindings::getProperty()`'s index 8/9 cases returned a
-hardcoded `0`, unconditionally. Everything else in the interactivity
-dependency chain (hit-testing, button state, event dispatch) needs real
-bounding-box geometry to exist first — see `docs/interactivity-audit.md`
-§8's dependency ordering — making this the correct, and only correct,
-first move ("smallest root-cause fix that unlocks the largest amount of
-interactivity").
-
-**STEP 2-3 — Reproduction/isolation.** Minimal repro: place any shape
-inside a named MovieClip, read `mc._width`/`mc._height` from AS2 — always
-`0` regardless of the shape's actual size. Isolated entirely to
-`runtime::MovieClipInstance` — no dependency on hit-testing, input, or
-rendering.
-
-**STEP 4-5 — Fix.** Added `swf::transformRect(const Matrix&, const Rect&)
--> Rect` (`src/swf/SwfRecords.h/.cpp`) — transforms a Rect's 4 corners by a
-matrix and returns the true axis-aligned bounding box of the result (not a
-naive per-field remap — correctly grows the box under rotation/skew). Added
-`MovieClipInstance::computeBoundsInOwnSpace()` (private, recursive) —
-unions every currently-placed leaf character's bounds (`ShapeDef::bounds`/
-`TextDef::bounds`/`EditTextDef::bounds`, all pre-existing/untouched; for
-`ButtonDef`, a new `characterOwnBoundsRect()` helper unions `stateHitTest`-
-flagged records' referenced-character bounds, falling back to `stateUp`
-records if no explicit hit-test state exists) and every nested
-`MovieClipInstance` child's own recursively-computed bounds, each
-transformed through the relevant placement/local matrix. `width()`/
-`height()` (public) then transform that own-space union through the
-clip's own `matrix_` and convert to pixels — matching real AS2 semantics
-where `_width`/`_height` are measured in the PARENT's coordinate space
-(rotating/scaling a clip changes its reported size).
-
-**STEP 6 — Desktop tests.** Five new regression tests
-(`tests/test_movieclip_instance.cpp`): a single placed shape's bounds match
-exactly; `GetProperty`(8/9) and bare `.member` access both agree with the
-direct C++ `width()`/`height()` call; `_xscale=200` doubles `_width` while
-leaving `_height` unchanged; two shapes at different offsets union into the
-full combined bounding box (proving real recursion/union, not a first-
-entry-only shortcut); an empty clip returns exactly `0`, not garbage from
-an uninitialized accumulator. **194/194 tests passing** (up from 189),
-zero regressions.
-
-**Independent real-content check:** rendered `hobo.swf` frame 1 before and
-after this fix and diffed byte-for-byte — **100% identical** (expected:
-this is a pure property-computation addition with no rendering code
-touched). Confirms no rendering regression.
-
-**STEP 7-8 — 3DS build.** `cmake --build build_3ds` succeeds cleanly (only
-the same pre-existing, unrelated newlib warnings as every prior 3DS build
-in this project). New `.3dsx` built (387556 bytes, up from 385528 —
-confirms the new code linked in). **Not yet tested on Azahar/hardware.**
-
-**STEP 9 — Regression tests.** Done — see STEP 6, all 5 permanent.
-
-**STEP 10 — What now works / what remains.** `_width`/`_height` now return
-real, correct-per-the-implemented-algorithm values for shapes, text,
-edit-text, buttons (bounding-box approximation for the button hit-area
-case), and recursively-nested MovieClips, matching real AS2 measurement
-semantics (parent-space, transform-inclusive). **Remains, and is now
-unblocked to start:** hit-testing itself, the device-px -> stage-twips
-coordinate conversion (a separate, now-surfaced gap — see
-`docs/input.md`), edge-detected input state, the per-placement Button
-instance object, the generic event dispatcher, and all `onClipEvent`/
-button-`on()` dispatch — see `docs/interactivity-audit.md` §8 for the full
-remaining dependency chain, in order. Not independently verified against a
-real Flash-authored file's exact `_width`/`_height` output this phase (no
-such reference was available) — the algorithm is implemented per the
-publicly-understood AS2 semantics, same confidence tier as this project's
-other "believed correct, not independently cross-checked" items (see
-`docs/avm1-compatibility.md`'s unverified-assumption inventory).
-
-### Sub-fix 2/N — `_xmouse`/`_ymouse` device-pixel/stage-pixel coordinate mismatch — **FIXED THIS TURN**
-
-**Classification: INPUT + AVM1 (coordinate-space conversion).**
-
-**STEP 1 — Audit.** Traced the full pipeline (see `docs/input.md`'s
-"Interactivity phase" section for the complete before/after diagram):
-`Nintendo3DSInput::poll()` rescales raw `touchPosition` into whatever pixel
-space its constructor was given (`nintendo3ds_main.cpp` passes the TOP
-screen's logical 400x240, NOT the loaded movie's stage size), writes it
-into `InputState` via `setMousePosition()`, and `_xmouse`/`_ymouse`
-(`MovieClipInstance.cpp`'s `handleNativeGet()` bare-member path and
-`MovieClipHostBindings::getProperty()` case 20/21) read that value back
-with **zero conversion**. Confirmed `InputState` is deliberately
-stage-agnostic (own header comment: "No AVM1/runtime dependency in either
-direction") and that `SceneRenderer::render()` already has the canonical
-stage-twips <-> output-viewport-pixels ratio this fix needed to mirror
-(`pixelsPerTwipX`/`pixelsPerTwipY`, confirmed non-uniform, no offset/
-letterboxing anywhere in `SceneRenderer.cpp`).
-
-**STEP 2-3 — Reproduction/isolation.** Minimal repro: a 600x450-stage
-movie (matching `hobo.swf`'s real dimensions), `InputState` mouse position
-set to a raw viewport-pixel value, `_xmouse` read back — pre-fix, returns
-the raw value unscaled regardless of stage size (verifiable with the new
-`MovieClipInstance_XMouse_600x450StageDifferentViewport_ScalesNonUniformly`
-test, which would fail against the pre-fix code). Isolated to
-`InputState`/`MovieClipInstance` — no dependency on hit-testing, buttons,
-or rendering.
-
-**STEP 4-5 — Fix.** Added `InputState::setViewportSize(width, height)` /
-`viewportWidth()`/`viewportHeight()` (`src/runtime/InputState.h/.cpp`) — a
-plain size fact ("what pixel space does `mouseX()`/`mouseY()` mean"),
-still no AVM1/Movie dependency, keeping `InputState`'s "dumb bag" design
-intact. Added `MovieClipInstance::stageMouseX()`/`stageMouseY()`
-(`src/runtime/MovieClipInstance.h/.cpp`) — the one place that already
-knows both `InputState` and the movie's own `frameSize` — which scale
-`InputState`'s raw value by `movie_->frameSize.widthPixels() /
-viewportWidth()` (and the Y equivalent), falling back to the identity
-(no scaling) whenever no viewport was ever set (every pre-existing test,
-the desktop CLI). Both `_xmouse`/`_ymouse` read sites now call these
-instead of `InputState::mouseX()`/`mouseY()` directly.
-`Nintendo3DSInput::poll()` now also calls `state.setViewportSize
-(screenWidth_, screenHeight_)` every poll, so the 3DS input path is wired
-end-to-end with no further caller changes needed.
-
-**STEP 6 — Desktop tests.** Five new regression tests
-(`tests/test_movieclip_instance.cpp`): an EXPLICIT viewport matching the
-stage size still yields unscaled coordinates (proving the scaling math
-itself, not just the "viewport never set" shortcut the two pre-existing
-`_xmouse`/`_ymouse` tests already covered and which remain untouched); a
-600x450 stage against a 400x240 viewport scales X and Y by independent,
-non-square factors (1.5x/1.875x); the viewport's top-left corner maps to
-exact stage-space (0,0); the viewport's bottom-right corner maps to exact
-stage width/height; the bare-member (`handleNativeGet`) read path gets the
-same conversion as the `GetProperty` numeric-index path. **199/199 tests
-passing** (up from 194), zero regressions — both pre-existing `_xmouse`/
-`_ymouse` tests pass completely unchanged.
-
-**Independent real-content check:** rendered `hobo.swf` (real stage:
-600x450) frames 1-5 before and after this fix and diffed byte-for-byte —
-**100% identical** (expected: this is a pure property-read change: no
-rendering code was touched, and no test/CLI path calls
-`setViewportSize()`, so every existing render path stays on the
-identity/unscaled branch).
-
-**STEP 7-8 — 3DS build.** `cmake --build build_3ds` succeeds cleanly (only
-the same pre-existing, unrelated newlib/ABI warnings as every prior 3DS
-build in this project). New `.3dsx` built (387780 bytes, up from 387556 —
-confirms the new code linked in). **Not yet tested on Azahar/hardware.**
-
-**STEP 9 — Regression tests.** Done — see STEP 6, all 5 permanent.
-
-**STEP 10 — What now works / what remains.** `_xmouse`/`_ymouse` now
-report coordinates in the loaded movie's own stage-pixel space, correctly
-scaled from whatever pixel space the host's input backend reports raw
-touch/mouse coordinates in — matching real Flash Player's `_xmouse`/
-`_ymouse` contract and the same coordinate space `_x`/`_y`/`_width`/
-`_height` already use. This is an **input-coordinate correctness fix
-only** — hit-testing, `ButtonDef` instances, button state transitions,
-mouse event dispatch (press/release/rollOver/rollOut), and `onClipEvent`
-changes were explicitly out of scope and remain unbuilt. **Recommended
-next step: edge-detected input state** (tracking press/release EDGES —
-"just went down this tick" / "just went up this tick" — rather than only
-the current held/not-held level `InputState` tracks today; hit-testing and
-button state machines both need edge detection to fire `press`/`release`
-exactly once per transition rather than every tick the mouse happens to be
-down). See `docs/interactivity-audit.md` §8 for the full remaining
-dependency chain.
-
-### Sub-fix 3/N — Edge-detected input state (`isPressed`/`isReleased`) — **FIXED THIS TURN**
-
-**Classification: INPUT (platform-independent primitive, no AVM1/Flash-layer
-changes).**
-
-**STEP 1 — Audit.** Traced the actual pipeline (`Nintendo3DSInput::poll()`
--> `InputState` -> runtime consumers) before writing any code — full
-writeup in `docs/input.md`'s "Input-transitions phase" section. Key
-findings, all confirmed by reading the real code rather than assumed:
-`InputState` had no previous-frame concept anywhere (`keysDown_`/
-`mouseDown_`/`mouseX_`/`mouseY_` were all "current only"); `poll()` runs
-exactly once per real hardware frame (`hidScanInput()`, ~60Hz), which is
-**decoupled from and more frequent than** the SWF's own timeline advance
-(`root->advanceFrame()`, throttled to the movie's authored frame rate) —
-so "once per poll()" is the correct edge-computation granularity, not
-"once per SWF frame"; touch was never a separate field from mouse (already
-routed into `setMousePosition()`/`setMouseDown()` directly, a pre-existing
-Phase 10 design decision, not new); libctru's own `hidKeysDown()`/
-`hidKeysUp()` already exist as a native edge source but aren't reusable
-for `InputState`'s own edge detection because the desktop test suite has
-no `hid` layer at all and needs identical semantics.
-
-**STEP 2-3 — Reproduction/isolation.** N/A in the usual "found a bug"
-sense — this phase adds a missing CAPABILITY (there was no edge detection
-to reproduce a failure of), not a broken existing behavior. Isolated
-design decision: an explicit `InputState::commitFrame()` method, called
-once by `Nintendo3DSInput::poll()` as its last step, diffs current vs.
-previous state and caches the results — see `docs/input.md` for the full
-model and why "once per `commitFrame()` call" is the correct granularity
-given the confirmed `poll()` call pattern.
-
-**STEP 4-5 — Fix/implementation.** Added
-`InputState::commitFrame()`/`isKeyPressed()`/`isKeyReleased()`/
-`isMousePressed()`/`isMouseReleased()`/`isTouchDown()`/`isTouchPressed()`/
-`isTouchReleased()` (`src/runtime/InputState.h/.cpp`) — `isKeyDown()`/
-`isMouseDown()`/`mouseX()`/`mouseY()` are completely UNCHANGED (still
-live/current reads at all times), preserving every existing caller's
-behavior exactly, per the task's explicit requirement. Touch's edge
-methods are thin, documented ALIASES over the mouse-down edge state (not
-a second parallel tracking mechanism), matching how touch was already
-represented before this phase. `Nintendo3DSInput::poll()` now calls
-`state.commitFrame()` as its last step and also maps L/R shoulder buttons
-(`'L'`/`'R'` ASCII codes, same reasonable-effort convention as the
-existing X/Y mapping) — previously unmapped, needed so all of
-A/B/X/Y/L/R/START/SELECT/D-Pad have some testable `InputState` code.
-
-**STEP 6 — Desktop tests.** 18 new regression tests
-(`tests/test_input_state.cpp`): the full UP/DOWN/HELD/RELEASE/RELEASED
-matrix from the task spec (6 tests), 8 edge-case tests (held for many
-frames, sub-tick press invisibility, release-without-another-press,
-repeated press/release cycles, simultaneous different buttons,
-simultaneous touch+button, no-setter-calls-between-commits, aliased key
-codes), and 4 touch-specific tests (up, press-with-coordinates, held-
-while-moving, release-after-movement). **217/217 tests passing** (up from
-199), zero regressions — every pre-existing `_xmouse`/`_ymouse`/viewport-
-conversion/`InputState_*` test passes completely unchanged.
-
-**Independent real-content check:** rendered `hobo.swf` frames 1-5 before
-and after this phase and diffed byte-for-byte — **100% identical**
-(expected: this phase touches only `InputState`/`Nintendo3DSInput`,
-neither of which is in the rendering or `MovieClipInstance` code path).
-
-**STEP 7-8 — 3DS build.** `cmake --build build_3ds` succeeds cleanly (only
-the same pre-existing, unrelated newlib/ABI warnings as every prior 3DS
-build). New `.3dsx` built (390048 bytes, up from 387780 — confirms the new
-code linked in). **Not yet tested on Azahar/hardware** — no
-emulator/device access from this environment; see `docs/3ds-limitations.md`'s
-new entry for the honest confidence level (desktop-verified + reasoned
-about the confirmed `poll()` cadence, but a real physical press producing
-exactly one edge has never actually been observed on real polling timing).
-
-**STEP 9 — Regression tests.** Done — see STEP 6, all 18 permanent.
-
-**STEP 10 — What now works / what remains.** `InputState` can now
-distinguish UP/DOWN/PRESSED/RELEASED for both keys/buttons and
-mouse/touch, computed once per input tick with no risk of "poll() poll()
-poll()" producing duplicate events, and with documented, intentional
-(not-a-bug) behavior for sub-tick presses, missed polls, and aliased key
-codes. **This is explicitly an input-layer-only primitive** — no AVM1/
-Flash-visible behavior changed at all this phase (no new AS2 API, no
-`Button` dispatch, no `onClipEvent` changes — none of `_xmouse`/`_ymouse`/
-`Key.isDown()`/existing button state were touched beyond what STEP 6
-regression-tested as unchanged). **Recommended next step: bounding-box
-hit-testing** (design already written, `docs/hit-testing.md`) — it can now
-correctly consume `isMousePressed()`/`isMouseReleased()` (via `_xmouse`/
-`_ymouse`'s already-correct stage coordinates from Sub-fix 2/N) to
-determine exactly which tick a click began/ended on, rather than only
-"is the mouse currently down," which was the last missing low-level
-primitive hit-testing and button dispatch both needed.
-
-### Sub-fix 4/N — Bounding-box hit-testing (`hitTestPoint()` primitive + AS2 `MovieClip.hitTest()`) — **FIXED THIS TURN**
-
-**Classification: DISPLAY LIST + AVM1 (geometry query, no event dispatch).**
-
-**STEP 1 — Audit.** `docs/hit-testing.md`'s design (written 2026-08-18,
-before either blocker existed) was re-read first — its two stated
-blockers (device-px -> stage-pixel coordinate conversion, edge-detected
-input state) were both already resolved by Sub-fix 2/N and Sub-fix 3/N.
-Confirmed the design's reusable building blocks still matched the current
-code exactly: `swf::transformRect()`, `MovieClipInstance::
-computeBoundsInOwnSpace()` (private), `characterOwnBoundsRect()` (leaf
-bounds resolution, including its Button hit-state fallback logic) — all
-present and unchanged since the `_width`/`_height` fix. Confirmed
-`SceneRenderer::renderClip()`'s exact world-transform composition
-(`concatMatrix(parentWorld, child.localMatrix())` per level, root's own
-`matrix_` as the base, ascending/back-to-front depth order, gated on
-`visible()`) to keep hit-testing's own transform composition in lockstep
-with what's actually rendered.
-
-**STEP 2-3 — Reproduction/isolation.** N/A (adding a missing capability,
-not fixing a broken one — same as Sub-fix 3/N). Isolated design decision:
-implement the design doc's pseudocode essentially verbatim as
-`MovieClipInstance::hitTestPoint()`/`hitTestPointInOwnSpace()`, plus — a
-deliberate, scoped ADDITION beyond the original design — real AS2
-`MovieClip.hitTest(x, y)` (`hitTestBounds()`), since it reuses the exact
-same new primitives at near-zero extra cost and is the only way any of
-this becomes AS2-visible/usable this turn (see `docs/hit-testing.md`'s
-"AS2 `hitTest()` vs the internal primitive" table for why these are two
-genuinely different queries, not one subsuming the other).
-
-**STEP 4-5 — Fix/implementation.** Added `swf::Point`/`transformPoint()`/
-`invertMatrix()`/`rectContainsPoint()` (`src/swf/SwfRecords.h/.cpp`) —
-standard 2x3 affine matrix inverse, returns `false` (not garbage) for a
-degenerate/zero-determinant matrix. Added `MovieClipInstance::
-worldMatrix()` (this instance's `matrix_` composed with every ancestor's,
-mirroring `SceneRenderer`'s own composition exactly). Added
-`MovieClipInstance::hitTestPoint(stageXPixels, stageYPixels) ->
-std::optional<HitTestResult>` — the topmost-hit-under-a-point primitive:
-walks a clip's display list in REVERSE (topmost-first) depth order,
-recurses into `MovieClipInstance` children via their own content (not a
-shortcut aggregate-bounds test), respects `visible()`, and correctly
-treats a degenerate matrix anywhere in the chain as un-hit-testable. Added
-`MovieClipInstance::hitTestBounds()` + AS2-visible `hitTest(x, y)`
-(2-argument form; the 1-argument `hitTest(target)` and 3-argument
-exact-shape forms are explicitly NOT implemented, flagged via `LOG_WARN`
-rather than guessed at) via the existing OOP-callable-method dispatch
-pattern (`handleNativeGet()`, same mechanism `stop()`/`getBytesLoaded()`/
-`gotoAndStop()` already use).
-
-**STEP 6 — Desktop tests.** 12 new tests in `tests/test_movieclip_instance.cpp`
-(point inside/outside a shape, inclusive-boundary corners, overlapping-
-shapes topmost-wins — both the topmost AND an under-only point, invisible-
-clip exclusion, degenerate-`_xscale` exclusion, script-mutated-transform
-awareness — a doubled `_xscale`/`_yscale` correctly changes what's
-hit-testable, two-level nested-`MovieClip` recursion with composed
-offsets, and 5 `hitTest()`-specific cases including the deliberate
-visibility-ignoring behavior and the not-implemented 1-argument form) + 8
-new tests in `tests/test_swf_records.cpp` (`invertMatrix()`/
-`transformPoint()`/`rectContainsPoint()` in isolation: identity,
-translate-only, scale+translate, rotation+skew round-trips, two flavors of
-degenerate-matrix rejection, inclusive/exclusive boundary checks).
-**237/237 tests passing** (up from 217), zero regressions.
-
-**Independent real-content check:** rendered `hobo.swf` frames 1-5 before
-and after this phase and diffed byte-for-byte — **100% identical**
-(expected: this phase adds pure query APIs, touches zero rendering code).
-
-**STEP 7-8 — 3DS build.** `cmake --build build_3ds` succeeds cleanly (only
-the same pre-existing, unrelated newlib/ABI warnings as every prior 3DS
-build). New `.3dsx` built (392032 bytes, up from 390048 — confirms the new
-code linked in). **Not yet tested on Azahar/hardware.**
-
-**STEP 9 — Regression tests.** Done — see STEP 6, all 20 permanent.
-
-**STEP 10 — What now works / what remains.** Two independent, real hit-
-testing capabilities now exist: an internal "what's the frontmost thing
-under this point" primitive (`hitTestPoint()`, not yet consumed by
-anything — ready for a future button/mouse-event-dispatch phase) and a
-real, AS2-visible `MovieClip.hitTest(x, y)` that game scripts can call
-directly today. **Both are pure geometry queries — no event dispatch,
-`ButtonDef` state machine, `onClipEvent` changes, or press/release/
-rollOver/rollOut wiring exist yet**, exactly as scoped. Bounding-box only
-(exact vector-shape hit-testing remains a documented future upgrade — the
-architecture change needed is isolated to one leaf-level check, per
-`docs/hit-testing.md`'s "Why bounding-box, not exact shape" section, and
-requires nothing else to be redesigned). `hitTest(target)` (1-arg,
-compare-two-objects' -bounds form) is NOT implemented — flagged, not
-guessed at.
-
-### Sub-fix 5/N — `ButtonInstance`: a real runtime object for placed buttons — **FIXED THIS TURN**
-
-**STEP 1 — Audit.** Traced the actual source (not inferred) end-to-end:
-`swf::ButtonDef`/`ButtonRecordDef` parsing (`swf/DefineButtonTag.h`),
-`CharacterDictionary`'s generic (already-working) character-variant
-storage, `DisplayList`/`PlaceObjectTag`'s already-generic, character-
-type-agnostic placement pipeline — all already fully correct and
-untouched by this phase. The actual, confirmed gap:
-`MovieClipInstance::syncChildren()` created a runtime instance ONLY for
-`SpriteDef` characters (`std::holds_alternative<SpriteDef>(*def)`) —
-every other type, buttons included, was skipped with no runtime object
-created at all. A second confirmed finding: `characterOwnBoundsRect()`
-(built for the `_width`/`_height` fix) already correctly resolved a
-button's HitTest-state-preferred hit-area geometry — meaning the
-requirement 5/12 worry ("what if the parser doesn't retain hit-state
-geometry") turned out to already be a non-issue; only the RUNTIME
-INSTANCE WRAPPER and its hit-testing/lifetime/AS2-identity integration
-were actually missing. Full writeup: `docs/buttons.md`'s "Architecture
-audit" section.
-
-**STEP 4-5 — Fix/implementation.** Added `ButtonInstance`
-(`src/runtime/ButtonInstance.{h,cpp}`) — the button-phase counterpart of
-`MovieClipInstance` for `SpriteDef`, following the exact same established
-`Def` (shared immutable) / `Instance` (per-placement mutable) split.
-Extracted `emptyBoundsRect()`/`isEmptyBoundsRect()`/`unionBoundsRect()`/
-`characterOwnBoundsRect()` out of `MovieClipInstance.cpp`'s anonymous
-namespace into a new shared file (`src/runtime/CharacterBounds.{h,cpp}`)
-so both files can reuse them without duplication — pure mechanical
-extraction, verified zero behavior change. `MovieClipInstance` gained a
-new `buttonInstances_` map (deliberately separate from `children_`, NOT
-visible to `SceneRenderer` — guarantees pixel-identical rendering by
-construction), synced via the SAME two-phase pattern/entry points
-`syncChildren()`'s existing Sprite-child logic already uses.
-`hitTestPointInOwnSpace()` gained one more branch (a thin wrapper around
-the SAME existing primitives, not a second implementation) so
-`HitTestResult` can now carry a `ButtonInstance*`. Added a per-tick
-`updateButtonStatesRecursive()` driver, called root-only from
-`advanceFrame()` (mirroring `updateDrag()`'s own precedent), computing the
-UP/OVER/DOWN state machine (`!isOver -> UP`; `isOver && !mouseDown ->
-OVER`; `isOver && mouseDown -> DOWN`) from one root-level
-`hitTestPoint()` call. Added a bare AS2 identity object
-(`ButtonInstance::scriptObject_`, no properties/methods wired) plus a
-`childNameToDepth_`/`handleNativeGet()` fallback so a named button
-placement resolves to a real, distinct object. Full architecture writeup,
-including the documented 3-vs-5-state simplification and the exact AS2
-identity gap left open: `docs/buttons.md`.
-
-**STEP 6 — Desktop tests.** 16 new tests in the new
-`tests/test_button_instance.cpp`: creation (+ confirming NO
-`MovieClipInstance` is also created), default state, two-independent-
-placements-of-the-same-def, transforms (origin/translated/scaled/nested-
-in-MovieClip), overlapping-buttons depth ordering, HitTest-vs-visual-state
-geometry, invisible-button exclusion, the full UP/OVER/DOWN transition
-table driven through real `advanceFrame()` ticks, multiple-buttons
-only-topmost-gets-OVER, display-list-driven removal, same-depth
-replacement-with-a-different-button (verified via a `std::weak_ptr` that
-the OLD instance is genuinely destroyed, not just relabeled — a raw
-pointer comparison would be unreliable since the allocator can legally
-reuse a just-freed address), and duplicate-placement AS2 name resolution.
-**253/253 tests passing** (up from 237), zero regressions.
-
-**Independent real-content check:** rendered `hobo.swf` frames 1-5 before
-and after this phase and diffed byte-for-byte — **100% identical**
-(expected: `SceneRenderer.cpp` was not touched at all this phase).
-
-**STEP 7-8 — 3DS build.** `cmake --build build_3ds` succeeds cleanly (only
-the same pre-existing, unrelated newlib/ABI warnings as every prior 3DS
-build). New `.3dsx` built (397216 bytes, up from 392032 — confirms the new
-code linked in). **Not yet tested on Azahar/hardware** — no emulator/
-device access from this environment.
-
-**STEP 9 — Regression tests.** Done — see STEP 6, all 16 permanent.
-
-**STEP 10 — What now works / what remains.** A placed SWF Button2 now has
-a real runtime instance with its own transform, depth, visibility, hit
-area, and UP/OVER/DOWN state — verified against both synthetic fixtures
-and, via a diagnostic-only tool, real `hobo.swf` content (3 real buttons
-placed on frame 1, including one correctly composed through a level of
-MovieClip nesting — see `docs/buttons.md`'s "Real Hobo `DefineButton2`
-findings"). **No ActionScript event dispatch of any kind exists yet** —
-`onPress`/`onRelease`/`onRollOver`/`onRollOut`/`onClipEvent(mouse*)`/
-`Mouse.onMouseDown`/`onMouseUp`, and the button's own parsed
-`condActionsV1`/`condActionsV2` bytecode, are all still completely
-undispatched, exactly as scoped. Hobo interaction does **not** work yet.
-**Recommended next step: a generic event dispatcher** (design:
-`docs/events.md`, not yet written) — every primitive it needs now exists
-(`hitTestPoint()`'s `HitTestResult::button`, `ButtonInstance::
-updateState()`'s "did it change" return value, `InputState::
-isMousePressed()`/`isMouseReleased()`), it just needs to actually call
-them and fire the right AS2 handlers on the right transitions.
-
-### Remaining sub-fixes for this priority (not started, in dependency order)
-
-See `docs/interactivity-audit.md` §8 for the complete list and reasoning: a
-generic event dispatcher (design: `docs/events.md`), then finally
-`onClipEvent`'s remaining 15 mouse/key flags (status:
-`docs/onclipevent-compatibility.md`) and button `on()`/`condActionsV2`
-handler dispatch. The device-px -> stage-pixel coordinate mapping,
-edge-detected input state, bounding-box hit-testing, and a real
-per-placement Button runtime instance that used to head this list are all
-**DONE** — see Sub-fix 2/N, Sub-fix 3/N, Sub-fix 4/N, and Sub-fix 5/N
-above.
-
-**Refinement from the real-game-corpus phase (2026-08-18, analysis only —
-nothing below was implemented this phase):** `docs/real-game-compatibility.md`'s
-cross-game matrix (Hobo 1–7 + Extreme Pamplona, `tests/games/`) shows this
-priority actually needs **two independent dispatch mechanisms**, not one:
-
-1. **Native `DefineButton2` `condActionsV2` dispatch** — button
-   press/release/rollOver/etc. action lists compiled directly into the
-   tag's binary condition-flag records, no AS2 source-level handler
-   property involved. Confirmed via string-scan evidence: **all 7 Hobo
-   games** (`hobo.swf` plus all 6 sequels) use `DefineButton2` but show
-   **zero** occurrences of the literal strings `onPress`/`onRelease`/
-   `onRollOver`/`onRollOut`/`onClipEvent` anywhere in the decompressed
-   body — their button interactivity can only be this mechanism.
-   Implementing this alone unblocks **all 7 Hobo games identically** (the
-   family is structurally uniform on this specific feature — see the
-   Hobo-family comparison table) and has no bearing on Extreme Pamplona.
-2. **`object.onPress`/`onRelease = function(){}`-style property-handler
-   dispatch** — the generic event-handler-property mechanism `docs/events.md`
-   already scopes. Confirmed via the same string-scan evidence: **Extreme
-   Pamplona's main loader** (and only that file in this corpus) shows
-   `onPress`/`onRelease` **found** as literal strings — meaning at least
-   part of its interactivity is authored the AS2-property-handler way,
-   not (or not only) via `condActionsV2`. Implementing only mechanism 1
-   above would **not** unblock Extreme Pamplona's interactivity.
-
-Neither mechanism was implemented or even prototyped this phase — this is
-a scoping refinement to the existing "generic event dispatcher" plan
-(`docs/events.md`), based on new, real-content evidence that didn't exist
-before this phase's corpus was built. See `docs/real-game-compatibility.md`'s
-"If we implement feature X, which games does it help?" section for the
-full reasoning and every other corpus-derived, feature-to-game mapping
-(MP3 decode, `DefineMorphShape`, `DefineShape4`, `PlaceObject3`,
-`GlobalObject` built-ins, `CsmTextSettings`).
-
-
-**Classification: AVM1 + DISPLAY LIST (hit-testing needs `_width`/`_height`, itself blocked on bounding-box computation) + OBJECT MODEL.**
-
-Confirmed, not hypothesized: `_width`/`_height` are hardcoded to `0`
-everywhere (`MovieClipInstance.cpp:510,349-350`); no hit-testing code exists
-anywhere in the codebase; `onClipEvent`'s 16 mouse/keyboard-related flags
-(`Press`, `Release`, `RollOver`, `RollOut`, `MouseDown`, `MouseUp`, ...) are
-parsed into `clipActions_` but never dispatched (confirmed by exhaustive
-grep of every `runClipEvent()` call site — only `Load`/`Unload`/
-`EnterFrame` fire); `DefineButton`/`DefineButton2`'s `actionsV1`/
-`condActionsV2` bytecode is parsed but literally never executed by any code
-path (confirmed by codebase-wide grep for those field names — the only
-consumers are the `swf/` parser itself and `SceneRenderer`'s render-only Up-
-state drawing).
-
-**Impact:** clicking/pressing any button, or any `onClipEvent(press)`-driven
-interaction, does nothing. `hobo.swf`'s title screen has a "PLAY!" button
-(`DefineButton2`, 16 occurrences in the file) — this is very likely why
-Phase 9's manual walk never progressed past the title screen despite full,
-correct rendering of it.
-
-**Scope note:** this is a genuinely large feature (bounding-box computation
-for `_width`/`_height`, a hit-test routine, a button state machine
-[Up/Over/Down transitions driven by mouse position + button-down state],
-wiring `onClipEvent`'s mouse flags to that same hit-test result, and button
-`on()` handler dispatch) — larger than a single-limitation "minimal repro →
-fix → test" cycle can responsibly cover in one pass. Recommended as the
-**next** limitation to pick up, likely itself split into 2-3 sub-phases
-(bounding box → hit test → button/onClipEvent dispatch) rather than one
-atomic change.
-
-## Priority #3 — `GlobalObject` has zero named built-ins (`Math`, `Date`, `Number`, `String`, `Boolean`)
-
-**Classification: OBJECT MODEL.**
-
-Confirmed: `GlobalObject::create()` is 7 lines, returns one bare `Object`
-with no properties at all (`src/avm1/GlobalObject.cpp`). Any content calling
-`Math.random()`, `Math.floor()`, `Math.abs()`, `new Date()`, `Number(x)`,
-`String(x)`, `Boolean(x)` fails outright ("not a function"/"undefined is
-not an object"). `Math.*` in particular is extremely common in any game
-with randomness, easing, or numeric formatting — plausibly a real,
-un-diagnosed blocker for `hobo.swf`'s gameplay frames (not yet reached — see
-Priority #2) or its sequels. Not previously documented as a gap anywhere in
-this project.
-
-**Scope:** moderate — implementing `Math` alone (a plain object with native
-functions for `random`/`floor`/`ceil`/`round`/`abs`/`min`/`max`/`sqrt`/
-`pow`, etc.) would likely cover the overwhelming majority of real content's
-needs and is well-isolated (same `nativeImpl` mechanism `Key`/`Mouse`/
-`Sound` already use, in `ScriptEnvironment`'s constructor or a new
-`GlobalObject` extension point).
-
-## Priority #4 — `DefineMorphShape`/`DefineMorphShape2` not resolved (confirmed real-content gap)
-
-**Classification: TAG SUPPORT + RENDERER.**
-
-Confirmed present in real `hobo.swf` content: 19 occurrences (per
-`docs/compatibility.md`'s Phase 9 tag histogram). `TagCode` recognizes the
-tag codes but no parser exists, and `CharacterDictionary::
-scanTagsForCharacters()` has no branch for them at all — any `PlaceObject`
-referencing one silently places nothing (a real, silent visual gap, not a
-crash). Scope: needs `MORPHFILLSTYLE`/`MORPHLINESTYLE` parsing (a variant of
-the existing `FILLSTYLEARRAY`/`LINESTYLEARRAY` readers, but with two
-color/matrix endpoints instead of one) plus start/end shape parsing and a
-ratio-interpolated render — a genuine chunk of new work, not a quick fix,
-consistent with the Phase 9 assessment that first found this gap.
-
-## Priority #5 — Audio codec decode (no SWF sound is actually audible)
-
-**Classification: AUDIO.**
-
-Confirmed: zero codec decode exists anywhere in the codebase for any format
-(uncompressed PCM framing, ADPCM, or MP3) — `DefineSound`'s compressed
-sample data is parsed only at the header level and never touched again.
-`Nintendo3DSAudioBackend::playSound()`, read line-by-line, reserves an ndsp
-channel and unpauses it but never calls `ndspChnWaveBufAdd()` — there's
-simply no decoded buffer to queue. `hobo.swf` has 35 `DefineSound`
-occurrences — every one of them is currently silent on both desktop and
-3DS. Scope: large — even "uncompressed PCM" framing needs correct
-sample-rate/bit-depth/channel-count handling per the SWF spec's `DefineSound`
-header fields (already parsed), and ADPCM/MP3 (likely what `hobo.swf`
-actually uses, per `docs/compatibility.md`'s "unverified" note on its sound
-format) would need a real decoder — not a "smallest missing layer" fix.
+## L1 — Sound codec decode (MP3)
+
+- **Subsystem:** Audio.
+- **Status:** **Implemented (Roadmap Phase 3, 2026-08-21).** MP3-format
+  `DefineSound` audio now decodes to real PCM and is queued for real
+  playback. Structural-only parsing for other codecs (ADPCM, Nellymoser,
+  Speex, uncompressed) remains — see "Still not implemented" below; this
+  item stays open (not closed/removed) for that reason.
+- **Source location:** `src/audio/Mp3Decoder.{h,cpp}` (vendors
+  `third_party/minimp3` — public-domain/CC0, chosen specifically to avoid
+  LGPL static-linking concerns on a 3DS `.3dsx` target with no dynamic
+  linking; see `third_party/minimp3/README.md`); `decodeSwfMp3Sound()`
+  skips the 2-byte `SeekSamples` prefix the SWF spec's `MP3SOUNDDATA`
+  puts before MP3 frame data. `runtime::ScriptEnvironment::
+  playSoundById()`/`ensureSoundDecoded()` (`src/runtime/
+  MovieClipInstance.{h,cpp}`) decode **on demand, once per distinct
+  soundId, then cache** (both successful decodes and failures/unsupported
+  formats are cached, so a repeat `StartSound`/`Sound.start()` for the
+  same soundId never re-decodes or re-attempts). `IAudioBackend::
+  loadSound()` (new virtual, default no-op — `NullAudioBackend` overrides
+  it only to log) is the seam that hands decoded PCM to a backend before
+  `playSound()`. `Nintendo3DSAudioBackend::loadSound()`/`playSound()` now
+  really `memcpy` PCM into a `linearAlloc`'d (DSP-DMA-accessible) buffer
+  and queue it via `ndspChnWaveBufAdd()` — genuine, not stubbed, and
+  verified via a real 3DS cross-compile (`docs/3ds-toolchain.md`), but
+  never run on real hardware/an emulator (same standing gap as the rest of
+  this backend).
+- **Evidence:** Real-corpus verification (`hobo.swf`, `hobo5.swf`,
+  `hobo2.swf`, `hobo3.swf`, first 13 frames — their title/menu screens):
+  every real `StartSound` tag that fires produces genuinely non-silent
+  decoded PCM (RMS ~1888.4, confirmed via a standalone smoke tool), with
+  decoded sample counts matching each `SoundDef::sampleCount` header field
+  exactly (e.g. mono soundId=21: 26,496 decoded samples = 26,496
+  `sampleCount`; stereo soundId=148: 20,736 total samples / 2 channels =
+  10,368 = `sampleCount`). Exactly one `loadSound()`+`playSound()` call
+  pair per distinct soundId, confirming the decode-once-cache design
+  works as intended (a caching bug where `loadSound()` fired on cache
+  HITS too, not just fresh decodes, was found via a failing integration
+  test and fixed before this shipped — see `test_movieclip_instance.cpp`'s
+  `MovieClipInstance_StartSoundTag_Mp3Payload_DecodesAndLoadsPcmBeforePlay`).
+  Zero rendering/behavioral regression: full 8-game render harness
+  produced byte-identical MD5s versus the pre-Phase-3 baseline for every
+  frame, including Extreme Pamplona's pre-existing `exit=3` frame 3-5
+  failure reproduced identically. 7 new decoder unit tests
+  (`test_mp3_decoder.cpp`) + 1 new integration test; 287/287 total tests
+  pass, zero compiler warnings (desktop and 3DS cross-compile).
+- **Memory implications — MEASURED this phase** (see `docs/memory-audit.md`
+  §9 for the full corpus table): real-content cost is negligible (one
+  ~52KB decode per 13-frame title screen, immaterial against Hobo1's
+  ~85MB post-Option-A baseline) — but that reflects only title-screen
+  content, not full gameplay. The **worst-case** bound (every distinct MP3
+  soundId in a file eventually triggered once, since
+  `decodedSoundCache_` never evicts, and PCM is stored **twice** — once in
+  `ScriptEnvironment`'s cache, once in `Nintendo3DSAudioBackend`'s own
+  `memcpy`'d copy) is **~51-56MB per Hobo title** — a real, non-trivial
+  addition, comparable in order of magnitude to Hobo1's entire
+  `CharacterDictionary` peak. Flagged honestly, not glossed over; no
+  eviction policy was built this phase since no real corpus content
+  available in this environment exercises enough distinct sounds to prove
+  the cache actually growing that large in practice.
+- **Still not implemented (honest carry-over, not attempted this phase):**
+  ADPCM/Nellymoser/Speex/uncompressed `DefineSound` formats still don't
+  decode (a soundId in one of those formats never reaches `loadSound()` —
+  `ScriptEnvironment` only ever attempts MP3 — so `playSound()` falls back
+  to its original "channel reserved, nothing to queue, logged" path for
+  those, unchanged from before this phase); a real finite `StartSound`
+  `loopCount > 1` is **not** implemented as a true repeat on
+  `Nintendo3DSAudioBackend` — a single `ndspWaveBuf`'s `looping` flag means
+  infinite loop, not a counted repeat, and building a real counted repeat
+  needs chaining multiple queued wavebufs, which needs on-device
+  verification this environment cannot do — so `loopCount` is honored only
+  as "play once," logged rather than silently dropped (see that file's own
+  comment); no on-device/emulator audible confirmation has been done, per
+  this project's own established "3DS code compiles and is real, but
+  unverified beyond that" precedent (`docs/3ds-toolchain.md`).
+- **Affected SWFs:** All 8 corpus games use MP3-format `DefineSound`
+  exclusively (423 `DefineSound` tags total across the corpus, all
+  confirmed MP3 via `sound_corpus_worstcase` this phase — 0 other-codec
+  characters found in any corpus file).
+- **Severity:** Downgraded from High to **Low-Medium** — decode now works
+  for the format every corpus game actually uses; remaining severity is
+  the loop-count gap (cosmetic for most content) and the still-unverified
+  on-device audible confirmation.
+- **Dependency:** Sequenced with awareness of the memory-audit findings
+  per this project's own stated plan (decode-on-demand-and-cache was
+  chosen specifically because it's cheaper than eager whole-dictionary
+  decode, given shape data — not sound — is this project's dominant
+  memory problem per §5-8).
+- **Proposed fix (remaining):** ADPCM/other-codec decoders if a target
+  title needs them (none of the 8 corpus games do); a counted-repeat
+  `ndspWaveBuf`-chaining implementation for `loopCount > 1`, once
+  on-device testing is possible to verify it; a bounded LRU/eviction
+  policy for `decodedSoundCache_`/`Nintendo3DSAudioBackend::loadedSounds_`
+  if a real gameplay session is ever shown to actually grow the cache
+  toward the measured worst case.
+- **Ghidra evidence:** None resolved — Shift-DX's own sound tag-loader
+  boundaries were never successfully identified in the prior RE session
+  (`docs/shift-dx-behavior.md`'s "Open items"). Not needed for this
+  fix — implemented against the public SWF spec, not Shift-DX internals,
+  per `CLAUDE.md`'s hard rules.
+- **JPEXS evidence:** Not available this session (JPEXS/ffdecmcp not
+  connected).
+- **Test required:** Done — see "Evidence" above. Still open: on-device/
+  emulator audible confirmation (blocked on hardware/emulator access, not
+  on anything in this codebase).
+
+## L2 — `GlobalObject` has zero named built-ins
+
+- **Subsystem:** AVM1/AS2 object model.
+- **Status:** Not implemented. `GlobalObject::create()` is a one-line stub.
+- **Source location:** `src/avm1/GlobalObject.cpp` line 5.
+- **Evidence:** Direct source read this turn.
+- **Affected SWFs:** Likely all 8 (Hobo family shows 585-1,092
+  `CallMethod` opcodes per file, a plausible built-in-method vector, not
+  independently disassembled to confirm targets); Extreme Pamplona's
+  loader shows 0 `CallMethod` in its analyzed buffers (its 23 content
+  sub-SWFs not individually checked).
+- **Severity:** Medium-High — likely blocks some fraction of real scripts
+  silently (calls to `Math.*`/`String.*`/etc. resolve to `undefined`
+  rather than erroring, which can be a worse failure mode than a crash).
+- **Dependency:** None.
+- **Proposed fix:** Implement `Math` (as a plain object with native
+  methods, no `nativeImpl` framework changes needed — same pattern as
+  Phase 6's `Key`/`Mouse`/`Sound`), `String`/`Number`/`Boolean` as callable
+  conversion functions, `Date` if any corpus content needs it (not
+  confirmed either way).
+- **Ghidra evidence:** `avm1_builtin_prototypes_init` (0x2d228c) confirms
+  `Object.prototype`/`String.prototype` method lists Shift-DX actually
+  installs — see `docs/reverse-engineering-map.md`.
+- **JPEXS evidence:** Not available this session.
+- **Test required:** Per-built-in unit tests (`Math.floor`, `Math.random`
+  range, `String.fromCharCode`, etc.); real-corpus opcode-level
+  confirmation of which specific methods are actually called (would need
+  a disassembly pass beyond this audit's static string/opcode scan).
+
+## L3 — `MovieClip` OOP method surface gaps (dynamic instantiation family)
+
+- **Subsystem:** AVM1/AS2 `MovieClip` API.
+- **Status:** **`createEmptyMovieClip`, `duplicateMovieClip` (OOP form —
+  the bare `CloneSprite` action-code form already existed),
+  `removeMovieClip` (OOP form — likewise, `RemoveSprite`'s bare form
+  already existed), `attachMovie`, `swapDepths`, `getNextHighestDepth`,
+  and `loadMovie` (target-clip-replacement form only) implemented
+  (Roadmap Phase 4 Steps 2-4, 2026-08-21 — see L4 and L6 below for
+  `attachMovie`'s `ExportAssets` dependency and `loadMovie`'s own writeup
+  respectively).** Still NOT implemented: `unloadMovie`, drawing API
+  (`beginFill`/`lineTo`/`moveTo`/`curveTo`/`endFill`/`clear`/`lineStyle`),
+  `createTextField`, `localToGlobal`/`globalToLocal`/`getRect`/
+  `getBounds`/`setMask`.
+- **Source location:** `src/runtime/MovieClipInstance.{h,cpp}` — the new
+  primitives (`attachCharacter()`, `createEmptyChild()`,
+  `swapDepthsWith()`, `nextHighestDepth()`, `loadMovie()`) plus their AS2-
+  visible `handleNativeGet()` dispatch block (`attachMovie`/
+  `createEmptyMovieClip`/`duplicateMovieClip`/`removeMovieClip`/
+  `swapDepths`/`getNextHighestDepth`/`loadMovie`).
+- **Evidence:** Direct `grep` this turn; corroborated by `docs/real-game-
+  compatibility.md`'s AS2 string scans. **Update (Roadmap Phase 4,
+  2026-08-21):** 9 new passing unit tests (`tests/test_movieclip_instance.
+  cpp`) cover `attachMovie` (success + unresolved-linkage-name failure),
+  `createEmptyMovieClip`, `duplicateMovieClip`, `removeMovieClip`,
+  `swapDepths` (full bidirectional swap, not a one-sided move),
+  `getNextHighestDepth` (empty and non-empty cases), plus
+  `CharacterDictionary::findByLinkageName()` itself.
+- **Affected SWFs:** **Extreme Pamplona positively confirmed** (AS2 scan
+  finds `MovieClip`, `_global`, `createEmptyMovieClip`,
+  `duplicateMovieClip`, `attachMovie` as literal strings — none of the 7
+  Hobo files use any of them). This is an Extreme-Pamplona-specific gap,
+  not a Hobo one.
+- **Severity:** Downgraded from "High for Extreme Pamplona" now that L6's
+  Step 1 finding disproved the original "Extreme Pamplona's own main file
+  dynamically builds its UI via `attachMovie`" theory (see Dependency
+  below) — **implemented anyway per explicit user direction** ("Build
+  generic loading capability anyway"), since real corpus content (e.g.
+  `content/sounds_all.swf`, `content/level-pamp1.swf`) genuinely uses this
+  API family, just not reachable from Extreme Pamplona's own main-file
+  script. Zero severity for the Hobo family either way (none of the 7
+  files use any of these methods).
+- **Dependency:** `attachMovie`/dynamic-linkage instantiation needs
+  `ExportAssets` tag parsing — **L4 below, now also implemented.** **Update
+  (Phase 4 Step 1, 2026-08-21):** the earlier assumption that Extreme
+  Pamplona's *own main file* dynamically builds its UI via `attachMovie`
+  is disproven by direct evidence — see L6's rewrite: the main file's
+  entire AVM1 payload contains zero `CallMethod`/`NewObject`/`NewMethod`
+  opcodes of any kind, so it cannot call `attachMovie` (named or
+  otherwise) — implementing this item does NOT unblock Extreme Pamplona's
+  own UI, and isn't expected to; it's forward-looking capability for other
+  content/future titles, and makes the content sub-SWFs themselves
+  directly loadable/testable as standalone assets.
+- **Proposed fix (done):** Added each method as a native `nativeImpl`
+  binding on `MovieClipInstance`'s scriptObject (via `handleNativeGet()`),
+  reusing the existing scene-graph mutation primitives (`DisplayList`,
+  `syncChildren()`) that already back `CloneSprite`/`RemoveSprite`, plus
+  four new lower-level primitives (`attachCharacter()`,
+  `createEmptyChild()`, `swapDepthsWith()`, `nextHighestDepth()`) those
+  native bindings sit on top of.
+- **Ghidra evidence:** `avm1_builtin_prototypes_init` — see
+  `docs/reverse-engineering-map.md`'s table; confirms this exact method
+  set is what a real shipped 3DS Flash port installs.
+- **JPEXS evidence:** Not available this session.
+- **Test required (done):** Per-method unit tests against synthetic
+  fixtures — see the Evidence bullet above for the full list (9 tests). An
+  Extreme-Pamplona-specific integration test was NOT pursued: Step 1's own
+  finding (see L6) means Extreme Pamplona's main file has no in-bytecode
+  path to call any of these methods, so such a test would only ever
+  exercise this runtime's own synthetic call sites, not real corpus
+  content driving them end-to-end.
+
+## L4 — `ExportAssets` tag parsing (linkage-name resolution) — DONE (Roadmap Phase 4, 2026-08-21)
+
+- **Subsystem:** SWF tag parsing / AVM1 dynamic instantiation.
+- **Status:** **Implemented.** `CharacterDictionary::parseExportAssets()`
+  (an anonymous-namespace helper in `CharacterDictionary.cpp`) parses the
+  tag per the public spec (`Count: UI16`, then `Count` x `{characterId:
+  UI16, name: STRING}`), populating a new `linkageNameToId_` map alongside
+  the existing `characters_` map — scanned by the same recursive
+  `scanTagsForCharacters()` pass as every other character-defining tag
+  (including inside nested `DefineSprite` streams, same "SWF's character
+  dictionary is global, not just top-level" reasoning that pass already
+  applied to shapes/sounds/fonts/etc). `CharacterDictionary::
+  findByLinkageName(name)` exposes the lookup; wired into `attachMovie`
+  (L3 above) — `Sound.attachSound(name: String)`'s real linkage-name form
+  (mentioned as a related carry-over) was NOT wired this phase, remains
+  open.
+- **Source location:** `src/runtime/CharacterDictionary.{h,cpp}`
+  (`parseExportAssets()`, `findByLinkageName()`, `linkageNameToId_`).
+- **Evidence:** `CharacterDictionary_FindByLinkageName_ResolvesExportedSprite`
+  (`tests/test_movieclip_instance.cpp`) — a synthetic `ExportAssets` tag
+  exporting a `DefineSprite` character under a linkage name, resolved back
+  to the correct character ID; a query for an unexported name confirmed to
+  return `nullptr`. `MovieClipInstance_AttachMovie_CreatesNamedChildAtDepth`
+  covers the full parse → lookup → instantiate path end-to-end.
+- **Affected SWFs:** Extreme Pamplona (131 `ExportAssets` entries in the
+  loader — a real, heavily-used mechanism there, though see L3/L6 for why
+  this doesn't by itself unblock Extreme Pamplona's own UI); 0 in every
+  Hobo file.
+- **Severity:** Resolved as forward-looking engine capability — see L3's
+  Severity note on why this doesn't change Extreme Pamplona's own
+  reachability picture.
+- **Dependency:** Unblocks L3's `attachMovie` (done together this phase).
+- **Ghidra evidence:** None specific to `ExportAssets` resolved.
+- **JPEXS evidence:** Not available this session.
+- **Test required (done):** Parser unit test against a synthetic
+  `ExportAssets` tag; integration test resolving a linkage name via
+  `attachMovie` — both present (see Evidence above).
+
+## L5 — `CharacterDictionary::build()` / session peak memory (~7.9-43.6MB typical-session peak, was ~85-262MB post-Option-A / ~149-454MB pre-Option-A)
+
+- **Subsystem:** Memory / core parsing.
+- **Status:** Option A (compact `ShapeRecord`, 2026-08-21) AND Option B
+  (lazy/on-demand `CharacterDictionary` parsing, 2026-08-24) are both now
+  implemented — see `docs/memory-audit.md` §5c/§10 for full detail. This
+  is a real, large, measured additional win on top of Option A, not just a
+  smaller one: Hobo1's typical-session peak dropped a further ~3.5x (25.2MB
+  from 87.7MB), Hobo5's ~5.9x (43.6MB from 255.5MB). **Important nuance —
+  this lowers *peak-per-session*, not the *worst-case ceiling*:** a session
+  that eventually references every character in a file still pays the full
+  Option-A-reduced cost eventually (confirmed via `memory_breakdown`, which
+  force-parses everything: Hobo1 46.16MB / Hobo5 143.16MB estimated
+  total, unchanged from before Option B, exactly as
+  `docs/implementation-roadmap-2026-08-21-part2.md` Phase 5 predicted).
+- **Source location:** `src/runtime/CharacterDictionary.{h,cpp}`,
+  `src/swf/ShapeRecords.h/.cpp`.
+- **Evidence (Option A, 2026-08-21):** `hobo.swf` → 89.8MB peak / 85.3MB
+  steady-state (was 153.6MB/149.2MB); `hobo5.swf` → 261.6MB peak (was
+  453.9MB); Extreme Pamplona loader alone → 11.0MB (was 14.8MB).
+- **Evidence (Option B, 2026-08-24 — isolated-process `mem_profile_check`,
+  same methodology as Option A's measurement, 9-game corpus incl. Cat
+  Ninja added this phase):**
+
+  | Game | Peak before Option B | Peak after Option B | Reduction |
+  |---|---:|---:|---:|
+  | Hobo 1 | 87.70 MB | **25.17 MB** | 3.48x |
+  | Hobo 2 | 93.24 MB | **26.98 MB** | 3.46x |
+  | Hobo 3 | 116.98 MB | **30.09 MB** | 3.89x |
+  | Hobo 4 | 140.27 MB | **33.23 MB** | 4.22x |
+  | Hobo 5 | 255.48 MB | **43.58 MB** | 5.86x |
+  | Hobo 6 | 147.96 MB | **35.52 MB** | 4.17x |
+  | Hobo 7 | 155.84 MB | **37.41 MB** | 4.17x |
+  | Extreme Pamplona (loader) | 10.76 MB | **7.88 MB** | 1.37x |
+  | Cat Ninja | 13.33 MB | **13.31 MB** | ~1.0x (expected — its 63 bitmap tags aren't resolved into characters at all yet, so Option B has nothing to defer for them; see L-bitmap/roadmap Phase 10) |
+
+  Zero render-harness regression: all 9 games' frame MD5s byte-identical
+  before/after (Extreme Pamplona's/Cat Ninja's pre-existing out-of-range
+  frame failures reproduced identically). 311/311 tests pass (was 304 —
+  4 new lazy-parsing regression tests + this phase's memory-diagnostics
+  tests).
+- **Affected SWFs:** All 7 Hobo files (scales with size); Extreme
+  Pamplona's loader is comparatively small, but would grow substantially
+  once `loadMovie` (L6) pulls in its 23 content sub-SWFs (not measured —
+  those files were never loaded by this runtime). Cat Ninja is NOT
+  meaningfully affected by either memory option yet — its cost is
+  dominated by 63 still-unresolved `DefineBitsLossless2` bitmap
+  characters (roadmap Phase 10, not started), not by anything
+  `CharacterDictionary::build()` currently parses.
+- **Severity:** Downgraded from critical to moderate for Hobo1 specifically
+  (21.2MB final/25.2MB peak — now UNDER the ~24MB Old-3DS app-heap target
+  at steady-state, though peak briefly exceeds it during load) and Extreme
+  Pamplona (7.9MB, comfortably under). **Still critical for Hobo5** (43.6MB
+  peak — still ~1.8x over the ~24MB target) and by extension Hobo3/4/6/7
+  (27-37MB). Still real, still not measured on actual 3DS hardware (see
+  §5 of `docs/memory-audit.md` for the standing host-RSS-vs-3DS-heap
+  caveat) — `src/platform/MemoryDiagnostics.{h,cpp}` (new this phase) is
+  the first mechanism that could produce a REAL on-device number rather
+  than a desktop proxy, but that on-device run itself has not happened in
+  this sandbox (no 3DS/emulator access here — delivered for the user to
+  run).
+- **Dependency:** Both Option A and Option B are now implemented. The
+  worst-case ceiling (`memory_breakdown`'s force-everything numbers,
+  unchanged at 46.16MB Hobo1 / 143.16MB Hobo5) is the next thing that
+  would need a different kind of fix (actual eviction, not just deferral)
+  if a real play session's character-reference pattern turns out to
+  approach it — not yet evidenced as a real (vs. theoretical) problem for
+  this corpus's available content (title screens only).
+- **Proposed fix — Option A (compact `ShapeRecord`): IMPLEMENTED
+  2026-08-21.** Phase 2's byte-level breakdown
+  (`docs/memory-audit.md` §5a) root-caused the cost to `swf::ShapeRecord`
+  being a flat 120-byte struct carrying every SHAPERECORD sub-type's
+  fields on every record regardless of actual type. Fixed by splitting
+  the mutually-exclusive straight/curved-edge fields into a real C++
+  union and moving the rarer style-change fields out-of-line behind a
+  `std::shared_ptr` (chosen over a raw pointer / `unique_ptr` to keep
+  `ShapeRecord` implicitly copyable, since `SceneRenderer.cpp`'s
+  font-glyph-scaling path copies them). **Measured result: `sizeof(
+  ShapeRecord)` 120→40 bytes (3.0x), not the ~8-10x/~35-40MB originally
+  estimated when this was only a design** — see `docs/memory-audit.md`
+  §5c for why the single-struct ratio doesn't carry straight through to
+  the ~1.7x whole-pipeline reduction actually measured. All 279 tests
+  pass; the 8-game render harness produced byte-identical output versus
+  the pre-fix baseline (zero regression).
+- **Proposed fix — Option B (lazy/on-demand character parsing): IMPLEMENTED
+  2026-08-24.** `CharacterDictionary::build()` now only peeks each
+  character-defining tag's leading CharacterId (2 bytes) and records
+  {tag code, offset, length} in a `pending_` index; the real
+  `swf::parseDefineX()` call happens on first `find()`, cached in
+  `parsed_` thereafter. `DefineSprite` stays eager (already cheap — see
+  `src/runtime/CharacterDictionary.h`'s file header for the full
+  rationale). `find()`'s public signature/constness is unchanged, so every
+  existing call site (`SceneRenderer`, `MovieClipInstance`, `ButtonInstance`,
+  `CharacterBounds`) needed zero changes. See the Evidence table above for
+  measured results; helps peak-per-session, not the worst-case ceiling
+  (by design — see `docs/implementation-roadmap-2026-08-21-part2.md`
+  Phase 5's own framing of this tradeoff, confirmed correct by the
+  `memory_breakdown` ceiling numbers being unchanged). Option C
+  (tessellate-once-and-cache) — **checked and found NOT viable as
+  originally conceived**, since `SceneRenderer` currently re-tessellates
+  from raw records on every render call with no cache.
+- **Resource eviction (task03's "M2" investigation, 2026-08-24) —
+  investigated, deliberately NOT implemented this phase.** Checked
+  `ScriptEnvironment::decodedSoundCache_` (never evicts, worst case
+  ~51-56MB per Hobo title if a session eventually triggers every distinct
+  sound — see `docs/memory-audit.md` §9) and `loadedMovies_`/
+  `loadedCharacterDicts_` (`ownLoadedMovie()`, also never evicts). Real
+  corpus content available in this environment (title/menu screens only)
+  exercises at most 1 sound and 0 `loadMovie` calls per session, so there
+  is no *measured* evidence either cache actually grows large in practice
+  today — building eviction now would be tuning against a hypothetical,
+  not a demonstrated problem, which this project's own stated principle
+  (`docs/memory-audit.md` §9's own reasoning, restated by task03.txt's own
+  "do NOT introduce unsafe eviction... reference-count or otherwise prove
+  ownership before releasing anything") argues against. Flagged here as an
+  open, worth-watching risk for a real (non-title-screen) play session,
+  not silently declared fine.
+- **Ghidra evidence:** None directly — Shift-DX's own tag-loader hash
+  table (`DAT_002b4e40`) and its construction function were never
+  resolved (top-level `CLAUDE.md`'s open item #2); no memory-footprint
+  comparison available from Shift-DX RE.
+- **JPEXS evidence:** Not available this session.
+- **Test required:** A regression test asserting peak RSS for a fixed
+  synthetic fixture stays under a defined ceiling, once any fix is
+  designed (none exists yet — nothing to regress against today beyond the
+  ad hoc `mem_profile_check` tool itself, which is not currently wired
+  into CI/`ctest`).
+
+## L6 — `loadMovie`/`_level`/multi-SWF loading — target-clip form DONE (Roadmap Phase 4, 2026-08-21); `_level` form still open
+
+- **Subsystem:** Loading / multi-SWF.
+- **Status:** **`MovieClip.loadMovie(url)`'s target-clip-replacement form
+  implemented** (Roadmap Phase 4 Steps 2-4, 2026-08-21, per the user's
+  explicit "build generic loading capability anyway" decision following
+  Step 1's negative finding below) — see the new "What was implemented"
+  section further down for exactly what this does and doesn't cover. The
+  full `_level`-indexed sibling-movie form (`_levelN.loadMovie(...)`)
+  remains NOT implemented — see that same section for why it was
+  deliberately scoped out this phase. **Roadmap Phase 4, Step 1
+  (2026-08-21) — targeted disassembly completed, with a real,
+  evidence-based, negative finding that changes this item's whole
+  picture — see below.**
+- **Source location:** N/A (absent).
+- **Evidence (original):** `grep` this turn, zero hits for `loadMovie`/
+  `_level` anywhere in `src/` (i.e. this runtime never implemented it —
+  says nothing about whether the *content* calls it).
+- **Evidence (Phase 4, Step 1 — real disassembly + real runtime trace of
+  the actual corpus content, not just a string grep):** Two independent
+  tools were built and cross-checked against each other:
+  `tools/real_game_harness/avm1_loader_disasm.cpp` (a static, best-effort
+  AVM1 symbolic disassembler resolving `ActionPush`/`ActionConstantPool`
+  string literals through `CallFunction`/`CallMethod`/`NewMethod`/
+  `NewObject`/`GetURL`/`GetURL2`) and
+  `tools/real_game_harness/avm1_runtime_trace.cpp` (which instead RUNS the
+  real `avm1::Interpreter` against the real movie via the normal
+  `MovieClipInstance::createRoot()`/`advanceFrame()` boot path, with a new
+  optional `ExecutionContext::callTraceSink`/`ScriptEnvironment::
+  callTraceSink` hook — see those files, `src/avm1/ExecutionContext.h`,
+  and `src/avm1/Interpreter.cpp` — reporting every such action with its
+  REAL runtime-resolved values, immune to the string/name obfuscation
+  that defeated the static pass). Both agree, and a 500-tick (~20
+  real-seconds-at-24fps) live run confirms it holds regardless of how
+  long the movie runs: **`extreme-pamplona.swf`'s entire AVM1 payload
+  (142 bytecode buffers — every `DoAction`/`DoInitAction`/button
+  `actionsV1`/`condActionsV2`, 33,741 opcodes total, including all 126
+  nested `DefineFunction` bodies) contains ZERO `CallMethod`, `NewObject`,
+  `NewMethod`, `GetURL`, or `GetURL2` opcodes anywhere.** All 126
+  `DefineFunction`s are anonymous (empty name, empty params) and each is
+  called exactly once via `CallFunction` with an empty resolved name (an
+  immediately-invoked-function pattern, live-confirmed by the runtime
+  trace, not just guessed from bytecode shape) — consistent with a
+  config/constant-table decode step, not interactive game logic. No
+  `ImportAssets`/`ImportAssets2` tag exists either (only `ExportAssets`,
+  131x), ruling out the SWF-native declarative "shared library" import
+  mechanism as well. **By contrast, several of the 24 real content
+  sub-SWFs DO contain normal, unobfuscated-looking interactive AS2**
+  (e.g. `content/sounds_all.swf`: `CallMethod`=58, `NewObject`=17,
+  `GetMember`=302, `SetMember`=74, `DefineFunction2`=24;
+  `content/level-pamp1.swf`: `CallMethod`=13, `SetMember`=205,
+  `GotoFrame`=4 across 225 small per-sprite frame scripts) — the "hollow
+  shell, real content elsewhere" split is specific to the OUTER/loader
+  file, not a property of the whole game.
+- **What this means:** `extreme-pamplona.swf`, as it exists in this
+  corpus, contains **no AVM1-bytecode-expressible mechanism** to load,
+  reference, or navigate to any of its own sub-SWF content files — not
+  `loadMovie`/`loadMovieNum` (would need a resolvable non-empty
+  `CallFunction` name; none exist), not `MovieClipLoader`/`attachMovie`/
+  any other `CallMethod`/`NewMethod`/`NewObject`-based API (none exist at
+  all, of any kind, anywhere), not `getURL` (0 occurrences), and not a
+  declarative `ImportAssets` tag (absent). This is a **proven negative**,
+  not an unresolved search — comprehensive (every action-bytecode buffer
+  in the file, cross-checked by two independently-written tools, plus a
+  long live run of the real interpreter) rather than partial. Whatever
+  originally tied the main file to its 24 content siblings (most
+  plausibly an external HTML/JS page embedding multiple SWF instances
+  side by side, or a Projector/AIR-specific mechanism outside plain AVM1,
+  or content simply reorganized/cut after these files were extracted) is
+  **not recoverable by implementing more AVM1 runtime features** — it
+  isn't there to find. No wrapper HTML/config file exists alongside the
+  corpus files in this environment either (checked).
+- **Affected SWFs:** Extreme Pamplona specifically — its 9 levels, 2
+  player sprites, 4 music tracks, and 9 sound banks remain **100%
+  external content**, unreachable from the main file's own script, for
+  the reason above (not because this runtime is missing a feature it
+  needs to implement, but because the content itself has no in-bytecode
+  caller). Zero effect on any Hobo file (single self-contained movie).
+- **Severity:** Confirmed by implementation — Extreme Pamplona's own main
+  file still cannot reach any of its content sub-SWFs, exactly as Step 1
+  predicted (nothing in this phase's work changes that; it was never
+  expected to — see the user's own chosen option below). The value
+  delivered is forward-looking engine capability for other/future titles,
+  plus making Extreme Pamplona's OWN content sub-SWFs (several of which
+  contain normal interactive AS2, per Step 1's evidence above) directly
+  loadable/testable as standalone assets in their own right.
+- **Dependency:** L3/L4 (both done alongside this) are prerequisites for
+  `attachMovie` specifically, not for `loadMovie` — `loadMovie` needed
+  only the new `IFileLoader` seam and `Movie`/`CharacterDictionary`
+  ownership plumbing below.
+- **What was implemented (Roadmap Phase 4 Steps 2-4, 2026-08-21):** per
+  the user's explicit choice at the Step 1 decision point — "Build generic
+  loading capability anyway" — real, working `MovieClip.loadMovie(url)`
+  was added, deliberately scoped to the SIMPLER of real Flash's two
+  `loadMovie` forms:
+  - **Implemented — target-clip replacement:** calling `loadMovie(url)` on
+    an EXISTING clip fetches `url` via a new `runtime::IFileLoader` seam
+    (`src/runtime/IFileLoader.h` — mirrors `audio::IAudioBackend`'s
+    injectable-platform-seam pattern exactly; default `NullFileLoader`
+    always fails/logs, so every existing test and the CLI need zero setup
+    changes), parses it as a fresh SWF, builds a fresh
+    `CharacterDictionary` for it, and REPLACES the target clip's own
+    content with the loaded movie's — tearing down every existing
+    child/button first (same `runClipEvent(kUnload)`/`notifyRemoved()`/
+    `notifyButtonRemoved()` path `syncChildren()`'s own prune loop uses),
+    then rebinding the clip's `movie_`/`characters_` pointers and swapping
+    in a freshly-built `Timeline`, then running the new content's frame-1
+    script. The target clip's own depth/position/name/parent are left
+    untouched — matches real Flash's documented "loaded content replaces
+    the target clip's own content, keeping its depth/position/name"
+    behavior. A real desktop `runtime::LocalFileLoader` (`src/runtime/
+    LocalFileLoader.{h,cpp}`, plain `ifstream`-based) is provided as a
+    genuinely usable implementation, not just a test stub — a
+    `Nintendo3DSFileLoader` (cartridge/SD filesystem I/O) is explicitly
+    deferred, matching this project's established precedent of not
+    building 3DS backends ahead of verified on-device need.
+  - **NOT implemented — `_level`-indexed sibling movies:** `_level0`/
+    `_level1`/... (`_levelN.loadMovie(...)` loading a genuinely independent
+    SIBLING root movie alongside the existing one, both rendered
+    simultaneously) was explicitly judged too large a lift for this
+    phase — it would require `SceneRenderer` to walk multiple independent
+    root movies (currently assumes exactly one), plus non-trivial
+    `Movie`/`CharacterDictionary` ownership-lifetime questions the
+    target-clip form sidesteps (every `MovieClipInstance` holds
+    non-owning raw `const Movie*`/`const CharacterDictionary*` pointers
+    throughout the codebase — see `ScriptEnvironment::ownLoadedMovie()`'s
+    own doc comment in `MovieClipInstance.h` for how the target-clip form
+    solved this by having `ScriptEnvironment` itself own every loaded
+    `Movie`/`CharacterDictionary` for the rest of the session, never
+    freed). A future phase wanting the `_level` form should expect to
+    revisit both of these, not just add a thin wrapper.
+  - **Known narrow gap (documented, not glossed over):** a loaded
+    sub-movie's DoInitAction bodies ARE (re)scanned so its own sprites
+    instantiate correctly, but `ScriptEnvironment`'s single env-wide
+    `movie_`/`characters_` binding (used by `Sound.attachSound(id)`/
+    `playSoundById()`'s numeric-ID resolution) is NOT rebound to the
+    loaded sub-movie — a loaded sub-movie's OWN sound characters won't
+    resolve by numeric ID through that specific path. Widening that
+    binding to be per-`MovieClipInstance` rather than env-wide was judged
+    out of scope for this phase; see `loadMovie()`'s own doc comment in
+    `MovieClipInstance.h` for the full detail.
+- **Ghidra evidence:** None Extreme-Pamplona-specific (different Ghidra
+  project, not loaded).
+- **JPEXS evidence:** Not available this session.
+- **Test required (done):** `tests/test_movieclip_instance.cpp` —
+  `MovieClipInstance_LoadMovie_ReplacesTargetTimelineAndRunsNewScript`
+  (full parse → teardown → rebind → new-frame-1-script-runs path, via an
+  in-memory `MapFileLoader` test double, checking the target clip's
+  timeline/frame-count/script-set-variable AND that its depth/name/parent
+  are preserved), `..._NoFileLoaderWired_ReturnsFalseAndLeavesClipUnchanged`,
+  `..._FetchedBytesNotAValidSwf_ReturnsFalseAndLeavesClipUnchanged` (both
+  failure paths leave the target clip provably untouched). `tests/
+  test_local_file_loader.cpp` — 5 tests covering `LocalFileLoader` itself
+  against REAL temp-file I/O (not a synthetic fixture, deliberately, since
+  it's the one genuinely OS-facing piece of this phase's work): absolute
+  path, missing file, empty file, base-dir-relative joining, and
+  absolute-URL-ignores-base-dir. The previously-envisioned "integration
+  test against a real Extreme Pamplona content sub-SWF, loaded via the
+  actual in-game path" remains not achievable as scoped — no such in-game
+  path exists in the main file (Step 1's finding, unchanged) — but the
+  content sub-SWFs are now directly loadable via `loadMovie()` as
+  standalone assets, if a future session wants to test one that way
+  manually/via the CLI rather than through Extreme Pamplona's own script.
+
+## L7 — `DefineShape4`/`DefineMorphShape`/`2`/`PlaceObject3`/`CsmTextSettings` not resolved
+
+- **Subsystem:** Rendering / SWF tag parsing.
+- **Status:** `DefineShape4`/`PlaceObject3`/`CsmTextSettings`: not
+  recognized/parsed at all. `DefineMorphShape`/`2`: recognized by
+  `TagCode` but not resolved into `CharacterDictionary`.
+- **Source location:** `src/swf/DefineShapeTag.cpp` (early-outs on v4);
+  no `PlaceObject3Tag`/`CsmTextSettingsTag`/`DefineMorphShapeTag` files
+  exist in `src/swf/`.
+- **Evidence:** `docs/compatibility-matrix.md` §2, `docs/real-game-
+  compatibility.md`'s per-game tag histograms (this turn's cross-check of
+  those histograms against `src/swf/` contents confirms them).
+- **Affected SWFs:** `DefineMorphShape` — all 7 Hobo files (16-27
+  characters each), 0 effect on Extreme Pamplona's loader.
+  `DefineShape4`/`PlaceObject3`/`CsmTextSettings` — Extreme Pamplona only
+  (135/345/37 occurrences respectively), 0 effect on any Hobo file.
+- **Severity:** Medium — visual-completeness gaps, not crashes or hard
+  blockers (unresolved characters are simply absent from rendering,
+  confirmed not to error).
+- **Dependency:** None.
+- **Proposed fix:** Four independent, separable parser+renderer additions;
+  can be sequenced by whichever game is being prioritized (see
+  `docs/real-game-readiness.md`'s ranked list).
+- **Ghidra evidence:** None specific.
+- **JPEXS evidence:** Not available this session.
+- **Test required:** Per-tag parser unit tests against synthetic fixtures;
+  visual/MD5-checksum regression tests against the real corpus render
+  harness once implemented.
+
+## L8 — Two genuinely unrecognized tag IDs (253, 255) in Extreme Pamplona
+
+- **Subsystem:** SWF tag parsing.
+- **Status:** Unidentified — `TagCode` enum has no entry for either;
+  generic scanner logs and skips their bodies.
+- **Source location:** N/A.
+- **Evidence:** `docs/real-game-compatibility.md`'s Extreme Pamplona
+  section (126 occurrences of 253, 1 of 255; some bodies >5-10KB).
+- **Affected SWFs:** Extreme Pamplona only.
+- **Severity:** Unknown — impact not determinable until the tag's purpose
+  is identified.
+- **Dependency:** None.
+- **Proposed fix:** Investigate against the official SWF spec's reserved/
+  unused ID ranges, or check whether it's a compiler/tool-specific
+  extension (worth a targeted JPEXS/ffdec query **once that tool is
+  actually connected** — currently cannot be investigated this way).
+- **Ghidra evidence:** None.
+- **JPEXS evidence:** Not available this session — this is exactly the
+  kind of question JPEXS/ffdec would be well-suited to answer once
+  connected.
+- **Test required:** N/A until identified.
+
+## L9 — `onClipEvent`'s remaining mouse/key flags beyond Load/Unload/EnterFrame
+
+- **Subsystem:** AVM1 event model.
+- **Status:** Not independently re-verified this audit beyond confirming
+  the *property-handler* (`onPress`/`onRelease`/`onRollOver`/`onRollOut`)
+  and `condActionsV2`/`CondKeyPress` mechanisms are real and tested (see
+  L10 below, and `docs/current-state-audit.md` §3/§5). `docs/onclipevent-
+  compatibility.md` remains the authority for the full 19-flag table;
+  treat its content as current unless re-verified.
+- **Source location:** Not re-read line-by-line this audit.
+- **Evidence:** Deferred to existing doc.
+- **Affected SWFs:** Unknown without re-verification.
+- **Severity:** Unknown.
+- **Dependency:** Related to but distinct from L10.
+- **Proposed fix:** N/A — re-verification task, not a fix.
+- **Ghidra evidence:** None specific.
+- **JPEXS evidence:** Not available this session.
+- **Test required:** Re-read `docs/onclipevent-compatibility.md` against
+  current source as a Phase-1-adjacent verification task.
 
 ---
 
-## Not prioritized into the top 5, but confirmed real (tracked for later)
+## RESOLVED this audit (previously listed as open/uncertain — confirmed done)
 
-- `SetBackgroundColor` not parsed — small, isolated, zero-risk fix; low
-  visual impact (only matters for movies with a non-white/non-default stage
-  color) — good candidate for a quick follow-up between larger items.
-- Gradient fills rendered as a flat averaged color (no real gradient
-  rendering) — cosmetic-only impact for vector-heavy content.
-- Shape tessellation topology gaps (shapes with holes, multi-run fill
-  regions) — real but likely rare in typical game-asset shapes; needs a
-  concrete failing real-content example to prioritize confidently (UNKNOWN
-  whether `hobo.swf` itself is affected — not checked this phase).
-- `Try`/`Catch`/`Finally` entirely unimplemented — uncommon in simple AS2
-  game logic, per `docs/avm1-support.md`'s existing assessment; no evidence
-  yet that any target title needs it.
-- Bitmap tag family (`DefineBits*`) entirely unimplemented — **note**:
-  `hobo.swf` itself has zero bitmap tags (confirmed, Phase 9 tag histogram)
-  — the task spec's instruction to not assume this is a real blocker is
-  honored: it is NOT currently blocking the primary target file. Whether
-  the Hobo *sequels* (`hobo 2`-`7`, not yet tested) use bitmaps is unknown.
+### R1 — Button/clip event dispatch (`condActionsV2` + `onPress`/`onRelease`/`onRollOver`/`onRollOut` property handlers + `CondKeyPress`)
+
+**Previously this file's own priority #2 (and `docs/real-game-
+compatibility.md`'s "MISSING" verdict for every game).** Confirmed this
+turn: **fully implemented, wired into the per-tick root `advanceFrame()`
+call, 18 dedicated passing tests** — but **uncommitted**, and every doc
+that referenced it as missing (including this file's own prior text) was
+stale. See `docs/current-state-audit.md` §3/§5 for full evidence.
+**Confirmed end-to-end against real game content, 2026-08-21 (Phase 1 of
+`docs/implementation-roadmap.md`, now done):** the dispatcher itself works
+correctly — a real `CondKeyPress` ("End" key) trigger against `hobo.swf`
+produces a measurably different render than a no-input control. Simulated
+mouse clicks on Hobo1's 3 documented frame-1 buttons produced no effect,
+but a corpus-wide census (`tools/real_game_harness/button_scan.cpp`)
+found this is because those specific buttons' own `condActionsV2` records
+are genuinely keypress-only in the SWF binary (0 mouse-transition bits
+set) — not a dispatcher bug. See `docs/real-game-readiness.md`'s "Phase 1
+results" section for full detail, including the still-open question of
+what actually triggers Hobo's title-screen progression.
+
+### R2 — `ColorTransform`/`_alpha` rendering
+
+Confirmed fixed and tested (compatibility-audit-phase priority #1,
+committed). Not re-verified in depth this audit beyond confirming it's
+still present in source; no evidence of regression found.
+
+### R3 — `_width`/`_height`, `_xmouse`/`_ymouse` coordinate conversion, edge-detected input, bounding-box hit-testing, `ButtonInstance` runtime
+
+All five "interactivity phase" sub-fixes confirmed present in source and
+covered by passing tests this turn (part of the 279/279 total).
+
+---
+
+## Explicitly out of scope for this rebuild
+
+Per-opcode AVM1 tables (`docs/avm1-compatibility.md`), the full SWF tag
+support matrix (`docs/swf-support.md`), and the 3DS-specific limitation
+list (`docs/3ds-limitations.md`) were **not** independently re-verified
+line-by-line this audit — they were spot-checked where directly relevant
+(GlobalObject, MovieClip methods, audio, loadMovie) and found accurate
+where checked. Treat those three documents as still-authoritative unless
+a future audit re-verifies them, and prioritize re-verifying
+`docs/onclipevent-compatibility.md` first (L9) since it's the one most
+likely to have drifted given how much changed in the uncommitted
+event-dispatch phase.

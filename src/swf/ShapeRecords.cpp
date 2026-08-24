@@ -167,18 +167,20 @@ std::vector<ShapeRecord> readShapeRecordStream(SwfReader& reader, uint32_t numFi
 
             ShapeRecord rec;
             rec.type = ShapeRecordType::kStyleChange;
+            rec.styleChange = std::make_shared<ShapeStyleChange>();
+            ShapeStyleChange& sc = *rec.styleChange;
 
             if (stateMoveTo) {
                 uint32_t moveBits = reader.readUBits(5);
-                rec.hasMoveTo = true;
-                rec.moveToXTwips = reader.readSBits(static_cast<int>(moveBits));
-                rec.moveToYTwips = reader.readSBits(static_cast<int>(moveBits));
+                sc.hasMoveTo = true;
+                sc.moveToXTwips = reader.readSBits(static_cast<int>(moveBits));
+                sc.moveToYTwips = reader.readSBits(static_cast<int>(moveBits));
             }
-            if (stateFillStyle0) rec.fillStyle0 = reader.readUBits(static_cast<int>(numFillBits));
-            if (stateFillStyle1) rec.fillStyle1 = reader.readUBits(static_cast<int>(numFillBits));
-            if (stateLineStyle) rec.lineStyleIndex = reader.readUBits(static_cast<int>(numLineBits));
+            if (stateFillStyle0) sc.fillStyle0 = reader.readUBits(static_cast<int>(numFillBits));
+            if (stateFillStyle1) sc.fillStyle1 = reader.readUBits(static_cast<int>(numFillBits));
+            if (stateLineStyle) sc.lineStyleIndex = reader.readUBits(static_cast<int>(numLineBits));
             if (stateNewStyles) {
-                rec.hasNewStyles = true;
+                sc.hasNewStyles = true;
                 // Per spec, a StyleChangeRecord's new fill/line style arrays
                 // are byte-aligned structures — the bit-packed shape record
                 // stream must resync to a byte boundary before reading them
@@ -196,8 +198,8 @@ std::vector<ShapeRecord> readShapeRecordStream(SwfReader& reader, uint32_t numFi
                 // after the first NewStyles record in the shape. No prior
                 // test fixture exercised this path (all set NewStyles=0).
                 reader.byteAlign();
-                rec.newFillStyles = readFillStyleArray(reader, shapeVersion);
-                rec.newLineStyles = readLineStyleArray(reader, shapeVersion);
+                sc.newFillStyles = readFillStyleArray(reader, shapeVersion);
+                sc.newLineStyles = readLineStyleArray(reader, shapeVersion);
                 numFillBits = reader.readUBits(4);
                 numLineBits = reader.readUBits(4);
             }
@@ -212,22 +214,22 @@ std::vector<ShapeRecord> readShapeRecordStream(SwfReader& reader, uint32_t numFi
                 rec.type = ShapeRecordType::kStraightEdge;
                 uint32_t generalLineFlag = reader.readUBits(1);
                 if (generalLineFlag) {
-                    rec.deltaXTwips = reader.readSBits(numBits);
-                    rec.deltaYTwips = reader.readSBits(numBits);
+                    rec.edge.straightEdge.deltaXTwips = reader.readSBits(numBits);
+                    rec.edge.straightEdge.deltaYTwips = reader.readSBits(numBits);
                 } else {
                     uint32_t vertLineFlag = reader.readUBits(1);
                     if (vertLineFlag) {
-                        rec.deltaYTwips = reader.readSBits(numBits);
+                        rec.edge.straightEdge.deltaYTwips = reader.readSBits(numBits);
                     } else {
-                        rec.deltaXTwips = reader.readSBits(numBits);
+                        rec.edge.straightEdge.deltaXTwips = reader.readSBits(numBits);
                     }
                 }
             } else {
                 rec.type = ShapeRecordType::kCurvedEdge;
-                rec.controlDeltaXTwips = reader.readSBits(numBits);
-                rec.controlDeltaYTwips = reader.readSBits(numBits);
-                rec.anchorDeltaXTwips = reader.readSBits(numBits);
-                rec.anchorDeltaYTwips = reader.readSBits(numBits);
+                rec.edge.curvedEdge.controlDeltaXTwips = reader.readSBits(numBits);
+                rec.edge.curvedEdge.controlDeltaYTwips = reader.readSBits(numBits);
+                rec.edge.curvedEdge.anchorDeltaXTwips = reader.readSBits(numBits);
+                rec.edge.curvedEdge.anchorDeltaYTwips = reader.readSBits(numBits);
             }
             records.push_back(std::move(rec));
         }

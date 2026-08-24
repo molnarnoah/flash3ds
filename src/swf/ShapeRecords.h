@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -87,12 +88,15 @@ struct LineStyle {
 
 enum class ShapeRecordType { kStyleChange, kStraightEdge, kCurvedEdge, kEnd };
 
-// A single SHAPERECORD. Only the fields relevant to `type` are meaningful;
-// see the public SWF spec for the full StyleChangeRecord/EdgeRecord layout.
-struct ShapeRecord {
-    ShapeRecordType type = ShapeRecordType::kEnd;
-
-    // --- kStyleChange ---
+// The kStyleChange-only fields of a SHAPERECORD, split out of ShapeRecord
+// (Roadmap Phase 2 "Compact ShapeRecord" fix, 2026-08-21 -- see
+// docs/memory-audit.md) so they can live behind a pointer that's null for
+// the overwhelming majority of records (StraightEdge/CurvedEdge), instead
+// of being always-present dead weight on every single record regardless of
+// its actual type. See docs/memory-audit.md for the byte-level evidence
+// that `sizeof(ShapeRecord)` was the dominant driver of
+// CharacterDictionary::build()'s peak memory cost.
+struct ShapeStyleChange {
     bool hasMoveTo = false;
     int32_t moveToXTwips = 0;
     int32_t moveToYTwips = 0;
@@ -107,16 +111,49 @@ struct ShapeRecord {
     bool hasNewStyles = false;
     std::vector<FillStyle> newFillStyles;
     std::vector<LineStyle> newLineStyles;
+};
+
+// A single SHAPERECORD. Only the fields relevant to `type` are meaningful;
+// see the public SWF spec for the full StyleChangeRecord/EdgeRecord layout.
+//
+// Compact representation (Roadmap Phase 2 "Compact ShapeRecord" fix,
+// 2026-08-21): StraightEdge and CurvedEdge are mutually exclusive per the
+// SWF spec (a record is one or the other, never both), so they share
+// storage via `edge`, a real (non-std::variant) union of two trivial
+// structs -- safe here because both arms are trivially constructible/
+// destructible with no special member functions. kStyleChange's fields
+// (much larger: two vectors, three optionals) are almost never touched
+// per record (style changes are a small minority of a shape's records) and
+// live out-of-line via `styleChange`, non-null iff type == kStyleChange.
+// std::shared_ptr (not unique_ptr) is used deliberately to preserve
+// ShapeRecord's implicit copyability -- SceneRenderer.cpp's font-glyph
+// scaling path copies ShapeRecords, and this keeps that working without
+// hand-rolling copy/move constructors.
+struct ShapeRecord {
+    ShapeRecordType type = ShapeRecordType::kEnd;
 
     // --- kStraightEdge ---
-    int32_t deltaXTwips = 0;
-    int32_t deltaYTwips = 0;
-
+    struct StraightEdge {
+        int32_t deltaXTwips = 0;
+        int32_t deltaYTwips = 0;
+    };
     // --- kCurvedEdge (quadratic bezier, deltas relative to current point) ---
-    int32_t controlDeltaXTwips = 0;
-    int32_t controlDeltaYTwips = 0;
-    int32_t anchorDeltaXTwips = 0;
-    int32_t anchorDeltaYTwips = 0;
+    struct CurvedEdge {
+        int32_t controlDeltaXTwips = 0;
+        int32_t controlDeltaYTwips = 0;
+        int32_t anchorDeltaXTwips = 0;
+        int32_t anchorDeltaYTwips = 0;
+    };
+    union EdgeData {
+        StraightEdge straightEdge;
+        CurvedEdge curvedEdge;
+        // Zero-init via the larger arm so both arms' overlapping bytes
+        // start well-defined regardless of which one is actually read.
+        EdgeData() : curvedEdge{0, 0, 0, 0} {}
+    } edge;
+
+    // --- kStyleChange --- (see ShapeStyleChange above)
+    std::shared_ptr<ShapeStyleChange> styleChange;
 };
 
 struct Shape {

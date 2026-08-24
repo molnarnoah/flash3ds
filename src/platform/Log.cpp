@@ -1,7 +1,5 @@
 #include "platform/Log.h"
 
-#include <cstring>
-
 namespace flash3ds {
 
 namespace {
@@ -10,12 +8,14 @@ FILE* g_sink = stderr;
 // Second, optional output path alongside g_sink -- entirely generic/
 // portable (a plain function pointer, no platform type anywhere in this
 // file), so flash3ds_core stays exactly as platform-agnostic as every
-// other file in it. Added 2026-08-19 so a 3DS-only file (which DOES have
-// libctru access -- e.g. nintendo3ds_main.cpp, already part of the
-// separate flash3ds_3ds target) can additionally route every log line
-// through svcOutputDebugString, visible in Citra/Azahar's own Log Viewer
-// even when fprintf(stderr, ...) is a silent no-op on that target (see
-// docs/3ds-toolchain.md's Step 5 -- newlib's _write is deliberately left
+// other file in it. Ported forward 2026-08-24 from the Virtual Console
+// layer's own 2026-08-19 diagnostic fix (see CLAUDE.md's "Virtual Console
+// layer" section) so a 3DS-only file (which DOES have libctru access --
+// e.g. nintendo3ds_main.cpp, already part of the separate flash3ds_3ds
+// target) can additionally route every log line through
+// svcOutputDebugString, visible in Citra/Azahar's own Log Viewer even
+// when fprintf(stderr, ...) is a silent no-op on that target (see
+// docs/3ds-toolchain.md -- newlib's _write is deliberately left
 // unimplemented there). Discovered while diagnosing a "loads then
 // silently quits" report: every LOG_ERROR on a failure path was
 // completely invisible on-device before this.

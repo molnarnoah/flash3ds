@@ -5,19 +5,29 @@
 // resume, and per-channel volume control against actual 3DS audio
 // hardware.
 //
-// IMPORTANT SCOPE NOTE (carried forward honestly from Phase 6, not new to
-// Phase 10): flash3ds-runtime does not yet decode any SWF sound codec
-// (ADPCM/MP3/uncompressed PCM framing) into raw samples — see
-// swf/DefineSoundTag.h and docs/audio.md. ndsp itself can only play PCM8/
-// PCM16/DSPADPCM sample buffers; without a decode step there is no sample
-// buffer to hand it. This backend therefore does real ndsp channel
-// bookkeeping (so the plumbing exists and is exercised) but playSound()
-// currently has nothing to actually queue, and logs that fact rather than
-// silently doing nothing — this is the SAME functional limitation
-// NullAudioBackend already had, just now backed by a real ndsp channel
-// instead of a no-op, so a future codec-decode phase can wire samples
-// straight into ndspChnWaveBufAdd() here without touching runtime/ or
-// avm1/.
+// SCOPE UPDATE (2026-08-21, Roadmap Phase 3 — see docs/known-limitations.md
+// L1): flash3ds-runtime now decodes MP3-format DefineSound audio (see
+// src/audio/Mp3Decoder.h and runtime::ScriptEnvironment::playSoundById()),
+// and this backend's loadSound()/playSound() now actually queue that
+// decoded PCM through ndsp — replacing what used to be a pure "channel
+// reserved, nothing to queue" no-op (that gap is carried forward honestly
+// from Phase 6/10, see below for exactly what's still missing). Other SWF
+// sound codecs (ADPCM/Nellymoser/Speex/uncompressed) still aren't decoded
+// — for a soundId in one of those formats, loadSound() is simply never
+// called (ScriptEnvironment only decodes MP3), so playSound() here falls
+// back to the original "channel reserved, nothing to queue, logged" path
+// for those, same as before this phase.
+//
+// STILL NOT DONE (honest carry-over, not attempted this phase): a real
+// finite StartSound loop count (`loopCount > 1`) is NOT implemented as a
+// true repeat — see playSound()'s own comment for exactly what happens
+// instead and why a real fix (chaining multiple queued ndspWaveBufs) was
+// deferred rather than guessed at without on-device verification. This
+// backend's code has never been run on real 3DS hardware or in an
+// emulator (see docs/3ds-toolchain.md's "What's verified vs. not") — it
+// compiles cleanly against the real bootstrapped libctru headers
+// (docs/3ds-toolchain.md) but the actual audio behavior described here is
+// unverified beyond that.
 //
 // playTestTone() (below) is a separate, DIAGNOSTIC-ONLY addition — a
 // synthesized sine wave, not an SWF sound — added so the dual-screen test
@@ -58,6 +68,14 @@ public:
     Nintendo3DSAudioBackend(const Nintendo3DSAudioBackend&) = delete;
     Nintendo3DSAudioBackend& operator=(const Nintendo3DSAudioBackend&) = delete;
 
+    // Copies `samples` into a freshly linearAlloc'd buffer (ndsp sample
+    // buffers must live in the 3DS's DMA-accessible "linear" heap, same
+    // constraint as playTestTone()'s buffer below — a caller-owned
+    // std::vector's regular-heap allocation is not guaranteed reachable
+    // the same way), replacing any previously-loaded buffer for this
+    // soundId. Does not itself start playback — see playSound().
+    void loadSound(uint16_t soundId, const int16_t* samples, size_t sampleCount, int sampleRate,
+                    int channels) override;
     void playSound(uint16_t soundId, int loopCount) override;
     void stopSound(uint16_t soundId) override;
     void stopAllSounds() override;
@@ -83,9 +101,29 @@ private:
     // ndsp channel for soundId. Returns -1 if all channels are in use.
     int channelFor(uint16_t soundId);
 
+    // A soundId's decoded PCM, as registered via loadSound(). `buffer` is
+    // linearAlloc'd (see loadSound()'s own comment) and must be freed
+    // (linearFree()) before being replaced or when this backend is
+    // destroyed — see freeLoadedSound().
+    struct LoadedSound {
+        int16_t* buffer = nullptr;
+        size_t frameCount = 0;  // samples PER CHANNEL, matching ndsp's
+                                 // ndspWaveBuf::nsamples convention (NOT
+                                 // total interleaved sample count) — see
+                                 // audio::DecodedAudio::frameCount().
+        int sampleRate = 0;
+        int channels = 1;
+        // Owned by this struct so it stays alive for as long as ndsp
+        // might still be reading it (same "can't be a playSound() local"
+        // reasoning as playTestTone()'s testToneWaveBuf_ below).
+        ndspWaveBuf waveBuf{};
+    };
+    void freeLoadedSound(LoadedSound& sound);
+
     bool initialized_ = false;
     std::unordered_map<uint16_t, int> soundIdToChannel_;
     std::array<bool, kNumChannels> channelInUse_{};
+    std::unordered_map<uint16_t, LoadedSound> loadedSounds_;
 
     // Test-tone playback state. The sample buffer must live in libctru's
     // "linear" heap (DSP-DMA-accessible memory — a plain std::vector's

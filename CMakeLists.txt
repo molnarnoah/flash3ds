@@ -52,6 +52,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_library(flash3ds_core
     src/platform/Log.cpp
+    src/platform/MemoryDiagnostics.cpp
     src/swf/SwfReader.cpp
     src/swf/SwfRecords.cpp
     src/swf/TagCode.cpp
@@ -74,10 +75,13 @@ add_library(flash3ds_core
     src/runtime/InputState.cpp
     src/runtime/ButtonInstance.cpp
     src/runtime/MovieClipInstance.cpp
+    src/runtime/IFileLoader.cpp
+    src/runtime/LocalFileLoader.cpp
     src/renderer/ShapeTessellator.cpp
     src/renderer/SoftwareRenderer.cpp
     src/renderer/SceneRenderer.cpp
     src/audio/NullAudioBackend.cpp
+    src/audio/Mp3Decoder.cpp
     src/avm1/Value.cpp
     src/avm1/ActionCode.cpp
     src/avm1/Scope.cpp
@@ -93,7 +97,28 @@ target_include_directories(flash3ds_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# minimp3.h (third_party/minimp3, vendored -- see its own README.md) is
+# only ever #include'd from src/audio/Mp3Decoder.cpp, so this is PRIVATE:
+# no other translation unit needs (or should reach for) it directly.
+target_include_directories(flash3ds_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/minimp3
+)
+
 target_link_libraries(flash3ds_core PUBLIC ZLIB::ZLIB)
+
+# src/platform/MemoryDiagnostics.cpp is the one flash3ds_core translation
+# unit that needs a real libctru header (<3ds.h>, for
+# osGetMemRegionUsed()/osGetMemRegionFree()) when built for the 3DS target
+# (see that file for why -- it's __3DS__-gated at the #include level,
+# mirroring Mp3Decoder.cpp's existing #ifdef __3DS__ pattern, but the
+# *include path* itself still has to be visible to this target, which
+# nothing in flash3ds_core needed before this file). PRIVATE: no other
+# flash3ds_core translation unit includes <3ds.h> directly.
+if(FLASH3DS_TARGET_3DS)
+    target_include_directories(flash3ds_core PRIVATE
+        "${FLASH3DS_LIBCTRU_INCLUDE}"
+    )
+endif()
 
 target_compile_options(flash3ds_core PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wno-unused-parameter>
@@ -112,6 +137,30 @@ if(FLASH3DS_BUILD_TOOLS)
     # tools/swf_diagnostic/main.cpp and docs/real-game-compatibility.md.
     add_executable(swf_diagnostic tools/swf_diagnostic/main.cpp)
     target_link_libraries(swf_diagnostic PRIVATE flash3ds_core)
+
+    # Implementation-roadmap Phase 1 (2026-08-21): read-only verification
+    # that simulates a real hover/press/release mouse sequence against a
+    # loaded movie and reports whether the (now-committed) event-dispatch
+    # mechanism actually produced an observable effect. See
+    # tools/real_game_harness/click_probe.cpp and
+    # docs/real-game-readiness.md.
+    add_executable(click_probe tools/real_game_harness/click_probe.cpp)
+    target_link_libraries(click_probe PRIVATE flash3ds_core)
+
+    # Phase 1 support diagnostics: explain WHY click_probe found no effect
+    # for hobo.swf's 3 frame-1 buttons (condActionsV2 introspection), and
+    # whether that's a corpus-wide pattern or specific to those 3.
+    add_executable(button_debug tools/real_game_harness/button_debug.cpp)
+    target_link_libraries(button_debug PRIVATE flash3ds_core)
+    add_executable(button_scan tools/real_game_harness/button_scan.cpp)
+    target_link_libraries(button_scan PRIVATE flash3ds_core)
+
+    # Phase 2 (2026-08-21): byte-level breakdown of CharacterDictionary's
+    # memory cost by CharacterDef variant arm. See
+    # tools/real_game_harness/memory_breakdown.cpp and
+    # docs/memory-audit.md's "Byte-level breakdown" section.
+    add_executable(memory_breakdown tools/real_game_harness/memory_breakdown.cpp)
+    target_link_libraries(memory_breakdown PRIVATE flash3ds_core)
 endif()
 
 # ---------------------------------------------------------------------------
