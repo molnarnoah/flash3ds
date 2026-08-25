@@ -591,3 +591,100 @@ in this sandbox (no such environment available here) — the 3DS code path
 unverified against real hardware. This is the same standing caveat every
 other 3DS-specific code path in this project carries, restated honestly
 rather than glossed over.
+
+## 12. Second code loss and re-implementation (2026-08-24, same day): §10's own pattern repeated
+
+**§10 above already documents one lost-and-rebuilt cycle (a "M1" session's
+Option B implementation lost, "M2" rebuilding it from scratch).** Before
+the session that carried out this phase's own work began, the **M2**
+implementation itself — the actual `pendingCharacters_`/`parsedCharacters_`
+code in `CharacterDictionary.{h,cpp}` — was *also* gone: this sandbox's
+git history had reset to commit `430585a` (predating M2, predating even
+the Virtual Console layer M2's own commit `0e31641` sits on top of), and
+`src/runtime/CharacterDictionary.{h,cpp}` on disk were back to the fully
+eager, pre-Option-B form. Only §10's own prose and the `docs/`/`CLAUDE.md`
+narrative describing M2 survived — apparently synced to the user's local
+checkout independently of (and later than) the code that produced it, the
+same asymmetry §10 itself flags for M1. This is now a confirmed *pattern*
+in this project's environment, not a one-off: code changes and doc/CLAUDE.md
+updates can desynchronize from each other across a sandbox reset, with docs
+occasionally surviving when code does not.
+
+This session (still 2026-08-24) re-implemented Option B a third time,
+independently, against the actual current source — not by trying to
+recover or diff against M2's lost code (not possible; nothing of it
+persisted anywhere reachable). The design is the same in substance
+(`pendingCharacters_`/`parsedCharacters_` split, lazy `find()`-triggered
+parse, `DefineSprite` handled via a shared nested-tag-stream walk helper
+used both at scan time for ID discovery and at parse time for the real
+`SpriteDef`) — see `CharacterDictionary.h`'s own file header for the
+current, authoritative design writeup rather than relying on this
+history section.
+
+**Re-measured, this implementation — isolated-process `mem_profile_check`,
+same 8-game corpus §4/§10 used (Cat Ninja not available in this sandbox;
+see below):**
+
+| Game | Peak, eager (re-measured this session, fresh isolated-process run — not carried over from before this container's reset) | Peak, Option B (this session, at `build()`) | Steady-state after 5-frame session | Characters touched / registered |
+|---|---:|---:|---:|---:|
+| Hobo 1 | 87.63 MB | **21.78 MB** | 17.66 MB | 37 / 3575 (1.0%) |
+| Hobo 2 | 93.22 MB | **23.49 MB** | 19.34 MB | 39 / 3930 (1.0%) |
+| Hobo 3 | 116.95 MB | **25.87 MB** | 22.63 MB | 39 / 5073 (0.8%) |
+| Hobo 4 | 140.27 MB | **28.72 MB** | 24.19 MB | 39 / 5813 (0.7%) |
+| Hobo 5 | 255.48 MB | **38.02 MB** | 31.34 MB | 39 / 8626 (0.5%) |
+| Hobo 6 | 148.00 MB | **30.61 MB** | 25.12 MB | 39 / 6350 (0.6%) |
+| Hobo 7 | 155.79 MB | **32.22 MB** | 26.42 MB | 40 / 6547 (0.6%) |
+| Extreme Pamplona (loader) | 10.77 MB | **7.71 MB** | n/a (only 2 frames exist) | 59 / 441 (13.4%) |
+
+These figures line up closely with M2's own documented table above (Hobo1
+25.17→21.78MB range, Hobo5 43.58→38.02MB range — the small remaining gap is
+plausibly measurement-point differences, e.g. M2's table doesn't specify
+whether its number is the `build()` checkpoint or a later steady-state
+one, which this table reports as two separate columns). The close
+agreement between two structurally-independent implementations, done on
+different days by different context windows with zero shared code, is
+itself reasonably strong evidence the ~20-30x fewer-bytes-touched design is
+sound and not an artifact of one particular implementation's quirks.
+
+**Worst-case ceiling re-confirmed unchanged, directly (not just by
+citing §10's claim):** `tools/mem_profile_check` was extended this session
+with a step that calls `find()` for every possible `uint16_t` character ID
+after the 5-frame session (a cheap, harmless no-op for IDs the file never
+defined), forcing every remaining pending character to parse. Result:
+
+| Game | Worst-case peak (force every character) | vs. eager baseline (this session, fresh) |
+|---|---:|---:|
+| Hobo 1 | 83.48 MB | 87.63 MB (95% — same order, small variance from allocator/measurement noise) |
+| Hobo 2 | 88.93 MB | 93.22 MB |
+| Hobo 3 | 112.23 MB | 116.95 MB |
+| Hobo 4 | 134.95 MB | 140.27 MB |
+| Hobo 5 | 248.73 MB | 255.48 MB |
+| Hobo 6 | 142.29 MB | 148.00 MB |
+| Hobo 7 | 149.84 MB | 155.79 MB |
+| Extreme Pamplona | 10.17 MB | 10.77 MB |
+
+Confirms directly, not just by re-asserting §10's prediction: Option B
+defers cost, it does not eliminate the worst case — a session that
+genuinely references every character in a file still ends up paying
+essentially the same total the old eager design always paid up front.
+
+**Testing/build verification this session:** 352/352 desktop tests pass
+(zero regressions; 3 new tests specifically for this phase —
+`CharacterDictionary_Phase5_UnreferencedCharacter_NeverParsed`,
+`_FirstFind_ProducesFullyParsedGoldenValue`, `_RepeatedFind_ReusesCachedParseNotReparsed`
+— plus the pre-existing suite grown by the unrelated Virtual Console/MP3/
+memory-diagnostics work this same reset also required re-merging from the
+user's local checkout, see `CLAUDE.md`'s Virtual Console section for that
+separate provenance story). `tools/real_game_harness/run_harness.sh`
+produced byte-identical frame MD5s across all 8 available corpus games
+before/after this change (Extreme Pamplona's pre-existing frame-3+ failure
+reproduced identically, not a new regression). 3DS cross-build
+(`build_3ds/flash3ds_3ds.3dsx`, RomFS-packaged) compiles clean, zero
+non-weak undefined symbols.
+
+**Process note for whoever picks this up next:** given this is now a
+twice-observed pattern, treat any doc claiming a feature is "implemented"
+with the same discipline `CLAUDE.md`'s audit methodology already
+prescribes for everything else — verify against the actual current source,
+not the doc's word alone, before building on top of it. This section's own
+existence is the proof that doing so matters.

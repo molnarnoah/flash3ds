@@ -358,7 +358,20 @@ re-pasting it.
   measured results; helps peak-per-session, not the worst-case ceiling
   (by design — see `docs/implementation-roadmap-2026-08-21-part2.md`
   Phase 5's own framing of this tradeoff, confirmed correct by the
-  `memory_breakdown` ceiling numbers being unchanged). Option C
+  `memory_breakdown` ceiling numbers being unchanged).
+  **Re-verified 2026-08-24 (same day, later session):** the code behind
+  this "IMPLEMENTED" line was itself lost to a second sandbox reset before
+  this later session began — see `docs/memory-audit.md` §12 for the full
+  account — and was independently re-implemented from scratch against
+  the actual (eager) source found on disk. Freshly re-measured this time:
+  Hobo1 87.63→21.78MB peak / 17.66MB steady-state, Hobo5 255.48→38.02MB
+  peak / 31.34MB steady-state, typically only 0.5-1.4% of a file's
+  registered characters actually get parsed in a 5-frame session,
+  worst-case-everything-touched converges back to within ~5% of the eager
+  baseline (confirms deferral, not data loss). 352/352 tests pass, 8-game
+  render harness byte-identical MD5s, 3DS cross-build clean. This line's
+  "IMPLEMENTED" status is accurate again as of this re-verification, not
+  merely carried over from the earlier (lost) work. Option C
   (tessellate-once-and-cache) — **checked and found NOT viable as
   originally conceived**, since `SceneRenderer` currently re-tessellates
   from raw records on every render call with no cache.

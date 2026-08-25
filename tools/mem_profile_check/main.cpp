@@ -109,8 +109,19 @@ int main(int argc, char** argv) {
                     movie->data.size(), movie->tags.size());
 
         auto dict = runtime::CharacterDictionary::build(*movie);
-        checkpoint("after CharacterDictionary::build (parse all character defs)");
-        std::printf("  characters resolved = %zu\n", dict.size());
+        // Phase 5 (2026-08-24, RAM Option B): build() now only SCANS for
+        // character-defining tags — it no longer parses any of them. So
+        // this checkpoint's delta measures the scan's cost (TagRecord +
+        // TagCode bookkeeping only), not full parsing — see
+        // CharacterDictionary.h's own header comment. dict.size() still
+        // reports every character build() discovered (pending + parsed),
+        // so it's unchanged as a "how many characters does this file
+        // define" figure; dict.parsedCount() (checked again after the
+        // frame-advance loop below) is the new figure that shows how many
+        // of those were actually referenced and so genuinely parsed.
+        checkpoint("after CharacterDictionary::build (scan only, Phase 5)");
+        std::printf("  characters registered (scan) = %zu, parsed so far = %zu\n", dict.size(),
+                    dict.parsedCount());
 
         // Free the raw compressed-file buffer explicitly — it is not
         // needed after loadSwf() and its lifetime is scoped to this loop
@@ -137,6 +148,31 @@ int main(int argc, char** argv) {
             root->advanceFrame();
             checkpoint("after advanceFrame() #" + std::to_string(f + 1));
         }
+
+        // Phase 5 evidence: how many of this file's registered characters
+        // were actually touched (lazily parsed) by a typical 5-frame boot,
+        // vs. how many the old eager design would have unconditionally
+        // parsed at build() time regardless of whether anything ever
+        // referenced them.
+        std::printf("  characters parsed after 5-frame session = %zu of %zu registered (%.1f%%)\n",
+                    dict.parsedCount(), dict.size(),
+                    dict.size() > 0 ? 100.0 * dict.parsedCount() / dict.size() : 0.0);
+
+        // Worst-case upper bound: force-parse every character ID this file
+        // could possibly define (the full uint16_t space) so RSS converges
+        // to what the OLD eager build() would have produced up front —
+        // this is a sanity check that Phase 5 defers work rather than
+        // dropping it, and the number to compare against the pre-Phase-5
+        // baseline for "nothing got worse if a pathological SWF really did
+        // reference everything."
+        for (uint32_t id = 0; id <= 0xFFFF; ++id) {
+            dict.find(static_cast<uint16_t>(id));
+        }
+        checkpoint("after force-parsing every possible character ID (worst case)");
+        std::printf(
+            "  characters parsed worst-case = %zu of %zu registered (%.1f%%)\n",
+            dict.parsedCount(), dict.size(),
+            dict.size() > 0 ? 100.0 * dict.parsedCount() / dict.size() : 0.0);
 
         std::printf("\n");
     }

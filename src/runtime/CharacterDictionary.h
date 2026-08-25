@@ -13,63 +13,50 @@
 // characters (DefineBits*) are still recognized by tag but not parsed
 // (later phase; see docs/swf-support.md).
 //
+// Phase 5 (RAM Option B — lazy/on-demand parsing, 2026-08-24): build() no
+// longer parses every character's shape/font/etc. payload up front. It
+// only scans for character-defining tags (cheap — a single UI16 read per
+// tag, since every character-defining tag's body begins with its own
+// CharacterId/SpriteID/FontID/etc. as the first field, per the public SWF
+// spec) and records each one's TagRecord in `pendingCharacters_`. The
+// actual type-specific parse (parseDefineShape/parseDefineSound/etc.) only
+// runs the FIRST time find() is called for that character ID — see
+// find()'s own doc comment and docs/memory-audit.md §10 for the measured
+// RAM impact. This is a behavior-preserving change from every EXTERNAL
+// caller's point of view: find() still returns a fully-parsed
+// `const CharacterDef*` (or nullptr for an unknown ID) synchronously, with
+// identical content to what the old eager build() would have produced —
+// only WHEN the parse work happens changed, not what it produces. No call
+// site (SceneRenderer.cpp, MovieClipInstance.cpp, ButtonInstance.cpp,
+// CharacterBounds.cpp — every find() call site as of this phase) needed
+// any change.
+//
 // DefineSprite's body is CharacterId, FrameCount, then a *nested* tag
 // stream (its own ShowFrame/PlaceObject*/RemoveObject*/DoAction/... control
 // tags, terminated by an End tag) living inside that same DefineSprite tag's
-// body bytes. Critically, that nested stream is scanned here using
-// *absolute* offsets into Movie::data (by seeking a reader into the shared
-// buffer rather than constructing an isolated sub-reader), so the resulting
+// body bytes. Critically, that nested stream is scanned using *absolute*
+// offsets into Movie::data (by seeking a reader into the shared buffer
+// rather than constructing an isolated sub-reader), so the resulting
 // TagRecords are directly usable with Movie::tagBodyReader — and so
 // Timeline::build() doesn't need to know or care whether it's building a
-// movie's main timeline or a sprite's nested one.
-//
-// --- Lazy/on-demand parsing (Roadmap Phase 5, "RAM Option B", 2026-08-24) ---
-//
-// build() used to eagerly parse every character-defining tag's full body
-// (geometry, glyph outlines, TEXTRECORD runs, ...) up front. Measured cost
-// (docs/memory-audit.md §5-5c): CharacterDictionary::build() is the
-// dominant contributor to this runtime's peak RSS (~90%+ of growth for
-// every real corpus file measured), and the overwhelming majority of that
-// is std::vector<ShapeRecord> geometry that a typical session may never
-// actually touch (e.g. off-screen/rarely-placed sprite children).
-//
-// build() now only PEEKS each character-defining tag's leading CharacterId
-// field (every one of DefineShape/2/3, DefineSound, DefineFont, DefineFont2,
-// DefineText/2, DefineButton/2, and DefineEditText begins with that field
-// as its very first UI16 per the public SWF spec — confirmed by direct
-// source read of each tag's own parser) and stores a `pending_` entry
-// {code, bodyOffset, bodyLength} — no geometry/outline/text-run parsing
-// happens at this point. The real parse (calling into
-// swf::parseDefineShape/parseDefineFont/etc.) happens lazily, on first
-// find(), and the result is cached in `parsed_` so a second find() for the
-// same character is a plain hash-map lookup, not a re-parse.
-//
-// DefineSprite is the one exception, kept eager: constructing a SpriteDef
-// is already cheap (it stores TagRecord offset/length for its nested
-// control tags, not a byte copy — see SpriteDef's own comment below) and
-// build() must recurse into a sprite's nested tag stream regardless, to
-// discover any character-defining tags nested inside it (legal per spec,
-// see scanTagsForCharacters()'s own comment) — so there is no laziness win
-// available for sprites themselves, only for what they might reference.
-//
-// find() remains a `const` method — every call site in this codebase holds
-// a `const CharacterDictionary&`/`const CharacterDictionary*` (SceneRenderer,
-// MovieClipInstance, ButtonInstance, CharacterBounds — grepped and
-// confirmed before this change) and was written assuming find() is
-// synchronous/cheap. Lazy-parse-and-cache-on-first-call preserves that
-// call-site contract exactly (the mutation is an internal cache fill, not
-// an observable state change) via `mutable parsed_`/`mutable pending_`.
-//
-// A linkage-name lookup (findByLinkageName(), used by attachMovie()/
-// attachSound()) does NOT force a parse — it only resolves a name to a
-// character ID, exactly as before; the actual parse still waits for a real
-// find() call (i.e. actual placement/render/attachSound use), per this
-// phase's own design goal of not eagerly materializing anything a session
-// doesn't end up touching.
+// movie's main timeline or a sprite's nested one. SWF's character ID
+// dictionary is GLOBAL across the whole file, so a character defined nested
+// inside a DefineSprite's own tag stream must still be independently
+// find()-able — build()'s scan recurses into every DefineSprite's nested
+// tags to register those IDs too, even though (Phase 5) it does not build
+// their full CharacterDef payload at scan time either. This means a
+// DefineSprite's own nested-tag walk runs twice in the worst case (once
+// during build()'s scan, purely to discover further nested character IDs;
+// once more on the sprite's own first find() call, to build its real,
+// cached SpriteDef) — a small, bounded, deliberate cost, not an oversight;
+// see CharacterDictionary.cpp's scanTagsForCharacters()/parseOneCharacter()
+// for exactly where each walk happens.
 
 #pragma once
 
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -81,6 +68,7 @@
 #include "swf/DefineShapeTag.h"
 #include "swf/DefineSoundTag.h"
 #include "swf/DefineTextTag.h"
+#include "swf/TagCode.h"
 #include "swf/TagDispatcher.h"
 
 namespace flash3ds::runtime {
@@ -96,29 +84,42 @@ using CharacterDef = std::variant<swf::ShapeDef, SpriteDef, swf::SoundDef, swf::
 
 class CharacterDictionary {
 public:
-    // Scans `movie`'s top-level tags (recursing into nested DefineSprite
-    // tag streams) for character-defining tags. DefineSprite bodies are
-    // parsed immediately (cheap — see file header); every other kind is
-    // only indexed by {tag code, offset, length} here and actually parsed
-    // on first find() — see this file's header comment for the full
-    // rationale. Tags whose leading CharacterId can't even be peeked
-    // (truncated body) are logged and skipped, same as a full parse
-    // failure was handled before this phase.
+    // Scans `movie`'s top-level tags (recursing into every DefineSprite's
+    // own nested tag stream) for character-defining tags and records each
+    // one's TagRecord + resolved tag code, keyed by character ID — see this
+    // file's header comment (Phase 5) for why this does NOT parse each
+    // character's actual payload. Tags whose character-ID field can't even
+    // be read (truncated/malformed) are logged and skipped, exactly like
+    // the old eager design did for a full-parse failure.
     static CharacterDictionary build(const Movie& movie);
 
-    // Resolves `characterId`. First checks the already-parsed cache; on a
-    // miss, checks the pending index and — if found — parses the tag body
-    // now, caches the result, and returns it. Returns nullptr if
-    // `characterId` was never seen by build() at all, or if its tag failed
-    // to parse (logged when that happens, exactly as it was pre-Phase-5).
+    // Returns the fully-parsed definition for `characterId`, parsing it
+    // (and caching the result) on this call if this is the first
+    // reference — see this file's header comment. `const` is preserved
+    // (every existing caller treats CharacterDictionary as read-only) via
+    // `mutable` cache/pending members; this is the standard "logically
+    // const, physically caches" pattern, not a design compromise. Returns
+    // nullptr for a character ID that was never registered by build(), or
+    // whose lazy parse just failed (logged once, at that point — see
+    // CharacterDictionary.cpp) — identical external behavior to the old
+    // eager design either way.
     const CharacterDef* find(uint16_t characterId) const;
 
-    // Total distinct character IDs build() discovered (parsed + still
-    // pending) — NOT the count of characters actually materialized so far.
-    // Matches this method's pre-Phase-5 meaning (existing tests assert on
-    // it as "how many characters did build() find", not "how many are
-    // resident right now") — see test_character_dictionary.cpp.
-    size_t size() const { return pending_.size() + parsed_.size(); }
+    // Total DISTINCT character IDs build() discovered, whether or not
+    // find() has actually been called for each one yet — i.e. pending +
+    // already-parsed. Existing callers/tests that asserted this against
+    // the old eager design's character count are unaffected (a
+    // registered-but-never-yet-parsed character still counts).
+    size_t size() const { return pendingCharacters_.size() + parsedCharacters_.size(); }
+
+    // Phase 5 diagnostic (2026-08-24): how many of `size()`'s characters
+    // have actually been parsed-on-demand so far via find() — i.e. how
+    // many were genuinely referenced (placed or looked up) this session.
+    // Exists so RAM-measurement tooling (tools/mem_profile_check) can
+    // report "N of M characters ever touched" directly, instead of that
+    // number only being inferable indirectly — see docs/memory-audit.md
+    // §10 for how this phase used it.
+    size_t parsedCount() const { return parsedCharacters_.size(); }
 
     // Roadmap Phase 4 (2026-08-21, ExportAssets/dynamic instantiation —
     // see docs/known-limitations.md L4): resolves a library symbol's
@@ -130,24 +131,78 @@ public:
     // the overwhelmingly common case; every Hobo file exports zero
     // symbols, so this is a no-cost lookup for them). Populated by
     // build() scanning for ExportAssets tags exactly like every other
-    // character-defining tag. Does NOT force-parse the target character —
-    // see this file's header comment.
+    // character-defining tag. Deliberately does NOT force-parse the
+    // target character (Phase 5) — resolving a name to an ID is not by
+    // itself a "reference" in the placement/render sense; the caller's
+    // own subsequent find(id) call is what triggers the lazy parse, same
+    // as any other character ID it might have obtained another way.
     const uint16_t* findByLinkageName(const std::string& name) const;
 
 private:
-    const Movie* movie_ = nullptr;
-    // {tag code, offset, length} for every discovered-but-not-yet-parsed
-    // character. `mutable` because find() erases an entry here the moment
-    // it promotes that character into `parsed_`, and find() is const (see
-    // this file's header comment on why that contract is preserved).
-    mutable std::unordered_map<uint16_t, swf::TagRecord> pending_;
-    mutable std::unordered_map<uint16_t, CharacterDef> parsed_;
-    std::unordered_map<std::string, uint16_t> linkageNameToId_;
+    // A character-defining tag build()'s scan has seen but not yet
+    // parsed. Deliberately just the TagRecord + its already-resolved
+    // TagCode (so find()'s lazy parse doesn't need to re-derive the type
+    // from tag.code) — no payload bytes, matching how SoundDef/SpriteDef
+    // already only stored offset/length before this phase.
+    struct PendingCharacter {
+        swf::TagRecord tag;
+        swf::TagCode code = swf::TagCode::End;
+    };
 
-    // Actually parses `tag` (whose code determines which swf::parseDefineX
-    // function to call) into a CharacterDef, logs and returns nullptr on
-    // failure. Factored out of find() for readability only.
-    const CharacterDef* parseAndCache(uint16_t characterId, const swf::TagRecord& tag) const;
+    // These are private *static* helpers (not free functions in an
+    // anonymous namespace, unlike the old eager .cpp's style) because they
+    // need to write directly into a CharacterDictionary's private
+    // pendingCharacters_/linkageNameToId_ maps (scanTagsForCharacters) or
+    // name the private PendingCharacter type (parseOneCharacter) — a
+    // non-member function has no access to either, regardless of what
+    // reference/pointer type it's handed. See CharacterDictionary.cpp for
+    // the implementations and per-tag-type dispatch details.
+
+    // Scans one tag list (either the movie's own top-level tags, or a
+    // DefineSprite's nested control-tag stream, via recursion) for
+    // character-defining tags, recording each as a PendingCharacter keyed
+    // by character ID — see this file's header comment (Phase 5) for why
+    // this only reads each tag's leading UI16 ID field rather than fully
+    // parsing it. Also populates `linkageNameToId` from any ExportAssets
+    // tags found, exactly as build() always has.
+    static void scanTagsForCharacters(const Movie& movie, const std::vector<swf::TagRecord>& tags,
+                                       std::unordered_map<uint16_t, PendingCharacter>& pending,
+                                       std::unordered_map<std::string, uint16_t>& linkageNameToId);
+
+    // Walks a DefineSprite tag's nested control-tag stream (ShowFrame/
+    // PlaceObject*/RemoveObject*/DoAction/.../End), starting just past its
+    // CharacterId+FrameCount header, and returns the resulting TagRecords.
+    // Uses *absolute* offsets into Movie::data (see this file's header
+    // comment), so the result is directly usable with
+    // Movie::tagBodyReader()/Timeline either way. Shared by
+    // scanTagsForCharacters() (to recurse into nested character IDs at
+    // scan time — the walk's result is discarded once IDs are registered)
+    // and parseOneCharacter() (to build a DefineSprite's real, cached
+    // SpriteDef::tags on its first find() call) so the walk logic itself
+    // is written exactly once.
+    static std::vector<swf::TagRecord> walkSpriteTagStream(const Movie& movie,
+                                                             const swf::TagRecord& spriteTag,
+                                                             uint16_t characterId);
+
+    // Fully parses one pending character's payload, dispatching on `code`
+    // to the same per-type parser the old eager build() called
+    // (parseDefineShape/parseDefineSound/.../walkSpriteTagStream for
+    // DefineSprite). Returns std::nullopt (after logging, same message
+    // text as the old eager code) if the parse fails — find() treats that
+    // identically to an unregistered character ID.
+    static std::optional<CharacterDef> parseOneCharacter(const Movie& movie, const swf::TagRecord& tag,
+                                                           swf::TagCode code);
+
+    mutable std::unordered_map<uint16_t, PendingCharacter> pendingCharacters_;
+    mutable std::unordered_map<uint16_t, CharacterDef> parsedCharacters_;
+    std::unordered_map<std::string, uint16_t> linkageNameToId_;
+    // Non-owning — see MovieClipInstance.h/SceneRenderer.h's own
+    // movie_/characters_ pointer pair for the same, already-established
+    // "these two co-live for the whole session" convention this reuses.
+    // Needed here (new in Phase 5) so find()'s lazy parse can read a
+    // pending character's body via movie_->tagBodyReader(tag) without
+    // every call site having to additionally pass the Movie back in.
+    const Movie* movie_ = nullptr;
 };
 
 }  // namespace flash3ds::runtime

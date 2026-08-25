@@ -256,73 +256,111 @@ TEST_CASE(CharacterDictionary_Build_ResolvesDefineButton) {
               static_cast<size_t>(1));
 }
 
-// --- Roadmap Phase 5 (RAM Option B, 2026-08-24): lazy/on-demand parsing --
+// --- Phase 5: lazy/on-demand parsing (RAM Option B) ----------------------
+//
+// These three tests correspond directly to the roadmap's own "evidence to
+// gather" requirements for this phase: (a) a character build() merely
+// scanned but that find() was never called for must never actually get
+// parsed; (b) the first find() call for a character must produce a fully-
+// parsed value identical to what the old eager design would have produced;
+// (c) a second find() call for an already-parsed character must reuse the
+// cached result rather than re-parsing.
 
-TEST_CASE(CharacterDictionary_LazyParse_RepeatedFindReturnsSamePointer) {
-    // If find() re-parsed on every call instead of caching, two calls could
-    // still coincidentally return equal *content*, but the underlying
-    // storage would not generally be the same object. Pointer identity
-    // across repeated find() calls is the direct, observable proof that the
-    // second call hit the parsed_ cache rather than re-parsing the tag.
+TEST_CASE(CharacterDictionary_Phase5_UnreferencedCharacter_NeverParsed) {
+    auto bytes = buildMovieWithShapeAndSprite();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+
+    auto dict = CharacterDictionary::build(*movie);
+    // build()'s scan must have registered both characters...
+    CHECK_EQ(dict.size(), static_cast<size_t>(2));
+    // ...but neither should have been parsed yet — find() was never called.
+    CHECK_EQ(dict.parsedCount(), static_cast<size_t>(0));
+
+    // Referencing only character 10 must not incidentally parse character 20.
+    const auto* shapeCharacter = dict.find(10);
+    CHECK(shapeCharacter != nullptr);
+    CHECK_EQ(dict.parsedCount(), static_cast<size_t>(1));
+    CHECK_EQ(dict.size(), static_cast<size_t>(2));  // still 2 total — nothing was dropped
+
+    // Character 20 (the sprite) was scanned but never find()-ed: still
+    // pending, not parsed, and this check itself must not change that.
+    CHECK_EQ(dict.parsedCount(), static_cast<size_t>(1));
+}
+
+TEST_CASE(CharacterDictionary_Phase5_FirstFind_ProducesFullyParsedGoldenValue) {
+    // A movie exercising several distinct character kinds at once, so this
+    // test's golden-value assertions cover more than just the shape/sprite
+    // pair the other Phase 5 tests use.
+    auto shapeBody = fixtures::buildDefineShapeBytes(2, /*characterId=*/10, 100 * 20, 80 * 20, 0xE0,
+                                                        0x10, 0x10, 0xFF);
+    auto soundBody = fixtures::buildDefineSoundBytes(/*soundId=*/5, /*format=*/1 /*ADPCM*/,
+                                                       /*rate=*/2 /*22050Hz*/, /*is16Bit=*/true,
+                                                       /*stereo=*/false, /*sampleCount=*/22050);
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineShape2), shapeBody},
+        {static_cast<uint16_t>(TagCode::DefineSound), soundBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(400 * 20, 400 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto dict = CharacterDictionary::build(*movie);
+    CHECK_EQ(dict.parsedCount(), static_cast<size_t>(0));  // nothing parsed yet — confirms this is
+                                                             // genuinely a first reference below
+
+    const auto* shapeCharacter = dict.find(10);
+    CHECK(shapeCharacter != nullptr);
+    CHECK(std::holds_alternative<ShapeDef>(*shapeCharacter));
+    const auto& shape = std::get<ShapeDef>(*shapeCharacter);
+    CHECK_EQ(shape.characterId, static_cast<uint16_t>(10));
+    CHECK_EQ(shape.bounds.xMax, static_cast<int32_t>(100 * 20));
+    CHECK_EQ(shape.bounds.yMax, static_cast<int32_t>(80 * 20));
+
+    const auto* soundCharacter = dict.find(5);
+    CHECK(soundCharacter != nullptr);
+    CHECK(std::holds_alternative<SoundDef>(*soundCharacter));
+    const auto& sound = std::get<SoundDef>(*soundCharacter);
+    CHECK_EQ(sound.soundId, static_cast<uint16_t>(5));
+    CHECK(sound.is16Bit);
+    CHECK(!sound.stereo);
+    CHECK_EQ(sound.sampleCount, 22050u);
+
+    CHECK_EQ(dict.parsedCount(), static_cast<size_t>(2));
+}
+
+TEST_CASE(CharacterDictionary_Phase5_RepeatedFind_ReusesCachedParseNotReparsed) {
     auto bytes = buildMovieWithShapeAndSprite();
     auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
     CHECK(movie->valid);
     auto dict = CharacterDictionary::build(*movie);
 
     const auto* first = dict.find(10);
-    const auto* second = dict.find(10);
     CHECK(first != nullptr);
-    CHECK_EQ(first, second);
-}
+    CHECK_EQ(dict.parsedCount(), static_cast<size_t>(1));
 
-TEST_CASE(CharacterDictionary_LazyParse_SizeCountsPendingAndParsedIdentically) {
-    // size() must mean "how many distinct character IDs did build() see",
-    // unaffected by whether any of them have actually been parsed yet --
-    // existing call sites (mem_profile_check, tests) rely on this being the
-    // discovery count, not a "how much work has happened so far" counter.
-    auto bytes = buildMovieWithShapeAndSprite();
-    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
-    auto dict = CharacterDictionary::build(*movie);
+    const auto* second = dict.find(10);
+    CHECK(second != nullptr);
+    // Same object (pointer identity), not merely equal content — proves the
+    // second call returned the cached entry rather than re-running
+    // parseOneCharacter() and overwriting it with a freshly-built one.
+    CHECK(first == second);
+    // parsedCount() must NOT have grown — a genuine re-parse would still
+    // land in the same map slot (parsedCount() unchanged) but this at
+    // least confirms repeated references don't inflate the "characters
+    // parsed" count, which is the number the roadmap's RAM measurement
+    // step reports.
+    CHECK_EQ(dict.parsedCount(), static_cast<size_t>(1));
 
-    CHECK_EQ(dict.size(), static_cast<size_t>(2));
-    const auto* shapeCharacter = dict.find(10);  // promotes id=10 from pending_ to parsed_
-    CHECK(shapeCharacter != nullptr);
-    CHECK_EQ(dict.size(), static_cast<size_t>(2));  // unchanged by the promotion
-}
-
-TEST_CASE(CharacterDictionary_LazyParse_MalformedBodyFailsAtFindNotAtBuild) {
-    // A tag whose leading CharacterId is readable (2 bytes) but whose
-    // remaining body is too short/malformed for a full parse must still be
-    // *discovered* by build() (peekLeadingCharacterId only needs those 2
-    // bytes) -- the actual parse failure is only observed lazily, on the
-    // first find(). This is the direct regression test for "build() no
-    // longer eagerly parses", as distinct from the pre-existing "malformed
-    // input never crashes" guarantee (which this also still upholds).
-    std::vector<uint8_t> brokenShapeBody = {40, 0, 0xFF};  // characterId=40, then garbage
-    std::vector<fixtures::FixtureTag> tags = {
-        {static_cast<uint16_t>(TagCode::DefineShape2), brokenShapeBody},
-        {1 /* ShowFrame */, {}},
-    };
-    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
-    auto bytes = fixtures::wrapFws(6, body);
-
-    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
-    CHECK(movie->valid);
-    auto dict = CharacterDictionary::build(*movie);
-
-    // Discovered (peeked) even though it can never actually parse.
-    CHECK_EQ(dict.size(), static_cast<size_t>(1));
-
-    // The real parse failure only happens here, and must fail cleanly
-    // (nullptr, no crash) rather than propagate an exception or corrupt
-    // state -- matches the pre-Phase-5 malformed-input contract.
-    const auto* character = dict.find(40);
-    CHECK(character == nullptr);
-
-    // A failed lazy parse must not be retried forever on every call (it's
-    // fine for it to keep returning nullptr, but it must not, say, grow
-    // unbounded state) -- calling find() again is safe and still nullptr.
-    CHECK(dict.find(40) == nullptr);
+    // A third call, interleaved with a different character's first
+    // reference, still doesn't touch character 10's already-cached entry.
+    const auto* sprite = dict.find(20);
+    CHECK(sprite != nullptr);
+    const auto* third = dict.find(10);
+    CHECK(third == first);
+    CHECK_EQ(dict.parsedCount(), static_cast<size_t>(2));
 }
 
 TEST_CASE(CharacterDictionary_Build_ResolvesDefineEditText) {

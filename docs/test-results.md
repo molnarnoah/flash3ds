@@ -264,3 +264,16 @@ created — see `tests/swf/README.md`).
 - **Not run this phase, same standing limitation as every prior phase:**
   on Azahar or real hardware — no emulator/device access from this
   environment.
+
+**Re-verification (2026-08-24, later same-day session):** the Phase 5 code
+above was lost to a second sandbox reset before this session began (only
+this doc's own entries and `CLAUDE.md`/`docs/memory-audit.md`'s prose
+survived — see `docs/memory-audit.md` §12) and was independently
+re-implemented from scratch. **352/352 tests passing** (0 regressions; 3
+new tests this time: `CharacterDictionary_Phase5_UnreferencedCharacter_NeverParsed`,
+`_FirstFind_ProducesFullyParsedGoldenValue`, `_RepeatedFind_ReusesCachedParseNotReparsed`).
+8-game render harness (Cat Ninja not available in this sandbox — not
+staged here) byte-identical MD5s before/after, zero regressions. 3DS
+cross-build clean, zero non-weak undefined symbols, RomFS-packaged
+`.3dsx` produced. See `docs/memory-audit.md` §12 for the full re-measured
+RAM figures.
