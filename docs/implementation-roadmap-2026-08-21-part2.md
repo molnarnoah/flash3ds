@@ -148,7 +148,31 @@ content becomes available to actually measure against.
 
 ---
 
-## Phase 7 — Resolve Hobo's title-screen progression trigger
+## Phase 7 — Resolve Hobo's title-screen progression trigger — **DONE (negative result) 2026-08-25**
+
+**Completed exactly as specified below** — see `docs/hobo-title-progression.md`
+for the full writeup. Summary: no key progresses Hobo1 past a "title
+screen" because no such root-timeline gate exists to progress past — the
+root timeline never leaves frame 1 (single-frame/`onEnterFrame` game
+architecture), and gameplay-shaped `Key.isDown()` polling is already
+running from tick 0 regardless of any input. The `CondKeyPress=4` ("End")
+trigger every frame-1 `DefineButton2` carries is real and dispatches
+correctly, but its actual, concretely-traced effect (two
+`GetURL armorgames.com` calls, a nested clip's `gotoAndStop(2)`, and
+`Sound.setVolume(0)` — all persisting after a single tap, proving a one-
+shot state flip, not a level-triggered hold) is a **pause/quit-to-portal
+menu**, not a "start game" trigger. New tool:
+`tools/real_game_harness/hobo_end_key_probe.cpp`. This is an honest
+negative result on the phase's original framing, not a runtime gap —
+`condActionsV2`/`CondKeyPress` dispatch is demonstrably working (that's how
+End's real effect was observed at all). Feeds into Phase 8's scoping per
+this phase's own completion criteria. 352/352 tests still passing (no new
+unit tests — this was a real-corpus verification phase, whose own targeted
+harness invocation is the test).
+
+---
+
+## Phase 7 (original spec) — Resolve Hobo's title-screen progression trigger
 
 - **Objective:** Determine what actually causes Hobo1-family content to
   progress past its title screen — a verification task, not an

@@ -161,6 +161,14 @@ if(FLASH3DS_BUILD_TOOLS)
     # docs/memory-audit.md's "Byte-level breakdown" section.
     add_executable(memory_breakdown tools/real_game_harness/memory_breakdown.cpp)
     target_link_libraries(memory_breakdown PRIVATE flash3ds_core)
+
+    # Roadmap Phase 7 (2026-08-25): holds InputState::kEnd down across many
+    # ticks against a real corpus movie and reports root timeline/display-
+    # list state plus every real AVM1 call executed, vs. an inert-key
+    # control run -- see tools/real_game_harness/hobo_end_key_probe.cpp and
+    # docs/hobo-title-progression.md.
+    add_executable(hobo_end_key_probe tools/real_game_harness/hobo_end_key_probe.cpp)
+    target_link_libraries(hobo_end_key_probe PRIVATE flash3ds_core)
 endif()
 
 # ---------------------------------------------------------------------------

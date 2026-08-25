@@ -477,6 +477,32 @@ has not yet been updated with any of this repository's own newer work
 (MP3/memory/harness tooling/this merge itself) — that sync is a separate,
 explicit step, not implied by this port.
 
+## Roadmap Part 2 (`docs/implementation-roadmap-2026-08-21-part2.md`) progress
+
+Phase 5 (RAM Option B, lazy/on-demand `CharacterDictionary` parsing) —
+**done 2026-08-24**, see `docs/memory-audit.md` §10/§12.
+
+Phase 6 (`loadMovie` bounding + sound-cache eviction) — **investigated,
+deliberately NOT implemented**: no real corpus content exercises either
+cache enough to demonstrate real unbounded growth (at most 1 sound
+decoded, 0 `loadMovie` calls across all 9 games' available content), so
+building LRU eviction now would be tuning against a hypothetical. See the
+roadmap doc's own Phase 6 entry for the full reasoning; revisit only if
+real gameplay content surfaces that actually grows these caches.
+
+Phase 7 (resolve Hobo's title-screen progression trigger) — **done
+(negative result) 2026-08-25**, see `docs/hobo-title-progression.md`. No
+key progresses Hobo1 past a "title screen" because no such root-timeline
+gate exists — it's a single-frame/`onEnterFrame`-driven game (root
+timeline never leaves frame 1; movement-key polling is already running
+from tick 0 regardless of input). The `CondKeyPress=4`/"End" trigger every
+frame-1 button carries is real and dispatches correctly, but its traced
+effect (mute audio, freeze an overlay clip at frame 2, open the
+armorgames.com portal link — confirmed a one-shot state flip via a
+tap-only run, not a hold-triggered effect) is a **pause/quit-to-portal
+menu**, not a title-screen dismissal. New read-only tool:
+`tools/real_game_harness/hobo_end_key_probe.cpp`.
+
 ## Build
 
 ```sh
