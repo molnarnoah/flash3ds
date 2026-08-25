@@ -383,3 +383,27 @@ TEST_CASE(CharacterDictionary_Build_ResolvesDefineEditText) {
     CHECK_EQ(std::get<flash3ds::swf::EditTextDef>(*editTextCharacter).variableName,
               std::string("myVar"));
 }
+
+TEST_CASE(CharacterDictionary_Build_ResolvesDefineMorphShape) {
+    auto morphBody = fixtures::buildDefineMorphShapeBytes(
+        34, /*startW=*/100 * 20, /*startH=*/50 * 20, /*endW=*/200 * 20, /*endH=*/100 * 20, 0xFF, 0,
+        0, 255, 0, 0xFF, 0, 255);
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineMorphShape), morphBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto dict = CharacterDictionary::build(*movie);
+
+    const auto* morphCharacter = dict.find(34);
+    CHECK(morphCharacter != nullptr);
+    CHECK(std::holds_alternative<flash3ds::swf::MorphShapeDef>(*morphCharacter));
+    const auto& morphDef = std::get<flash3ds::swf::MorphShapeDef>(*morphCharacter);
+    CHECK_EQ(morphDef.characterId, static_cast<uint16_t>(34));
+    CHECK_EQ(morphDef.startBounds.widthTwips(), 100 * 20);
+    CHECK_EQ(morphDef.endBounds.widthTwips(), 200 * 20);
+}

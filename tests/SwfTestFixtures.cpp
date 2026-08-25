@@ -845,4 +845,44 @@ std::vector<uint8_t> buildDefineEditTextBytes(uint16_t characterId, int32_t boun
     return out;
 }
 
+// --- Phase 9: DefineMorphShape body builder ----------------------------
+
+std::vector<uint8_t> buildDefineMorphShapeBytes(uint16_t characterId, int32_t startWidthTwips,
+                                                 int32_t startHeightTwips, int32_t endWidthTwips,
+                                                 int32_t endHeightTwips, uint8_t r1, uint8_t g1,
+                                                 uint8_t b1, uint8_t a1, uint8_t r2, uint8_t g2,
+                                                 uint8_t b2, uint8_t a2) {
+    std::vector<uint8_t> out;
+    writeU16(out, characterId);
+    writeRect(out, 0, startWidthTwips, 0, startHeightTwips);
+    writeRect(out, 0, endWidthTwips, 0, endHeightTwips);
+    writeU32(out, 0);  // Offset — not consulted by parseDefineMorphShape.
+
+    // MorphFillStyleArray: one solid fill, start+end RGBA.
+    writeU8(out, 1);     // count = 1
+    writeU8(out, 0x00);  // FillStyleType::kSolid
+    writeU8(out, r1);
+    writeU8(out, g1);
+    writeU8(out, b1);
+    writeU8(out, a1);
+    writeU8(out, r2);
+    writeU8(out, g2);
+    writeU8(out, b2);
+    writeU8(out, a2);
+
+    // MorphLineStyleArray: empty.
+    writeU8(out, 0);
+
+    // StartEdges / EndEdges: each a bare SHAPE (own NumFillBits/NumLineBits
+    // + records), reusing the same rectangle-tracing bit-packer regular
+    // DefineShape fixtures use — fillStyle1=1 matches the single fill style
+    // registered above.
+    auto startEdges = buildRectShapeRecordsBytes(startWidthTwips, startHeightTwips, false);
+    out.insert(out.end(), startEdges.begin(), startEdges.end());
+    auto endEdges = buildRectShapeRecordsBytes(endWidthTwips, endHeightTwips, false);
+    out.insert(out.end(), endEdges.begin(), endEdges.end());
+
+    return out;
+}
+
 }  // namespace flash3ds::test::fixtures

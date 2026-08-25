@@ -27,6 +27,28 @@ void run(ExecutionContext& ctx, const std::vector<uint8_t>& code) {
     Interpreter::execute(ctx, code.data(), code.size());
 }
 
+// Builds and runs `result = Math.<method>(args...)` via the exact
+// ActionCallMethod push order documented above
+// Interpreter_NativeFunction_CallMethod_SeesThisValue (args..., numArgs,
+// object, methodName), then returns the resulting `result` variable's
+// numeric value. Shared by every Math_* test below (Roadmap Phase 8,
+// 2026-08-25) to avoid repeating this bytecode-assembly boilerplate once
+// per built-in method.
+double callMathMethod(ExecutionContext& ctx, const std::string& method,
+                       const std::vector<double>& args) {
+    Asm a;
+    a.pushString("result");
+    for (double v : args) a.pushDouble(v);
+    a.pushInt(static_cast<int32_t>(args.size()));
+    a.pushString("Math");
+    a.op(op(AC::GetVariable));
+    a.pushString(method);
+    a.op(op(AC::CallMethod));
+    a.op(op(AC::SetVariable));
+    run(ctx, a.build());
+    return ctx.scope.getVariable("result").toNumber();
+}
+
 }  // namespace
 
 // NOTE on ActionSetVariable operand order throughout this file: it pops
@@ -807,4 +829,102 @@ TEST_CASE(Interpreter_CallFunction_ScriptedFunction_RunsBodyAndReturnsValue) {
     CHECK(fnVal.isObject());
     Value result = Interpreter::callFunction(ctx, fnVal.asObject(), Value::undefined(), {});
     CHECK_EQ(result.toNumber(), 42.0);
+}
+
+// ===========================================================================
+// Roadmap Phase 8 (2026-08-25): GlobalObject's Math built-in. Math.ceil()/
+// Math.random() are the two methods with an actual traced call site in the
+// real corpus (see GlobalObject.h's Phase 8 doc comment) — every method
+// below is exercised via real `Math.<name>(...)` AS2 bytecode through
+// ActionCallMethod (callMathMethod(), above), not by calling the C++
+// lambda directly, so these tests also cover GlobalObject/Scope/
+// ActionCallMethod actually resolving "Math" as a real global.
+// ===========================================================================
+
+TEST_CASE(Math_Floor_RoundsTowardNegativeInfinity) {
+    auto ctx = makeContext();
+    CHECK_EQ(callMathMethod(ctx, "floor", {3.7}), 3.0);
+    CHECK_EQ(callMathMethod(ctx, "floor", {-3.2}), -4.0);
+}
+
+TEST_CASE(Math_Ceil_RoundsTowardPositiveInfinity) {
+    // The corpus-evidenced method (docs/hobo_button_diagnostic.txt-style
+    // static disassembly found `Math.ceil(Math.random() * n)` — the
+    // classic AS2 random-integer idiom — in 5 of the 8 real corpus games).
+    auto ctx = makeContext();
+    CHECK_EQ(callMathMethod(ctx, "ceil", {3.2}), 4.0);
+    CHECK_EQ(callMathMethod(ctx, "ceil", {-3.7}), -3.0);
+}
+
+TEST_CASE(Math_Round_MatchesAs2HalfUpNotBankersOrAwayFromZero) {
+    // AS2's Math.round() is floor(x + 0.5), NOT std::round()'s round-half-
+    // away-from-zero — they disagree on negative halves specifically:
+    // real Flash's Math.round(-2.5) is -2, not -3.
+    auto ctx = makeContext();
+    CHECK_EQ(callMathMethod(ctx, "round", {2.5}), 3.0);
+    CHECK_EQ(callMathMethod(ctx, "round", {-2.5}), -2.0);
+    CHECK_EQ(callMathMethod(ctx, "round", {2.4}), 2.0);
+}
+
+TEST_CASE(Math_Abs_StripsSign) {
+    auto ctx = makeContext();
+    CHECK_EQ(callMathMethod(ctx, "abs", {-5.0}), 5.0);
+    CHECK_EQ(callMathMethod(ctx, "abs", {5.0}), 5.0);
+}
+
+TEST_CASE(Math_Sqrt_And_Pow) {
+    auto ctx = makeContext();
+    CHECK_EQ(callMathMethod(ctx, "sqrt", {16.0}), 4.0);
+    CHECK_EQ(callMathMethod(ctx, "pow", {2.0, 10.0}), 1024.0);
+}
+
+TEST_CASE(Math_Min_And_Max_VariadicArgs) {
+    auto ctx = makeContext();
+    CHECK_EQ(callMathMethod(ctx, "min", {5.0, 2.0, 8.0, -1.0}), -1.0);
+    CHECK_EQ(callMathMethod(ctx, "max", {5.0, 2.0, 8.0, -1.0}), 8.0);
+}
+
+TEST_CASE(Math_PI_And_E_Constants) {
+    // Read as plain properties (GetMember), not called — Math.PI, not
+    // Math.PI().
+    auto ctx = makeContext();
+    Asm a;
+    a.pushString("result");
+    a.pushString("Math");
+    a.op(op(AC::GetVariable));
+    a.pushString("PI");
+    a.op(op(AC::GetMember));
+    a.op(op(AC::SetVariable));
+    run(ctx, a.build());
+    CHECK(std::fabs(ctx.scope.getVariable("result").toNumber() - 3.14159265358979323846) < 1e-12);
+}
+
+TEST_CASE(Math_Random_UsesInjectedRandomSourceAndStaysInZeroToOneRange) {
+    // The other corpus-evidenced method. Matches ActionRandomNumber's own
+    // existing test convention (ExecutionContext::randomSource override
+    // for determinism — see ExecutionContext.h's doc comment) rather than
+    // asserting on real-PRNG output directly.
+    auto ctx = makeContext();
+    ctx.randomSource = [] { return static_cast<uint32_t>(0); };
+    CHECK_EQ(callMathMethod(ctx, "random", {}), 0.0);
+
+    ctx.randomSource = [] { return static_cast<uint32_t>(0xFFFFFFFFu); };
+    double nearOne = callMathMethod(ctx, "random", {});
+    CHECK(nearOne < 1.0);
+    CHECK(nearOne > 0.999);
+}
+
+TEST_CASE(Math_UnknownGlobal_StringNumberBooleanDate_AreNotDefined) {
+    // Roadmap Phase 8 deliberately did NOT implement String/Number/
+    // Boolean/Date as global constructors — zero real corpus evidence of
+    // their use (see GlobalObject.h's Phase 8 doc comment). This test
+    // documents that as an explicit, checked assumption rather than a
+    // silent gap: if a future phase adds one of these, this test's
+    // corresponding CHECK should be removed/updated as part of that
+    // phase's own completion criteria, not left stale.
+    auto ctx = makeContext();
+    CHECK(ctx.globalObject->getOwnProperty("String").isUndefined());
+    CHECK(ctx.globalObject->getOwnProperty("Number").isUndefined());
+    CHECK(ctx.globalObject->getOwnProperty("Boolean").isUndefined());
+    CHECK(ctx.globalObject->getOwnProperty("Date").isUndefined());
 }

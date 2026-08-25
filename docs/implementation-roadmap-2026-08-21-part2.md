@@ -224,7 +224,31 @@ harness invocation is the test).
 
 ---
 
-## Phase 8 — `GlobalObject` builtins (`Math`/`String`/`Number`/`Boolean`/`Date`)
+## Phase 8 — `GlobalObject` builtins (`Math`/`String`/`Number`/`Boolean`/`Date`) — **DONE (Math only, by evidence) 2026-08-25**
+
+**Completed exactly as specified below, scoped by the evidence-gathering
+step this section itself requires** — see `docs/known-limitations.md` L2
+and `docs/avm1-compatibility.md`'s "Global built-ins" section for full
+detail. Summary: a static disassembly pass
+(`tools/real_game_harness/avm1_loader_disasm.cpp`, keyword-filtered)
+across all 8 real corpus games plus a standalone hobo.swf copy found
+`Math.random()`/`Math.ceil()` calls (the `Math.ceil(Math.random() * n)`
+idiom) in 5 of 8 games, and ZERO evidence of `String`/`Number`/`Boolean`/
+`Date` used as global constructors anywhere in the corpus. Implemented
+`Math` (`floor`/`ceil`/`round`/`abs`/`sqrt`/`pow`/`min`/`max`/`random`/
+`PI`/`E` — the two evidenced methods plus the roadmap's own "at minimum"
+baseline set, since the rest are free/trivial/stateless additions of the
+same shape) in `GlobalObject::create()`, reusing Phase 6's `nativeImpl`
+pattern and `ActionRandomNumber`'s existing `randomSource` seam for
+`Math.random()`. Deliberately did NOT implement `String`/`Number`/
+`Boolean`/`Date` — same "don't build against a hypothetical" reasoning as
+Phase 6's eviction decision. 9 new tests (361/361 total passing, up from
+352), byte-identical render-harness MD5s (frames 1-5, all 8 games,
+verified via `git stash`).
+
+---
+
+## Phase 8 (original spec) — `GlobalObject` builtins (`Math`/`String`/`Number`/`Boolean`/`Date`)
 
 - **Objective:** Install real native implementations for the AS2 global
   built-ins `GlobalObject::create()` currently omits entirely (§C item
@@ -281,7 +305,36 @@ harness invocation is the test).
 
 ---
 
-## Phase 9 — `DefineMorphShape`/`2` parsing + rendering
+## Phase 9 — `DefineMorphShape`/`2` parsing + rendering — **DONE (`DefineMorphShape` v1 only, by evidence) 2026-08-25**
+
+**Completed exactly as specified below, scoped by the evidence-gathering
+step this section itself requires** — see `docs/known-limitations.md` L7,
+`docs/compatibility-matrix.md` §2, and `docs/swf-support.md`'s
+disambiguated "Roadmap Phase 9" section for full detail. Summary:
+`swf_diagnostic`'s tag histogram, re-run against all 8 corpus games, found
+`DefineMorphShape` (tag 46, v1) present but **zero** occurrences of
+`DefineMorphShape2` (tag 84) anywhere — scoped implementation to v1 only.
+Implemented parsing (`src/swf/DefineMorphShapeTag.h/.cpp`),
+`CharacterDictionary` resolution (new `MorphShapeDef` variant arm), and
+rendering (`SceneRenderer::renderMorphShapeCharacter`, synthesizing a
+plain `swf::Shape` from the morph's START-side fill/line styles and start
+edges and reusing the existing tessellation path — the same posture as
+this project's gradient-as-flat-average simplification, clearly flagged
+rather than silently declared full support). A new evidence tool,
+`tools/real_game_harness/morph_ratio_scan.cpp`, confirmed this
+simplification is exactly correct for the real corpus, not just
+convenient: every `PlaceObject2` record targeting a morph character
+across all 7 Hobo files uses `ratio=0` (explicit or absent) — zero
+non-zero ratios anywhere. 7 new tests (368/368 total passing, up from
+361), byte-identical render-harness MD5s (frames 1-5, all 8 games,
+verified via `git stash`) — the real corpus's morph placements sit in
+gameplay content this harness's frame 1-5 render never reaches, so this
+phase adds real, tested, evidence-verified capability with zero visible
+change to the harness's existing coverage.
+
+---
+
+## Phase 9 (original spec) — `DefineMorphShape`/`2` parsing + rendering
 
 - **Objective:** Resolve `DefineMorphShape`(46)/`DefineMorphShape2`(84)
   into `CharacterDictionary` and render them — highest-value rendering

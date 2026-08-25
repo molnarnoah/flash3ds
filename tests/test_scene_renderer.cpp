@@ -392,3 +392,52 @@ TEST_CASE(SceneRenderer_DefineEditText_DrawsInitialTextGlyph) {
     CHECK_EQ(outside.g, 255);
     CHECK_EQ(outside.b, 255);
 }
+
+// Roadmap Phase 9 (2026-08-25): a DefineMorphShape character whose START
+// side is a green 40x40px rectangle and whose END side is a much larger
+// (80x80px) red rectangle — deliberately different sizes/colors so a
+// pixel-level check can distinguish "rendered the start side" (this
+// phase's approved simplification, matching every real corpus placement's
+// ratio=0) from "rendered the end side" or "rendered nothing at all".
+TEST_CASE(SceneRenderer_DefineMorphShape_RendersStartSideGeometryAndColorOnly) {
+    auto morphBody = fixtures::buildDefineMorphShapeBytes(
+        /*characterId=*/40, /*startW=*/40 * 20, /*startH=*/40 * 20, /*endW=*/80 * 20,
+        /*endH=*/80 * 20, /*r1=*/0, /*g1=*/255, /*b1=*/0, /*a1=*/255, /*r2=*/255, /*g2=*/0,
+        /*b2=*/0, /*a2=*/255);
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineMorphShape), morphBody},
+        {26 /* PlaceObject2 */,
+         fixtures::buildPlaceObject2Bytes(1, false, 40,
+                                            fixtures::buildMatrixBytes(10 * 20, 10 * 20))},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    int width = static_cast<int>(movie->frameSize.widthPixels());
+    int height = static_cast<int>(movie->frameSize.heightPixels());
+    SoftwareRenderer renderer(width, height);
+    SceneRenderer scene(*movie, characters);
+    scene.render(*root, renderer, width, height);
+
+    // Well inside the START rectangle [10,50)x[10,50) — should be green.
+    auto insideStart = renderer.pixelAt(30, 30);
+    CHECK_EQ(insideStart.r, 0);
+    CHECK_EQ(insideStart.g, 255);
+    CHECK_EQ(insideStart.b, 0);
+
+    // Inside the (much larger) END rectangle's footprint [10,90)x[10,90)
+    // but OUTSIDE the start rectangle — must stay background white, not
+    // red, proving the end-side geometry was not rendered.
+    auto insideEndOnly = renderer.pixelAt(70, 70);
+    CHECK_EQ(insideEndOnly.r, 255);
+    CHECK_EQ(insideEndOnly.g, 255);
+    CHECK_EQ(insideEndOnly.b, 255);
+}

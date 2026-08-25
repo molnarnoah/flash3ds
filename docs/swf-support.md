@@ -279,3 +279,63 @@ are unconditional, only scale/rotate are flag-gated) and a wrong
 instead of the correct `0x04`, cross-checked against this project's own
 `src/swf/PlaceObjectTag.cpp` parser to fix). Both are generator-side bugs,
 not parser bugs — no `src/swf/` code changed.
+
+## Roadmap Phase 9 (`docs/implementation-roadmap-2026-08-21-part2.md`) — `DefineMorphShape` parsing + rendering, 2026-08-25
+
+**Not the same "Phase 9" as the "Hobo compatibility testing" section
+above** — that section is this file's own original (2026-08-18-era)
+10-phase numbering; this is the differently-numbered roadmap-part2 Phase
+9, same collision pattern already noted for "Phase 8" elsewhere in this
+project (see `CLAUDE.md`'s "Roadmap Part 2 progress" and `docs/avm1-
+support.md`'s disambiguated Phase-8 section).
+
+Implemented `DefineMorphShape` (tag 46) parsing (`src/swf/
+DefineMorphShapeTag.h/.cpp`), `CharacterDictionary` integration, and
+rendering (`SceneRenderer::renderMorphShapeCharacter`). Scope: **v1 only
+(tag 46)** — `DefineMorphShape2` (tag 84) is deliberately not
+implemented, since re-running `swf_diagnostic`'s tag histogram against all
+8 corpus games found zero occurrences of tag 84 anywhere.
+
+Rendering uses **START-side geometry and fill/line colors only
+(ratio=0)** — the roadmap's own pre-approved "simplest correct-enough
+first implementation" (mirroring this project's existing gradient-as-
+flat-average simplification precedent), not full morph-tween
+interpolation. This was verified as exactly correct for the real corpus,
+not merely convenient: a new evidence tool,
+`tools/real_game_harness/morph_ratio_scan.cpp`, walks every
+`DefineMorphShape` character and every `PlaceObject2` record targeting one
+(including inside nested `DefineSprite` tag streams) and reports every
+`Ratio` value found. Run against all 7 Hobo files: **100% of morph
+placements use ratio=0** (explicit or absent) — zero non-zero ratios
+anywhere in the corpus. `EndEdges`/end-side styles are still parsed and
+stored in `MorphShapeDef` (cheap, and available for a future true-
+interpolation pass) even though the renderer only consumes the start
+side.
+
+7 new tests: 5 parser tests (`tests/test_define_morph_shape_tag.cpp`,
+against a new `buildDefineMorphShapeBytes` fixture independently bit-
+packed from the public MORPHFILLSTYLE/MORPHLINESTYLE/MORPHGRADIENT spec —
+same clean-room convention as every other `SwfTestFixtures.h` builder), 1
+`CharacterDictionary` integration test, and 1 `SceneRenderer` rendering
+test (a synthetic morph with a small green START rectangle and a much
+larger red END rectangle, confirming only the START side's geometry/color
+actually paints — the pixel inside the END rectangle's larger footprint
+but outside the START rectangle must stay background white). 368/368
+tests passing (up from 361).
+
+Real-game validation: `tools/real_game_harness/run_harness.sh` (frames
+1-5, all 8 corpus games) produces **byte-identical** MD5s before and
+after (verified via `git stash` on every Phase 9 file and re-running both
+configurations) — expected, since the real corpus's `DefineMorphShape`
+placements sit in gameplay content this harness's frame 1-5 render never
+reaches, the same pattern Roadmap Phase 8 found for `Math.random`/
+`Math.ceil`.
+
+Docs: `docs/known-limitations.md` L7 updated (`DefineMorphShape` done/
+evidenced, `DefineMorphShape2`/`DefineShape4`/`PlaceObject3`/
+`CsmTextSettings` still open), `docs/compatibility-matrix.md` §2's
+`DefineMorphShape`/`DefineMorphShape2` rows updated,
+`docs/implementation-roadmap-2026-08-21-part2.md` and `CLAUDE.md` updated
+with completion summaries.
+
+Verified: clean full rebuild (zero warnings), 368/368 tests passing.

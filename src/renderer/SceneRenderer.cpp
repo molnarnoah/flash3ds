@@ -124,6 +124,9 @@ void SceneRenderer::renderCharacter(uint16_t characterId, const swf::Matrix& wor
     if (const auto* shapeDef = std::get_if<swf::ShapeDef>(def)) {
         renderShapeCharacter(*shapeDef, worldMatrix, worldColorTransform, target, pixelsPerTwipX,
                               pixelsPerTwipY);
+    } else if (const auto* morphDef = std::get_if<swf::MorphShapeDef>(def)) {
+        renderMorphShapeCharacter(*morphDef, worldMatrix, worldColorTransform, target, pixelsPerTwipX,
+                                   pixelsPerTwipY);
     } else if (const auto* textDef = std::get_if<swf::TextDef>(def)) {
         renderTextCharacter(*textDef, worldMatrix, worldColorTransform, target, pixelsPerTwipX,
                              pixelsPerTwipY);
@@ -157,6 +160,65 @@ void SceneRenderer::renderShapeCharacter(const swf::ShapeDef& shapeDef,
                                           IRenderer& target, double pixelsPerTwipX,
                                           double pixelsPerTwipY) {
     TessellatedShape tess = tessellateShape(shapeDef.shape);
+
+    for (const auto& poly : tess.polygons) {
+        auto devicePoints =
+            toDevicePolyline(poly.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
+        target.fillPolygon(devicePoints, swf::applyColorTransform(poly.color, worldColorTransform));
+    }
+    for (const auto& stroke : tess.strokes) {
+        auto devicePoints =
+            toDevicePolyline(stroke.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
+        double avgPixelsPerTwip = (pixelsPerTwipX + pixelsPerTwipY) / 2.0;
+        int widthPixels =
+            std::max(1, static_cast<int>(std::lround(stroke.widthTwips * avgPixelsPerTwip)));
+        target.strokePolyline(devicePoints, swf::applyColorTransform(stroke.color, worldColorTransform),
+                               widthPixels);
+    }
+}
+
+void SceneRenderer::renderMorphShapeCharacter(const swf::MorphShapeDef& morphDef,
+                                               const swf::Matrix& worldMatrix,
+                                               const swf::ColorTransform& worldColorTransform,
+                                               IRenderer& target, double pixelsPerTwipX,
+                                               double pixelsPerTwipY) {
+    // Synthesize a plain swf::Shape from the morph's START-side fill/line
+    // styles and START edges only (ratio=0 simplification — see this
+    // function's doc comment in SceneRenderer.h and
+    // swf/DefineMorphShapeTag.h). `startEdges` is already a full
+    // SHAPERECORD stream whose StyleChangeRecord fillStyle0/fillStyle1/
+    // lineStyleIndex values were parsed against MorphFillStyles/
+    // MorphLineStyles in the same order the loop below rebuilds them in,
+    // so index correspondence is preserved without needing to touch the
+    // edge records themselves — unlike renderGlyph()'s synthesis, which
+    // does need to rewrite edge deltas (for scaling); no such transform is
+    // needed here, so startEdges is reused directly.
+    swf::Shape shape;
+    shape.fillStyles.reserve(morphDef.fillStyles.size());
+    for (const auto& mfs : morphDef.fillStyles) {
+        swf::FillStyle fs;
+        fs.type = mfs.type;
+        fs.solidColor = mfs.startColor;
+        fs.gradientMatrix = mfs.startMatrix;
+        fs.bitmapCharacterId = mfs.bitmapCharacterId;
+        if (mfs.isGradient()) {
+            fs.gradient.spreadMode = mfs.gradient.spreadMode;
+            fs.gradient.interpolationMode = mfs.gradient.interpolationMode;
+            fs.gradient.records.reserve(mfs.gradient.records.size());
+            for (const auto& mgr : mfs.gradient.records) {
+                fs.gradient.records.push_back(
+                    swf::GradientRecord{mgr.startRatio, mgr.startColor});
+            }
+        }
+        shape.fillStyles.push_back(std::move(fs));
+    }
+    shape.lineStyles.reserve(morphDef.lineStyles.size());
+    for (const auto& mls : morphDef.lineStyles) {
+        shape.lineStyles.push_back(swf::LineStyle{mls.startWidthTwips, mls.startColor});
+    }
+    shape.records = morphDef.startEdges;
+
+    TessellatedShape tess = tessellateShape(shape);
 
     for (const auto& poly : tess.polygons) {
         auto devicePoints =

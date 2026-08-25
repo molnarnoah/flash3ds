@@ -60,6 +60,7 @@ add_library(flash3ds_core
     src/swf/PlaceObjectTag.cpp
     src/swf/ShapeRecords.cpp
     src/swf/DefineShapeTag.cpp
+    src/swf/DefineMorphShapeTag.cpp
     src/swf/DefineSoundTag.cpp
     src/swf/StartSoundTag.cpp
     src/swf/DefineFontTag.cpp
@@ -169,6 +170,16 @@ if(FLASH3DS_BUILD_TOOLS)
     # docs/hobo-title-progression.md.
     add_executable(hobo_end_key_probe tools/real_game_harness/hobo_end_key_probe.cpp)
     target_link_libraries(hobo_end_key_probe PRIVATE flash3ds_core)
+
+    # Roadmap Phase 9 (2026-08-25): scans every DefineMorphShape character
+    # and every PlaceObject2 record targeting one, across a movie (including
+    # nested DefineSprite tag streams), reporting the distinct Ratio values
+    # actually used -- evidence for whether the "start-shape-only" morph
+    # rendering simplification is corpus-safe. See
+    # tools/real_game_harness/morph_ratio_scan.cpp and
+    # docs/implementation-roadmap-2026-08-21-part2.md's Phase 9 section.
+    add_executable(morph_ratio_scan tools/real_game_harness/morph_ratio_scan.cpp)
+    target_link_libraries(morph_ratio_scan PRIVATE flash3ds_core)
 endif()
 
 # ---------------------------------------------------------------------------

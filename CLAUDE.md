@@ -503,6 +503,40 @@ tap-only run, not a hold-triggered effect) is a **pause/quit-to-portal
 menu**, not a title-screen dismissal. New read-only tool:
 `tools/real_game_harness/hobo_end_key_probe.cpp`.
 
+Phase 8 (`GlobalObject` builtins) — **done (Math only, by evidence)
+2026-08-25**, see `docs/known-limitations.md` L2 and `docs/avm1-
+compatibility.md`'s "Global built-ins" section. A static disassembly pass
+across all 8 corpus games plus a standalone hobo.swf copy found
+`Math.random()`/`Math.ceil()` calls (5 of 8 games, the classic
+`Math.ceil(Math.random() * n)` idiom) and zero evidence of `String`/
+`Number`/`Boolean`/`Date` used as global constructors anywhere in the
+corpus. Implemented `Math` (`floor`/`ceil`/`round`/`abs`/`sqrt`/`pow`/
+`min`/`max`/`random`/`PI`/`E`) in `src/avm1/GlobalObject.cpp` via Phase 6's
+`nativeImpl` pattern; `Math.random()` reuses `ActionRandomNumber`'s
+existing `randomSource` injectable-RNG seam. Deliberately did NOT
+implement `String`/`Number`/`Boolean`/`Date` — no real corpus evidence,
+same reasoning as Phase 6's eviction decision. 9 new tests (361/361 total,
+up from 352), byte-identical render-harness MD5s across all 8 games.
+
+Phase 9 (`DefineMorphShape`/`2` parsing + rendering) — **done
+(`DefineMorphShape` v1 only, by evidence) 2026-08-25**, see
+`docs/known-limitations.md` L7, `docs/compatibility-matrix.md` §2, and
+`docs/swf-support.md`'s disambiguated "Roadmap Phase 9" section. A
+tag-histogram re-check across all 8 corpus games found tag 46
+(`DefineMorphShape`) present but zero occurrences of tag 84
+(`DefineMorphShape2`) anywhere — scoped to v1 only. Implemented parsing
+(`src/swf/DefineMorphShapeTag.h/.cpp`), `CharacterDictionary` resolution
+(new `MorphShapeDef` variant), and rendering
+(`SceneRenderer::renderMorphShapeCharacter`) using START-side geometry/
+colors only (ratio=0) — a new evidence tool,
+`tools/real_game_harness/morph_ratio_scan.cpp`, confirmed every real
+`PlaceObject2` placement targeting a morph character across all 7 Hobo
+files uses `ratio=0` (explicit or absent), so this simplification is
+exactly correct for the corpus, not an approximation. 7 new tests
+(368/368 total, up from 361), byte-identical render-harness MD5s across
+all 8 games (real corpus morph placements sit in gameplay content outside
+the harness's frame 1-5 render, same pattern Phase 8 found).
+
 ## Build
 
 ```sh

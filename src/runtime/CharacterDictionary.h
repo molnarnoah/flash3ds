@@ -9,9 +9,11 @@
 // DefineFontTag.h), static text (DefineText/DefineText2 — swf/
 // DefineTextTag.h), buttons (DefineButton/DefineButton2 — swf/
 // DefineButtonTag.h), and dynamic/input text fields (DefineEditText — swf/
-// DefineEditTextTag.h; parsed structurally only, see that header). Bitmap
-// characters (DefineBits*) are still recognized by tag but not parsed
-// (later phase; see docs/swf-support.md).
+// DefineEditTextTag.h; parsed structurally only, see that header). Phase 9
+// added morph shapes (DefineMorphShape only — swf/DefineMorphShapeTag.h;
+// DefineMorphShape2 is not parsed, see that header's file-level comment).
+// Bitmap characters (DefineBits*) are still recognized by tag but not
+// parsed (later phase; see docs/swf-support.md).
 //
 // Phase 5 (RAM Option B — lazy/on-demand parsing, 2026-08-24): build() no
 // longer parses every character's shape/font/etc. payload up front. It
@@ -65,6 +67,7 @@
 #include "swf/DefineButtonTag.h"
 #include "swf/DefineEditTextTag.h"
 #include "swf/DefineFontTag.h"
+#include "swf/DefineMorphShapeTag.h"
 #include "swf/DefineShapeTag.h"
 #include "swf/DefineSoundTag.h"
 #include "swf/DefineTextTag.h"
@@ -80,7 +83,8 @@ struct SpriteDef {
 };
 
 using CharacterDef = std::variant<swf::ShapeDef, SpriteDef, swf::SoundDef, swf::FontDef,
-                                   swf::TextDef, swf::ButtonDef, swf::EditTextDef>;
+                                   swf::TextDef, swf::ButtonDef, swf::EditTextDef,
+                                   swf::MorphShapeDef>;
 
 class CharacterDictionary {
 public:

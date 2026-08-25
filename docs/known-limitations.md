@@ -125,31 +125,61 @@ re-pasting it.
 ## L2 — `GlobalObject` has zero named built-ins
 
 - **Subsystem:** AVM1/AS2 object model.
-- **Status:** Not implemented. `GlobalObject::create()` is a one-line stub.
-- **Source location:** `src/avm1/GlobalObject.cpp` line 5.
-- **Evidence:** Direct source read this turn.
-- **Affected SWFs:** Likely all 8 (Hobo family shows 585-1,092
-  `CallMethod` opcodes per file, a plausible built-in-method vector, not
-  independently disassembled to confirm targets); Extreme Pamplona's
-  loader shows 0 `CallMethod` in its analyzed buffers (its 23 content
-  sub-SWFs not individually checked).
-- **Severity:** Medium-High — likely blocks some fraction of real scripts
-  silently (calls to `Math.*`/`String.*`/etc. resolve to `undefined`
-  rather than erroring, which can be a worse failure mode than a crash).
+- **Status:** **`Math` implemented (Roadmap Phase 8, 2026-08-25)** —
+  `floor`/`ceil`/`round`/`abs`/`sqrt`/`pow`/`min`/`max`/`random`/`PI`/`E`,
+  via the same `nativeImpl` pattern as Phase 6's `Key`/`Mouse`/`Sound`. A
+  static disassembly pass (`tools/real_game_harness/avm1_loader_disasm.cpp`,
+  keyword-filtered) across all 8 real corpus games plus a standalone
+  hobo.swf copy found `Math.random()`/`Math.ceil()` calls (the classic
+  `Math.ceil(Math.random() * n)` random-integer idiom) in hobo2/hobo3/
+  hobo5/hobo6/hobo7 — 66 call sites each for `random`/`ceil` combined
+  across the corpus — and ZERO `CallFunction`/`NewObject`/`CallMethod`
+  hits for `String`/`Number`/`Boolean`/`Date` anywhere in the corpus.
+  **`String`/`Number`/`Boolean`/`Date` remain DELIBERATELY NOT
+  implemented** — same "don't build against a hypothetical" reasoning as
+  L5/Phase 6 — pending real evidence. `floor`/`round`/`abs`/`sqrt`/`pow`/
+  `min`/`max`/`PI`/`E` were added alongside the two evidenced methods
+  anyway since they're the same trivial/stateless/zero-RAM shape and match
+  the roadmap's own "at minimum" baseline — but only `ceil`/`random` have
+  an actual traced call site in this corpus.
+- **Source location:** `src/avm1/GlobalObject.{h,cpp}`.
+- **Evidence:** `avm1_loader_disasm` run against
+  `/home/claude/game-corpus/*/*.swf` + `/home/claude/hobo-testing/hobo.swf`,
+  filtered for `Math`/`String`/`Number`/`Boolean`/`Date` — see this file's
+  git history / `docs/avm1-compatibility.md`'s Phase 8 section for the
+  full per-game breakdown. This is the disassembly pass this entry
+  previously flagged as "not yet done, should not be skipped again" —
+  it has now been done.
+- **Affected SWFs:** hobo2/hobo3/hobo5/hobo6/hobo7 (confirmed `Math.ceil`/
+  `Math.random` call sites); hobo1/hobo4/extreme_pamplona show none in the
+  DoAction/DoInitAction streams this pass could statically resolve (a
+  linear, non-control-flow-following disassembler — see its own header
+  comment — so absence here is not proof of absence, only "not found by
+  this pass").
+- **Severity:** Downgraded from Medium-High to Low for the confirmed-used
+  subset (`Math.ceil`/`Math.random` now resolve correctly instead of
+  silently returning `undefined`); unchanged (Medium, unconfirmed) for
+  `String`/`Number`/`Boolean`/`Date` since no evidence either way exists
+  yet that any corpus content needs them.
 - **Dependency:** None.
-- **Proposed fix:** Implement `Math` (as a plain object with native
-  methods, no `nativeImpl` framework changes needed — same pattern as
-  Phase 6's `Key`/`Mouse`/`Sound`), `String`/`Number`/`Boolean` as callable
-  conversion functions, `Date` if any corpus content needs it (not
-  confirmed either way).
+- **Real-game validation:** `tools/real_game_harness/run_harness.sh`
+  frames 1-5 across all 8 corpus games: byte-identical MD5s before/after
+  (verified via `git stash` on `GlobalObject.{h,cpp}` and re-running) —
+  expected, since the confirmed `Math.ceil`/`Math.random` call sites sit
+  deep in nested-sprite/gameplay ticks (tag offsets well past the title-
+  screen frames this harness renders), not in frames 1-5's own scripts.
 - **Ghidra evidence:** `avm1_builtin_prototypes_init` (0x2d228c) confirms
   `Object.prototype`/`String.prototype` method lists Shift-DX actually
-  installs — see `docs/reverse-engineering-map.md`.
+  installs — see `docs/reverse-engineering-map.md`. Still a plausible-
+  targets checklist for a future String/Number/Boolean/Date phase, not
+  proof this corpus calls any of them.
 - **JPEXS evidence:** Not available this session.
-- **Test required:** Per-built-in unit tests (`Math.floor`, `Math.random`
-  range, `String.fromCharCode`, etc.); real-corpus opcode-level
-  confirmation of which specific methods are actually called (would need
-  a disassembly pass beyond this audit's static string/opcode scan).
+- **Test required:** Done — 9 new unit tests in `tests/
+  test_avm1_interpreter.cpp` (`Math_Floor_*`/`Math_Ceil_*`/`Math_Round_*`/
+  `Math_Abs_*`/`Math_Sqrt_And_Pow`/`Math_Min_And_Max_*`/`Math_PI_And_E_*`/
+  `Math_Random_*`/`Math_UnknownGlobal_*`), all exercised via real AS2
+  bytecode (`ActionCallMethod`/`ActionGetMember`) through
+  `GlobalObject::create()`, not by calling the C++ lambdas directly.
 
 ## L3 — `MovieClip` OOP method surface gaps (dynamic instantiation family)
 
@@ -569,31 +599,70 @@ re-pasting it.
 ## L7 — `DefineShape4`/`DefineMorphShape`/`2`/`PlaceObject3`/`CsmTextSettings` not resolved
 
 - **Subsystem:** Rendering / SWF tag parsing.
-- **Status:** `DefineShape4`/`PlaceObject3`/`CsmTextSettings`: not
-  recognized/parsed at all. `DefineMorphShape`/`2`: recognized by
-  `TagCode` but not resolved into `CharacterDictionary`.
+- **Status:** `DefineShape4`/`PlaceObject3`/`CsmTextSettings`: still not
+  recognized/parsed at all. **`DefineMorphShape` (v1, tag 46): DONE**
+  (Roadmap Phase 9, 2026-08-25) — parsed (`src/swf/DefineMorphShapeTag.h/
+  .cpp`), resolved into `CharacterDictionary`, and rendered
+  (`SceneRenderer::renderMorphShapeCharacter`) using **START-side geometry/
+  colors only (ratio=0)** — a deliberate, roadmap-pre-approved
+  simplification, not full morph-tween support. `DefineMorphShape2` (tag
+  84) remains explicitly unsupported — see below.
 - **Source location:** `src/swf/DefineShapeTag.cpp` (early-outs on v4);
-  no `PlaceObject3Tag`/`CsmTextSettingsTag`/`DefineMorphShapeTag` files
-  exist in `src/swf/`.
-- **Evidence:** `docs/compatibility-matrix.md` §2, `docs/real-game-
-  compatibility.md`'s per-game tag histograms (this turn's cross-check of
-  those histograms against `src/swf/` contents confirms them).
+  `src/swf/DefineMorphShapeTag.h/.cpp` (new, tag 46 only — early-outs on
+  tag 84); no `PlaceObject3Tag`/`CsmTextSettingsTag` files exist in
+  `src/swf/`.
+- **Evidence (original L7):** `docs/compatibility-matrix.md` §2, `docs/
+  real-game-compatibility.md`'s per-game tag histograms.
+- **Evidence (Phase 9 `DefineMorphShape` implementation):**
+  1. `swf_diagnostic`'s tag histogram, re-run against all 8 corpus games:
+     only tag 46 (`DefineMorphShape` v1) appears anywhere in the real
+     corpus — **zero** hits for tag 84 (`DefineMorphShape2`). Scoped the
+     implementation to v1 only, matching the existing `DefineShape4`/
+     `LineStyle2` explicit-non-support precedent.
+  2. A new evidence tool, `tools/real_game_harness/morph_ratio_scan.cpp`
+     (walks every `DefineMorphShape` character ID and every `PlaceObject2`
+     record targeting one, including inside nested `DefineSprite` tag
+     streams), run against all 7 Hobo files: **every** morph placement
+     uses `ratio=0` (explicit or absent) — zero non-zero ratios anywhere.
+     This confirms the "start-shape-only" rendering simplification is not
+     an approximation of convenience for this corpus — it is exactly
+     correct, since no real placement ever asks for a mid-tween frame.
+  3. Real-game render harness (`tools/real_game_harness/run_harness.sh`,
+     frames 1-5, all 8 corpus games): MD5s are **byte-identical**
+     before/after this phase (verified via `git stash` before/after
+     rebuild+re-run) — the morph characters present in the real corpus
+     are not placed anywhere within the title-screen frames this harness
+     renders, so this phase has zero observable effect on the harness's
+     existing coverage (same pattern Phase 8 found for `Math.random`/
+     `Math.ceil`: real corpus usage sits deep in gameplay ticks the
+     harness doesn't reach, not on frame 1-5).
 - **Affected SWFs:** `DefineMorphShape` — all 7 Hobo files (16-27
-  characters each), 0 effect on Extreme Pamplona's loader.
-  `DefineShape4`/`PlaceObject3`/`CsmTextSettings` — Extreme Pamplona only
-  (135/345/37 occurrences respectively), 0 effect on any Hobo file.
-- **Severity:** Medium — visual-completeness gaps, not crashes or hard
-  blockers (unresolved characters are simply absent from rendering,
-  confirmed not to error).
+  characters each; now rendered, start-side only), 0 effect on Extreme
+  Pamplona's loader. `DefineShape4`/`PlaceObject3`/`CsmTextSettings` —
+  Extreme Pamplona only (135/345/37 occurrences respectively), still not
+  resolved, 0 effect on any Hobo file.
+- **Severity:** Medium → **Low for `DefineMorphShape`** (now rendered,
+  correctly for every real placement in the corpus); unchanged (Medium)
+  for the three still-unresolved tag families — visual-completeness gaps,
+  not crashes or hard blockers (unresolved characters are simply absent
+  from rendering, confirmed not to error).
 - **Dependency:** None.
-- **Proposed fix:** Four independent, separable parser+renderer additions;
-  can be sequenced by whichever game is being prioritized (see
-  `docs/real-game-readiness.md`'s ranked list).
+- **Proposed fix:** `DefineMorphShape` (v1) — DONE. Three remaining
+  independent, separable parser+renderer additions (`DefineShape4`,
+  `PlaceObject3`, `CsmTextSettings`, plus `DefineMorphShape2` if future
+  evidence ever surfaces it); can be sequenced by whichever game is being
+  prioritized (see `docs/real-game-readiness.md`'s ranked list).
 - **Ghidra evidence:** None specific.
 - **JPEXS evidence:** Not available this session.
-- **Test required:** Per-tag parser unit tests against synthetic fixtures;
-  visual/MD5-checksum regression tests against the real corpus render
-  harness once implemented.
+- **Test required:** `DefineMorphShape` — DONE:
+  `tests/test_define_morph_shape_tag.cpp` (parser, 5 tests),
+  `CharacterDictionary_Build_ResolvesDefineMorphShape` (dictionary
+  integration), `SceneRenderer_DefineMorphShape_RendersStartSideGeometryAndColorOnly`
+  (rendering — a synthetic morph with a small green START rect and a much
+  larger red END rect, confirming only the START side's geometry/color
+  paints). Remaining tags: per-tag parser unit tests against synthetic
+  fixtures; visual/MD5-checksum regression tests against the real corpus
+  render harness once implemented.
 
 ## L8 — Two genuinely unrecognized tag IDs (253, 255) in Extreme Pamplona
 

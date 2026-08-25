@@ -48,6 +48,7 @@
 #include "swf/DefineButtonTag.h"
 #include "swf/DefineEditTextTag.h"
 #include "swf/DefineFontTag.h"
+#include "swf/DefineMorphShapeTag.h"
 #include "swf/DefineTextTag.h"
 
 namespace flash3ds::renderer {
@@ -80,6 +81,18 @@ private:
     void renderShapeCharacter(const swf::ShapeDef& shapeDef, const swf::Matrix& worldMatrix,
                                const swf::ColorTransform& worldColorTransform, IRenderer& target,
                                double pixelsPerTwipX, double pixelsPerTwipY);
+
+    // Roadmap Phase 9 (2026-08-25): synthesizes a swf::Shape from
+    // `morphDef`'s START-side geometry/styles only (ratio=0) and renders it
+    // exactly like renderShapeCharacter() — a deliberate, roadmap-approved
+    // simplification, not full morph-tween support. Real-corpus evidence
+    // (tools/real_game_harness/morph_ratio_scan.cpp) confirmed every morph
+    // placement in this corpus uses ratio=0 (explicit or absent), so this
+    // is exactly correct for the games this runtime targets, not just an
+    // approximation of convenience. See swf/DefineMorphShapeTag.h.
+    void renderMorphShapeCharacter(const swf::MorphShapeDef& morphDef, const swf::Matrix& worldMatrix,
+                                    const swf::ColorTransform& worldColorTransform, IRenderer& target,
+                                    double pixelsPerTwipX, double pixelsPerTwipY);
 
     void renderTextCharacter(const swf::TextDef& textDef, const swf::Matrix& worldMatrix,
                               const swf::ColorTransform& worldColorTransform, IRenderer& target,

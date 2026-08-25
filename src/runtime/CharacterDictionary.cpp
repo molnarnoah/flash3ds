@@ -175,17 +175,26 @@ void CharacterDictionary::scanTagsForCharacters(
                 continue;
             }
             pending[characterId] = PendingCharacter{tag, code};
+        } else if (code == swf::TagCode::DefineMorphShape) {
+            swf::SwfReader reader = movie.tagBodyReader(tag);
+            uint16_t characterId = reader.readU16();
+            if (reader.failed()) {
+                LOG_WARN("CHARDICT", "Failed to read character ID for DefineMorphShape at offset=%zu",
+                          tag.bodyOffset);
+                continue;
+            }
+            pending[characterId] = PendingCharacter{tag, code};
         } else if (code == swf::TagCode::ExportAssets) {
             parseExportAssets(movie, tag, linkageNameToId);
         }
         // Other character-defining tags (DefineBits*/bitmaps,
-        // DefineMorphShape/2 — confirmed present in real hobo.swf content
-        // via Phase 9 testing, 19 occurrences) are recognized by TagCode
-        // elsewhere but not resolved into the dictionary yet — later
-        // phase. A PlaceObject2 referencing one of these silently places
-        // nothing (SceneRenderer::renderCharacter finds no CharacterDef
-        // and skips it), matching how unresolved characters are already
-        // handled.
+        // DefineMorphShape2 — zero real-corpus evidence per Phase 9's
+        // tag-histogram check, see swf/DefineMorphShapeTag.h) are
+        // recognized by TagCode elsewhere but not resolved into the
+        // dictionary yet — later phase. A PlaceObject2 referencing one of
+        // these silently places nothing (SceneRenderer::renderCharacter
+        // finds no CharacterDef and skips it), matching how unresolved
+        // characters are already handled.
     }
 }
 
@@ -268,6 +277,13 @@ std::optional<CharacterDef> CharacterDictionary::parseOneCharacter(const Movie& 
             auto editTextDef = swf::parseDefineEditText(reader);
             if (editTextDef) return CharacterDef(*editTextDef);
             LOG_WARN("CHARDICT", "Failed to parse DefineEditText at offset=%zu", tag.bodyOffset);
+            return std::nullopt;
+        }
+        case swf::TagCode::DefineMorphShape: {
+            swf::SwfReader reader = movie.tagBodyReader(tag);
+            auto morphDef = swf::parseDefineMorphShape(reader, tag.code);
+            if (morphDef) return CharacterDef(*morphDef);
+            LOG_WARN("CHARDICT", "Failed to parse DefineMorphShape at offset=%zu", tag.bodyOffset);
             return std::nullopt;
         }
         default:

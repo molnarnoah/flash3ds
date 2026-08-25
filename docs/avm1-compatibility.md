@@ -67,7 +67,38 @@ doesn't map to ANY named `ActionCode` at all.)
 | InitObject, InitArray | EXECUTED | 854-877 | counts clamped to 100,000 against malformed input |
 | GetMember, SetMember | EXECUTED | 878-899 | dynamic/computed property names (`obj[expr]`) go through this same generic path — see `docs/compatibility-matrix.md` §4 for the Hobo-pattern caveat (not independently re-tested this phase) |
 | Enumerate, Enumerate2 | EXECUTED | 900-926 | enumeration order not deterministic (unordered_map-backed; matches ECMA, which doesn't guarantee order either) |
-| NewObject | EXECUTED | 927-953 | `"Object"`/`"Array"` special-cased directly; anything else resolves via scope-chain lookup — **note: `GlobalObject` itself registers zero named constructors, so `new Date()`/`new Number()`/etc. all fail unless user-defined**, see `docs/compatibility-matrix.md` §3a |
+| NewObject | EXECUTED | 927-953 | `"Object"`/`"Array"` special-cased directly; anything else resolves via scope-chain lookup — `GlobalObject` registers zero named CONSTRUCTORS (`new Date()`/`new Number()`/etc. still fail unless user-defined), see `docs/compatibility-matrix.md` §3a. Note this is separate from `Math`, which is a plain object (Roadmap Phase 8) never invoked with `new` — see "Global built-ins" below. |
+
+## Global built-ins (`GlobalObject`)
+
+Roadmap Phase 8 (2026-08-25) added the first real named built-in: `Math`
+(`src/avm1/GlobalObject.cpp`), scoped strictly to real corpus evidence — a
+static disassembly pass (`tools/real_game_harness/avm1_loader_disasm.cpp`,
+keyword-filtered for `Math`/`String`/`Number`/`Boolean`/`Date`) across all
+8 real corpus games plus a standalone `hobo.swf` copy found:
+
+| Global | Evidence | Status |
+|---|---|---|
+| `Math.random()` | Called in hobo2/hobo3/hobo5/hobo6/hobo7 (66 sites) | EXECUTED |
+| `Math.ceil()` | Called in hobo2/hobo3/hobo5/hobo6/hobo7 (66 sites, always paired with `Math.random()` — the `Math.ceil(Math.random() * n)` idiom) | EXECUTED |
+| `Math.floor/round/abs/sqrt/pow/min/max/PI/E` | No traced call site in this corpus | EXECUTED (added alongside the evidenced two — same trivial/stateless shape, zero extra cost, matches the roadmap's own "at minimum" baseline) |
+| `String`/`Number`/`Boolean`/`Date` (as global constructors/conversion functions) | Zero `CallFunction`/`NewObject`/`CallMethod` hits anywhere in the corpus | **DELIBERATELY NOT IMPLEMENTED** — see `docs/known-limitations.md` L2 |
+
+`Math` is a plain object (`GlobalObject::create()` populates it directly,
+no `nativeImpl`-framework changes needed — reuses the exact seam Phase 6's
+`Key`/`Mouse`/`Sound` already established in `ScriptEnvironment`'s
+constructor, just at the `GlobalObject` level instead since `Math` needs
+no per-`ScriptEnvironment` captured state). `Math.random()` reuses
+`ExecutionContext::randomSource` — the same injectable RNG seam
+`ActionRandomNumber` already uses — rather than a second independent PRNG,
+so tests can get deterministic `Math.random()` output the same way
+existing `ActionRandomNumber` tests already do.
+
+Caveat: `avm1_loader_disasm` is a linear, non-control-flow-following
+static disassembler (its own header comment) — it can miss calls after a
+branch/jump desyncs its symbolic stack. Absence of a hit for hobo1/hobo4/
+extreme_pamplona is "not found by this pass," not proof those files never
+call any of these globals.
 
 ## Functions
 

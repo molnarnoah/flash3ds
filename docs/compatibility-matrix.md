@@ -78,8 +78,8 @@ observation only.
 | DoInitAction (59) | raw bytes extracted (spriteId + body) | executed once per character | WORKING |
 | FrameLabel (43) | yes (name only) | used by `gotoAndStop("label")` | WORKING |
 | SetBackgroundColor (9) | **no parser; renderer always clears to white** | — | NOT IMPLEMENTED |
-| DefineMorphShape (46) | **no** — recognized by TagCode only | not resolved into CharacterDictionary; confirmed 19 occurrences in real `hobo.swf` | NOT IMPLEMENTED (confirmed real-content gap) |
-| DefineMorphShape2 (84) | **no** | same | NOT IMPLEMENTED (confirmed real-content gap) |
+| DefineMorphShape (46) | **yes** (`src/swf/DefineMorphShapeTag.h/.cpp`) — v1 only | resolved into CharacterDictionary and rendered (SceneRenderer), START-side geometry/colors only (ratio=0) — real-corpus evidence (`morph_ratio_scan.cpp`) confirms every placement across all 7 Hobo files uses ratio=0, so this is exactly correct for this corpus, not an approximation | WORKING (Roadmap Phase 9, 2026-08-25; start-shape-only by design, see `docs/known-limitations.md` L7) |
+| DefineMorphShape2 (84) | **no** | zero occurrences found in real corpus (tag histogram, all 8 games) — deliberately out of scope, see `docs/known-limitations.md` L7 | NOT IMPLEMENTED (confirmed zero real-content evidence) |
 | ExportAssets (56) | **no** | blocks `Sound.attachSound(name:String)` linkage-name resolution | NOT IMPLEMENTED |
 | DoABC/DoABC2 (72/82) | not parsed (AVM2/AS3 — explicitly out of project scope per `CLAUDE.md`) | — | NOT IMPLEMENTED (by design) |
 

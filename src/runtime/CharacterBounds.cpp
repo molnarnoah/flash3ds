@@ -23,6 +23,12 @@ swf::Rect characterOwnBoundsRect(const CharacterDef& def, const CharacterDiction
     if (const auto* shape = std::get_if<swf::ShapeDef>(&def)) return shape->bounds;
     if (const auto* text = std::get_if<swf::TextDef>(&def)) return text->bounds;
     if (const auto* editText = std::get_if<swf::EditTextDef>(&def)) return editText->bounds;
+    // Start-side bounds only, matching this phase's start-shape-only
+    // rendering simplification (see swf/DefineMorphShapeTag.h) — real
+    // corpus evidence found zero non-zero-ratio placements, so EndBounds
+    // is never the visually-active bounds for any character this codebase
+    // actually renders.
+    if (const auto* morph = std::get_if<swf::MorphShapeDef>(&def)) return morph->startBounds;
     if (const auto* button = std::get_if<swf::ButtonDef>(&def)) {
         bool anyHitTest = false;
         for (const auto& rec : button->records) {

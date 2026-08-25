@@ -775,3 +775,41 @@ title screen) is still open — Phase 9's own charter (run against real
 content, prioritize fixes by what's actually needed) doesn't have a hard
 "done" line the way the numbered phases do, and can continue independently
 of Phase 10 being complete.
+
+## Roadmap Phase 8 (`docs/implementation-roadmap-2026-08-21-part2.md`) — `GlobalObject` built-ins, 2026-08-25
+
+**Not the same "Phase 8" as the numbered section above** — this is the
+compatibility-audit-phase roadmap's own Phase 8, filling `GlobalObject`
+(`src/avm1/GlobalObject.cpp`), which was a one-line stub through every
+prior phase (`docs/known-limitations.md` L2).
+
+Added `Math` (`floor`/`ceil`/`round`/`abs`/`sqrt`/`pow`/`min`/`max`/
+`random`/`PI`/`E`) as a plain object, populated directly in
+`GlobalObject::create()` — no `nativeImpl`-framework changes needed, same
+seam Phase 6's `Key`/`Mouse`/`Sound` already established (see "Phase 6"
+above), just at the `GlobalObject` level since `Math` needs no per-
+`ScriptEnvironment` captured state. `Math.random()` reuses
+`ExecutionContext::randomSource` — the same injectable RNG seam
+`ActionRandomNumber` already uses — for consistency and test determinism,
+rather than an independent PRNG.
+
+Scoped strictly to real corpus evidence (`docs/avm1-compatibility.md`'s
+"Global built-ins" section has the full table): only `Math.random()`/
+`Math.ceil()` have an actual traced call site (5 of 8 corpus games, the
+`Math.ceil(Math.random() * n)` random-integer idiom); `String`/`Number`/
+`Boolean`/`Date` as global constructors show ZERO evidence of use anywhere
+in the corpus and are **deliberately not implemented** this phase — see
+`docs/known-limitations.md` L2 for the full reasoning (same "don't build
+against a hypothetical" precedent as Phase 6's `loadMovie`/sound-cache
+eviction decision).
+
+9 new unit tests (`tests/test_avm1_interpreter.cpp`, `Math_*`), all
+exercised via real `ActionCallMethod`/`ActionGetMember` AS2 bytecode
+through `GlobalObject::create()` rather than calling the C++ lambdas
+directly — this also exercises `Scope`/`ActionCallMethod` actually
+resolving `"Math"` as a real global, not just the built-in functions in
+isolation. 361/361 tests passing (up from 352). Real-game render harness
+(frames 1-5, all 8 corpus games): byte-identical MD5s before/after,
+verified via `git stash` on `GlobalObject.{h,cpp}` — expected, since the
+confirmed `Math.ceil`/`Math.random` call sites sit well past the title-
+screen frames this harness renders.

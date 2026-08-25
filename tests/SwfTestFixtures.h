@@ -300,4 +300,26 @@ std::vector<uint8_t> buildDefineEditTextBytes(
     std::optional<std::array<uint8_t, 4>> textColorRgba, const std::string& variableName,
     std::optional<std::string> initialText);
 
+// ---------------------------------------------------------------------
+// Roadmap Phase 9: DefineMorphShape (tag 46) body builder, independently
+// encoded from the public SWF spec's MORPHFILLSTYLE(ARRAY)/
+// MORPHLINESTYLE(ARRAY)/MORPHGRADIENT layout (see swf/DefineMorphShapeTag.h).
+// ---------------------------------------------------------------------
+
+// A full DefineMorphShape (tag 46) body: CharacterId, StartBounds=EndBounds
+// (both `startWidthTwips` x `startHeightTwips`), a (unused-by-the-parser,
+// written as 0) Offset field, one solid MorphFillStyle whose start color is
+// (r1,g1,b1,a1) and end color is (r2,g2,b2,a2), an empty MorphLineStyle
+// array, StartEdges tracing a `startWidthTwips` x `startHeightTwips`
+// rectangle with fillStyle1=1, and EndEdges tracing a `endWidthTwips` x
+// `endHeightTwips` rectangle the same way (reusing
+// buildRectShapeRecordsBytes, exactly as a real StartEdges/EndEdges pair
+// would independently trace two related but not-necessarily-identical
+// outlines).
+std::vector<uint8_t> buildDefineMorphShapeBytes(uint16_t characterId, int32_t startWidthTwips,
+                                                 int32_t startHeightTwips, int32_t endWidthTwips,
+                                                 int32_t endHeightTwips, uint8_t r1, uint8_t g1,
+                                                 uint8_t b1, uint8_t a1, uint8_t r2, uint8_t g2,
+                                                 uint8_t b2, uint8_t a2);
+
 }  // namespace flash3ds::test::fixtures
