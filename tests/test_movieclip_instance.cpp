@@ -2101,6 +2101,80 @@ TEST_CASE(MovieClipInstance_LoadMovie_NoFileLoaderWired_ReturnsFalseAndLeavesCli
     CHECK_EQ(mcIt->second->timeline().frameCount(), static_cast<uint32_t>(1));
 }
 
+// Task #68 (2026-08-27): the standard AS2-compiler output for
+// `gotoAndPlay(literalFrame)` is a BARE ActionGotoFrame (0x81) with no
+// accompanying ActionPlay/ActionStop — the compiler relies on the target
+// timeline already defaulting to playing (Timeline::build() sets
+// playing_=true on frame 1) rather than emitting an explicit Play. Before
+// this task's fix, MovieClipHostBindings::gotoFrame() called
+// Timeline::gotoAndStop() directly, which unconditionally force-stopped
+// the target -- silently turning every bare-GotoFrame-based
+// gotoAndPlay(literalFrame) in the corpus into a gotoAndStop(). This is
+// the regression test the bug had zero prior coverage for: it asserts
+// BOTH that the playhead actually moves AND that isPlaying() survives
+// untouched, which EventDispatch_ActionChangesTimeline_GotoAndStopOnParent
+// (tests/test_event_dispatch.cpp) does not check.
+TEST_CASE(MovieClipInstance_BareActionGotoFrame_MovesPlayheadWithoutStopping) {
+    Asm a;
+    a.gotoFrameAction(1);  // 0-based frame index 1 == 1-based frame 2; bare ActionGotoFrame, no Stop
+    auto bytes = buildMultiFrameRootScriptMovie(3, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    // createRoot() already runs frame 1's DoAction once (Phase 5's initial
+    // tick), so the goto has already fired by the time we get here.
+    CHECK_EQ(root->timeline().currentFrame(), static_cast<uint32_t>(2));
+    CHECK(root->timeline().isPlaying());
+}
+
+// Companion case for ActionGotoLabel (0x8C), the label-based sibling of
+// bare ActionGotoFrame -- same bug, same fix (MovieClipHostBindings::
+// gotoLabel() now calls the neutral Timeline::gotoFrame(label) too).
+TEST_CASE(MovieClipInstance_BareActionGotoLabel_MovesPlayheadWithoutStopping) {
+    Asm a;
+    a.gotoLabelAction("end");
+    auto bytes = buildMultiFrameRootScriptMovie(3, a.build(), {"", "", "end"});
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->timeline().currentFrame(), static_cast<uint32_t>(3));
+    CHECK(root->timeline().isPlaying());
+}
+
+// Contrast case proving the fix didn't break the OTHER real compiled form:
+// `gotoAndStop(literalFrame)` compiles to bare ActionGotoFrame FOLLOWED BY
+// a separate ActionStop in the same action stream (Interpreter.cpp's own
+// Stop case, unaffected by this task). The neutral gotoFrame() must leave
+// isPlaying() alone so that this trailing Stop is what actually halts
+// playback -- not gotoFrame() doing it prematurely, and not gotoFrame()
+// failing to leave it in a state Stop can act on.
+TEST_CASE(MovieClipInstance_BareActionGotoFramePlusSeparateStop_MovesPlayheadAndStops) {
+    Asm a;
+    a.gotoFrameAction(1);  // 0-based frame index 1 == 1-based frame 2
+    a.op(0x07);            // ActionStop, as a separate action right after
+    auto bytes = buildMultiFrameRootScriptMovie(3, a.build());
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(root->timeline().currentFrame(), static_cast<uint32_t>(2));
+    CHECK(!root->timeline().isPlaying());
+}
+
 TEST_CASE(MovieClipInstance_LoadMovie_FetchedBytesNotAValidSwf_ReturnsFalseAndLeavesClipUnchanged) {
     MapFileLoader loader;
     loader.add("garbage.swf", std::vector<uint8_t>{0x00, 0x01, 0x02, 0x03});

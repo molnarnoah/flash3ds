@@ -316,10 +316,80 @@ another End-key or `EnterFrame` handler elsewhere in the same tick
 reverting the goto, or an interaction with the preloader's own bare
 `GotoFrame`/`Play`/`Stop` action-code bytecode (now visible via this same
 disassembly pass, previously silently dropped by the tool). Filed as task
-#68 — **A3 stays blocked on it**: wiring/shipping the 3DS entry point onto
-a screen that still doesn't actually navigate would not be progress.
+#68.
+
+## Addendum — 2026-08-27, task #68 closed: root cause found, fixed, and the fix confirmed against real content
+
+Task #68's investigation (full writeup: `docs/known-limitations.md` L11)
+found and fixed a genuine, previously-untested, systemic interpreter bug:
+`MovieClipHostBindings::gotoFrame()`/`gotoLabel()` (the handlers for bare
+`ActionGotoFrame`/`ActionGotoLabel`, which back `gotoAndPlay(literalFrame)`
+in its standard AS2-compiler form) were calling `Timeline::gotoAndStop()`
+directly, unconditionally force-stopping the target timeline. This is
+exactly what was silently keeping preloader's own local timeline stuck:
+its frame-1 script is `gotoAndPlay(3)`, compiled as bare `GotoFrame` with
+no trailing `Stop`, so it was being force-stopped the instant it ran, and
+`Timeline::advanceOneFrame()`'s `!playing_` guard then permanently blocked
+any further auto-advance past local frame 1.
+
+**This section's own prior framing needs one correction first:** the
+"the call happens, per the trace, yet the root timeline does not visibly
+move" observation above was itself built on a misattribution, caught via
+pointer-identity debug tracing during task #68's investigation (temporary
+`fprintf` instrumentation on live `Timeline*` addresses, reverted before
+the real fix). Every occurrence of the recurring `gotoAndStop(2)` trace
+line this document and `docs/hobo-title-progression.md` had observed
+turned out to land on `"mutebutton"` (root's own pause/mute overlay,
+depth 313) — never on character 32's actual `_root.gotoAndStop(2)` call
+at all. The two regression tests cited just above (isolated, minimal
+fixtures) were correctly passing the whole time; they were simply testing
+a mechanism that was never actually the one running in the real-corpus
+probe.
+
+**With the real fix applied and re-verified against real `hobo.swf`:**
+preloader's own local timeline now correctly reaches local frame 4 (where
+character 32's button lives) and cycles as a normal loading-spinner
+animation (`3 -> 4 -> 3 -> 4 ...`), exactly as its bytecode intends.
+Character 32's real, byte-verified `_root.gotoAndStop(2)` button was
+confirmed to genuinely fire and move ROOT's own `currentFrame()` from 1 to
+2 — the first time this investigation ever observed root's own timeline
+move — once the End-key press edge was timed to land on a tick where
+preloader had already reached local frame 4 (a standard `hobo_end_key_probe`
+tap-on-tick-0 run misses this window; see `docs/known-limitations.md` L11's
+"narrower, separate note" for the exact per-tick ordering reason why, which
+is documented as a real, demonstrated interaction rather than "fixed",
+since it isn't yet known whether it's spec-accurate).
+
+**Answer to this document's own open question:** yes, the engine's
+`_root`/nested-button/`CondKeyPress` machinery was correct the whole time
+(as the isolated tests already showed); the real-corpus blocker was a
+genuine interpreter bug, now fixed, and the specific frame1(local)→4(local)
+→`_root` frame 2 hop this document traced is now demonstrated working
+end-to-end for the first time. **A3 (#58) is no longer blocked on this
+task** — see `docs/hobo-title-progression.md`'s own established finding
+that Hobo1 doesn't need a "title screen dismissed" gate at all (gameplay
+key-polling is already running from tick 0 regardless); this fix closes
+the one concrete interpreter-level doubt that had been holding A3 back
+pending real evidence the engine could actually execute this exact
+gotoAndPlay/CondKeyPress/nested-button chain correctly. Whether the full
+frame1→4→10 chain documented in Finding 6 above plays out further (the
+"levels" menu, `_root.hobo` at frame 10, etc.) is separate, un-investigated
+follow-up work, not part of #68's scope.
 
 ### Regression / build (this addendum)
+
+Fix: `src/runtime/Timeline.h/.cpp` (new neutral `Timeline::gotoFrame()`
+pair) and `src/runtime/MovieClipInstance.cpp`
+(`MovieClipHostBindings::gotoFrame()`/`gotoLabel()` rewired to call it).
+Three new regression tests in `tests/test_movieclip_instance.cpp` (see
+`docs/known-limitations.md` L11 for their names and what each proves).
+Full clean rebuild: zero warnings. `ctest`/`flash3ds_tests`: 374/374
+passing (up from 371 — the 3 new tests here), zero regressions.
+Re-verification against real `hobo.swf` used temporary, reverted-before-
+commit debug instrumentation only (no permanent runtime behavior changed
+beyond the fix itself) — read-only per this project's standing rule.
+
+### Regression / build (the static-disassembly addendum, 2026-08-27)
 
 `tools/real_game_harness/avm1_loader_disasm.cpp`: added `PlaceObject2`/
 `ClipActionRecord` scanning, `DefineButton`/`DefineButton2`/

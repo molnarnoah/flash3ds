@@ -66,6 +66,30 @@ public:
     bool gotoAndStop(const std::string& label);
     bool gotoAndPlay(const std::string& label);
 
+    // 2026-08-27 (task #68): a NEUTRAL reposition -- moves the playhead and
+    // rebuilds the display list exactly like gotoAndStop/gotoAndPlay above,
+    // but deliberately does NOT touch isPlaying(). This is what the SWF
+    // spec's bare ActionGotoFrame/ActionGotoLabel action codes need: per
+    // the standard AVM1 compiler output, `gotoAndPlay(n)` in AS2 source
+    // compiles to ActionGotoFrame(n) ALONE (no accompanying ActionPlay --
+    // the target is expected to already default to playing), while
+    // `gotoAndStop(n)` compiles to ActionGotoFrame(n) followed by a
+    // SEPARATE ActionStop right after it in the same action stream. Only
+    // ActionGotoFrame2 (the newer, flag-based action) explicitly decides
+    // play-vs-stop itself via its own PlayFlag bit -- see
+    // Interpreter.cpp's GotoFrame2 case, which already calls play()/stop()
+    // explicitly after repositioning and was therefore NEVER affected by
+    // this bug. Found via task #68's investigation into why hobo.swf's
+    // "preloader" sprite (a real, unmodified corpus file) never advances
+    // past its own local frame 1: its frame-1 script is exactly
+    // `gotoAndPlay(3)` -- bare ActionGotoFrame(2), no ActionStop -- and
+    // before this fix, gotoFrame()/gotoLabel() (below) called
+    // gotoAndStop() directly, silently turning EVERY bare-ActionGotoFrame-
+    // based gotoAndPlay() in the corpus into a gotoAndStop() instead. See
+    // docs/known-limitations.md for the full writeup.
+    void gotoFrame(uint32_t frameIndex);
+    bool gotoFrame(const std::string& label);
+
     // AS2 semantics: moving the playhead by one frame always stops
     // playback (matches MovieClip.nextFrame()/prevFrame() in real Flash).
     // No-op at the first/last frame respectively.

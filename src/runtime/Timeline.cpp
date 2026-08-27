@@ -156,6 +156,24 @@ bool Timeline::gotoAndPlay(const std::string& label) {
     return true;
 }
 
+void Timeline::gotoFrame(uint32_t frameIndex) {
+    if (frameCount() == 0) return;
+    // Same Phase 10 portability fix as gotoAndStop/gotoAndPlay above.
+    frameIndex = std::clamp(frameIndex, static_cast<uint32_t>(1), frameCount());
+    applyFrame(frameIndex);
+    currentFrame_ = frameIndex;
+    // playing_ deliberately left untouched -- see this method's header doc
+    // comment (task #68): this is the neutral bare-ActionGotoFrame
+    // primitive, not gotoAndStop/gotoAndPlay.
+}
+
+bool Timeline::gotoFrame(const std::string& label) {
+    auto frameIndex = frameForLabel(label);
+    if (!frameIndex) return false;
+    gotoFrame(*frameIndex);
+    return true;
+}
+
 void Timeline::nextFrame() {
     if (frameCount() == 0 || currentFrame_ >= frameCount()) return;
     gotoAndStop(currentFrame_ + 1);

@@ -50,10 +50,32 @@ public:
     void gotoFrame(uint32_t frameIndex) override {
         // AVM1's GotoFrame/GotoFrame2 frame numbers are 0-based;
         // Timeline's are 1-based (see Timeline.h).
-        if (current_) current_->timeline().gotoAndStop(frameIndex + 1);
+        //
+        // 2026-08-27 (task #68 -- real bug found via a real corpus file,
+        // not a synthetic case): this MUST be the neutral Timeline::
+        // gotoFrame(), not gotoAndStop(). The bare AVM1 ActionGotoFrame
+        // this method backs is the interpreter's handler for BOTH
+        // gotoAndPlay(n) (compiles to ActionGotoFrame(n) alone) and
+        // gotoAndStop(n) (compiles to ActionGotoFrame(n) + a SEPARATE
+        // ActionStop right after it -- see Interpreter.cpp's own Stop
+        // case, which already calls host->stop() for that second action).
+        // Calling gotoAndStop() here unconditionally force-stopped the
+        // target timeline on EVERY bare GotoFrame, silently turning every
+        // gotoAndPlay(literalFrame) in the corpus into a gotoAndStop --
+        // confirmed via hobo.swf's real "preloader" sprite, whose own
+        // frame-1 script is exactly `gotoAndPlay(3)` and got stuck
+        // forever at frame 1 as a result (see docs/known-limitations.md).
+        // ActionGotoFrame2 (the flag-based action) is unaffected either
+        // way -- it always calls play()/stop() explicitly itself right
+        // after repositioning (see its own Interpreter.cpp case).
+        if (current_) current_->timeline().gotoFrame(frameIndex + 1);
     }
     void gotoLabel(const std::string& label) override {
-        if (current_) current_->timeline().gotoAndStop(label);
+        // Same reasoning as gotoFrame() just above -- ActionGotoLabel is
+        // the label-based sibling of bare ActionGotoFrame, backing both
+        // gotoAndPlay("label") and gotoAndStop("label") (the latter via a
+        // separate trailing ActionStop), so it must be equally neutral.
+        if (current_) current_->timeline().gotoFrame(label);
     }
     void play() override {
         if (current_) current_->timeline().play();

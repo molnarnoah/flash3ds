@@ -808,6 +808,122 @@ skipped to preemptively.
 
 ---
 
+## L11 — Bare `ActionGotoFrame`/`ActionGotoLabel` incorrectly force-stopped the target timeline — FIXED (task #68, 2026-08-27)
+
+- **Subsystem:** AVM1 interpreter / `Timeline`/`MovieClipHostBindings`
+  integration (`src/runtime/Timeline.h/.cpp`,
+  `src/runtime/MovieClipInstance.cpp`).
+- **Status:** **Fixed and regression-tested.** `MovieClipHostBindings::
+  gotoFrame(uint32_t)`/`gotoLabel(const std::string&)` — the interpreter's
+  handlers for the bare `ActionGotoFrame` (0x81) and `ActionGotoLabel`
+  (0x8C) action codes (`Interpreter.cpp`'s `GotoFrame`/`GotoLabel` cases)
+  — were calling `Timeline::gotoAndStop()` directly, which unconditionally
+  sets `playing_ = false`. Per the standard AS2-compiler convention (and
+  this codebase's own already-correct `ActionGotoFrame2` handling, which
+  explicitly calls `play()`/`stop()` itself right after repositioning
+  based on its own flag bit — see `Interpreter.cpp` ~L377-393), a bare
+  `gotoAndPlay(literalFrame)` compiles to `ActionGotoFrame` ALONE with no
+  accompanying `ActionPlay`, relying on the target simply not having been
+  stopped; `gotoAndStop(literalFrame)` compiles to `ActionGotoFrame`
+  followed by a SEPARATE `ActionStop`. Calling `gotoAndStop()` from inside
+  the bare-`GotoFrame` handler silently converted every
+  `gotoAndPlay(literalFrame)`/`gotoAndPlay(label)` in the corpus into a
+  `gotoAndStop`, with zero prior test coverage catching it (the one
+  existing test using bare `GotoFrame`,
+  `EventDispatch_ActionChangesTimeline_GotoAndStopOnParent` in
+  `tests/test_event_dispatch.cpp`, only asserted `currentFrame()`, never
+  `isPlaying()`).
+- **Source location:** `src/runtime/Timeline.h/.cpp` (new neutral
+  `Timeline::gotoFrame(uint32_t)`/`gotoFrame(const std::string&)` pair —
+  repositions + rebuilds the display list exactly like
+  `gotoAndStop`/`gotoAndPlay`, but deliberately leaves `playing_`
+  untouched); `src/runtime/MovieClipInstance.cpp`
+  (`MovieClipHostBindings::gotoFrame()`/`gotoLabel()` now call these
+  instead of `Timeline::gotoAndStop()`).
+- **Evidence:** Found via real-corpus investigation (task #68) into why
+  `hobo.swf`'s "preloader" sprite (characterId=33, root frame 1, a real
+  unmodified corpus file, named `"preloader"` in the SWF itself) appeared
+  permanently stuck at its own local frame 1: its frame-1 script is
+  exactly `gotoAndPlay(3)`, which compiles to bare `ActionGotoFrame(2)`
+  with no trailing `ActionStop` — before the fix, this silently force-
+  stopped preloader's own timeline the instant it ran, so
+  `Timeline::advanceOneFrame()`'s `if (!playing_ ...) return;` guard then
+  permanently blocked any further auto-advance. Confirmed via a
+  pointer-identity debug-tracing pass (temporary `fprintf` instrumentation
+  in `Timeline::gotoAndStop()`, reverted before the real fix landed) that
+  cross-referenced live `Timeline*` addresses against a live probe run —
+  this also caught and corrected a real self-made misattribution earlier
+  in the same investigation, where a recurring `gotoAndStop(2)` call
+  visible in `hobo_end_key_probe`'s call trace had been assumed to be a
+  specific button's (`characterId=32`, nested in preloader, targeting
+  `_root` directly) real effect, when pointer-address correlation proved
+  every occurrence of that specific trace line actually landed on a
+  completely different, unrelated object (`"mutebutton"`, depth 313 —
+  root's own pause/mute overlay, matching `docs/hobo-title-progression.md`
+  Phase 7's independently-documented finding about that same button).
+- **Post-fix real-corpus re-verification:** with the fix applied,
+  preloader's own local timeline now correctly reaches local frame 4
+  (previously unreachable) and cycles as a normal two-frame loading-spinner
+  animation (`3 -> 4 -> 3 -> 4 ...`), exactly as its own bare-GotoFrame
+  bytecode intends. Character 32's real, byte-verified
+  `_root.gotoAndStop(2)` button — nested inside preloader at its local
+  frame 4 — was confirmed to genuinely fire and move ROOT's own
+  `currentFrame()` from 1 to 2 for the first time in this investigation's
+  history, once the End-key press edge was timed to land on a tick where
+  preloader had already reached local frame 4 (see the narrower open note
+  below). This closes task #68's original question with a definitive,
+  demonstrated **yes** — the interpreter fix is both correct per spec and
+  practically necessary for this exact corpus content, independent of
+  whether it "unblocks Hobo1" in the broader roadmap sense (see the
+  Track-A note below).
+- **A narrower, separate note (not fixed, not claimed to be a bug):**
+  `MovieClipInstance::advanceFrame()`'s per-tick order runs
+  `dispatchButtonKeyPressesRecursive()` (root-only, using every child's
+  CURRENT, pre-this-tick display-list/button state) BEFORE recursing into
+  each child's own `advanceFrame()` for this same tick. This means a
+  child's own newly-placed button (like character 32, which only exists in
+  preloader's display list once preloader's own timeline reaches local
+  frame 4) cannot be dispatched on the very tick that child first reaches
+  the frame that places it — only from the following tick onward. Combined
+  with `CondKeyPress` dispatch being press-edge-triggered
+  (`InputState::isKeyPressed()`, not level-triggered), a single-tick
+  End-key **tap** synchronized to tick 0 (the pattern every prior probe in
+  this corpus's investigation history has used, including
+  `hobo_end_key_probe.cpp`'s default) will systematically miss this
+  button's press edge, because the button doesn't exist in the display
+  list yet at tick 0's dispatch. This is a real, demonstrated timing
+  interaction, not a hypothesis — but whether real Flash Player orders
+  per-tick child-advance vs. button-dispatch the same way (and thus
+  whether this is spec-accurate rather than an engine quirk) has not been
+  investigated, so per this project's no-speculative-fix rule it is
+  documented here rather than "fixed." It does explain why every prior
+  probe run in this corpus's history (tap-on-tick-0) saw `root.currentFrame()`
+  stuck at 1 even after this task's real fix landed.
+- **Affected SWFs:** Systemic — any corpus content using literal-frame or
+  frame-label `gotoAndPlay()` calls compiled to bare `ActionGotoFrame`/
+  `ActionGotoLabel` (the standard AS2 compiler form), not specific to
+  `hobo.swf`.
+- **Severity:** Was high (silently broke a common, spec-mandated AVM1
+  primitive with zero test coverage); now fixed.
+- **Dependency:** None.
+- **Proposed fix:** Done — see source locations above.
+- **Ghidra evidence:** None (clean-room project; Shift-DX/gameswf are
+  never consulted for implementation, per `CLAUDE.md`).
+- **JPEXS evidence:** Not used.
+- **Test required / done:** Three new regression tests in
+  `tests/test_movieclip_instance.cpp`:
+  `MovieClipInstance_BareActionGotoFrame_MovesPlayheadWithoutStopping`,
+  `MovieClipInstance_BareActionGotoLabel_MovesPlayheadWithoutStopping`,
+  and the contrast case
+  `MovieClipInstance_BareActionGotoFramePlusSeparateStop_MovesPlayheadAndStops`
+  (proving the OTHER real compiled form — bare `GotoFrame` immediately
+  followed by a separate `ActionStop`, i.e. `gotoAndStop(literalFrame)` —
+  still stops correctly, since the fix must not regress that path). Full
+  clean rebuild + `ctest`: 374/374 passing (up from 371), zero
+  regressions.
+
+---
+
 ## RESOLVED this audit (previously listed as open/uncertain — confirmed done)
 
 ### R1 — Button/clip event dispatch (`condActionsV2` + `onPress`/`onRelease`/`onRollOver`/`onRollOut` property handlers + `CondKeyPress`)
