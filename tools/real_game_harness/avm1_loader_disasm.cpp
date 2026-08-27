@@ -43,6 +43,8 @@
 #include "avm1/ActionCode.h"
 #include "runtime/CharacterDictionary.h"
 #include "runtime/Movie.h"
+#include "swf/DefineButtonTag.h"
+#include "swf/PlaceObjectTag.h"
 #include "swf/SwfLoader.h"
 #include "swf/SwfReader.h"
 #include "swf/TagCode.h"
@@ -539,6 +541,33 @@ void walkActionStream(const uint8_t* data, size_t size, DisasmState& st) {
                     st.stack.push_back(symUnknown("null"));  // same caveat as Enumerate
                     break;
                 }
+                // 2026-08-27 (Track A follow-up, frame-progression trace):
+                // these bare (un-OOP, no-operand) timeline-control actions
+                // were previously silently dropped by the `default: break`
+                // below -- fine for the symbolic stack (none of them push/
+                // pop anything, so dropping them never desynced later
+                // events, unlike If/Jump), but it meant this tool was
+                // structurally unable to show a `stop();`/`play();`/
+                // `nextFrame();`/`prevFrame();` call at all, even though
+                // these are exactly the classic compiled form of simple,
+                // untargeted button/frame scripts (e.g. `on(release) {
+                // play(); }`) -- precisely the kind of "what advances the
+                // root timeline" evidence needed once the isDown()
+                // question itself was answered (see docs/hobo-playability-
+                // verification.md's frame-progression addendum). No stack
+                // effect per Interpreter.cpp's own handling of these four.
+                case avm1::ActionCode::Play:
+                    emit(st, "Play()");
+                    break;
+                case avm1::ActionCode::Stop:
+                    emit(st, "Stop()");
+                    break;
+                case avm1::ActionCode::NextFrame:
+                    emit(st, "NextFrame()");
+                    break;
+                case avm1::ActionCode::PreviousFrame:
+                    emit(st, "PrevFrame()");
+                    break;
                 default:
                     break;  // no stack effect this tool needs to model
             }
@@ -655,10 +684,63 @@ void walkActionStream(const uint8_t* data, size_t size, DisasmState& st) {
                 emit(st, "Call " + frame.text);
                 break;
             }
+            // 2026-08-27 (Track A follow-up, docs/hobo-playability-
+            // verification.md): If pops ONE value (the branch condition)
+            // per Interpreter.cpp -- not modeling that pop here silently
+            // desynced the symbolic stack for the REST of every action
+            // stream containing an If (which is nearly every real
+            // condition-gated script, e.g. `if (Key.isDown(...)) { ... }`
+            // -- exactly the code this tool exists to read). This is still
+            // a LINEAR pass (the branch itself is not followed/simulated,
+            // so both arms print in sequence as if unconditional -- read
+            // the surrounding emitted events as "what CAN happen here",
+            // not "what happens in what order"), but the stack no longer
+            // corrupts past this point. Jump has no AVM1-stack effect at
+            // all (it only affects the byte-stream cursor, which a linear
+            // pass ignores by design) -- explicitly a no-op here, not an
+            // oversight.
+            case avm1::ActionCode::If: {
+                Sym cond = pop(st);
+                emit(st, "If (" + cond.text + ")");
+                break;
+            }
+            case avm1::ActionCode::Jump:
+                break;
             case avm1::ActionCode::DefineFunction:
             case avm1::ActionCode::DefineFunction2:
                 handleDefineFunction(code, operand, length, data, size, pos, st);
                 break;
+            // 2026-08-27 (Track A follow-up, frame-progression trace):
+            // GotoFrame (0x81, the plain "gotoAndPlay(literalFrame)"/
+            // "gotoAndStop(literalFrame)" compiled form -- a 2-byte UI16
+            // frame-number operand baked directly into the bytecode, no
+            // stack involvement at all) and SetTarget (0x8B, a static
+            // string-operand target scope for whichever bare Play/Stop/
+            // GotoFrame/NextFrame/PrevFrame follow it, as opposed to
+            // SetTarget2's already-handled dynamic/stack form) were both
+            // previously unhandled -- falling to this switch's own
+            // `default: break` -- meaning this tool could not show root-
+            // timeline (or any target's) frame navigation driven by the
+            // classic untargeted/SetTarget-scoped compiled form at all,
+            // only the OOP `_root.gotoAndStop(n)`-style CallMethod form
+            // already handled above. Read GotoFrame's emitted frame number
+            // together with the nearest preceding SetTarget in the SAME
+            // event stream to know which timeline it addresses (this tool
+            // does not track a persistent "current target" across
+            // opcodes, so, exactly like the If/Jump caveat above, treat
+            // this as "what CAN run here", not fully resolved).
+            case avm1::ActionCode::GotoFrame: {
+                if (length < 2) break;
+                uint16_t frame = static_cast<uint16_t>(operand[0]) | (static_cast<uint16_t>(operand[1]) << 8);
+                emit(st, "GotoFrame " + std::to_string(frame));
+                break;
+            }
+            case avm1::ActionCode::SetTarget: {
+                swf::SwfReader r(operand, length);
+                std::string name = r.readCString();
+                emit(st, "SetTarget \"" + name + "\"");
+                break;
+            }
             case avm1::ActionCode::With: {
                 swf::SwfReader r(operand, length);
                 uint16_t blockSize = r.readU16();
@@ -709,9 +791,127 @@ int main(int argc, char** argv) {
     collectTagsRecursive(*movie, movie->tags, 0, allTags);
 
     std::vector<std::string> events;
-    int doActionCount = 0, doInitActionCount = 0;
+    int doActionCount = 0, doInitActionCount = 0, clipActionCount = 0, buttonActionCount = 0;
     for (const auto& ct : allTags) {
         auto code = static_cast<swf::TagCode>(ct.tag.code);
+        if (code == swf::TagCode::DefineButton || code == swf::TagCode::DefineButton2) {
+            // 2026-08-27 (Track A follow-up, frame-progression trace): a
+            // THIRD kind of embedded-bytecode container this tool had
+            // never scanned, alongside DoAction/DoInitAction (fixed
+            // originally) and PlaceObject2's ClipActionRecord (fixed
+            // above this segment). DefineButton/DefineButton2 carry their
+            // click-handler script INSIDE THE CHARACTER DEFINITION ITSELF
+            // (ButtonCondAction records for v2, one implicit OverDown->
+            // OverUp block for v1) -- not in any DoAction tag or
+            // PlaceObject2 clip-action record, so a real "PLAY button"
+            // click handler (the plausible trigger for the root-timeline
+            // frame1->4->10 gate found via the new GotoFrame/Play/Stop
+            // emission above -- see docs/hobo-playability-verification.md)
+            // would be completely invisible to every scan this tool has
+            // done until now.
+            swf::SwfReader r = movie->tagBodyReader(ct.tag);
+            auto parsed = swf::parseDefineButton(r, ct.tag.code);
+            if (!parsed) continue;
+            if (!parsed->actionsV1.empty()) {
+                DisasmState st;
+                st.context = "DefineButton(v1) characterId=" + std::to_string(parsed->characterId) +
+                              " (OverDown->OverUp)";
+                st.eventsOut = &events;
+                walkActionStream(parsed->actionsV1.data(), parsed->actionsV1.size(), st);
+                buttonActionCount++;
+            }
+            for (size_t i = 0; i < parsed->condActionsV2.size(); ++i) {
+                const auto& ca = parsed->condActionsV2[i];
+                if (ca.actionBytes.empty()) continue;
+                std::vector<std::string> condNames;
+                auto condBit = [&](swf::ButtonCondition c, const char* name) {
+                    if (ca.conditions & static_cast<uint16_t>(c)) condNames.push_back(name);
+                };
+                condBit(swf::ButtonCondition::kIdleToOverUp, "IdleToOverUp");
+                condBit(swf::ButtonCondition::kOverUpToIdle, "OverUpToIdle");
+                condBit(swf::ButtonCondition::kOverUpToOverDown, "OverUpToOverDown");
+                condBit(swf::ButtonCondition::kOverDownToOverUp, "OverDownToOverUp(click/release)");
+                condBit(swf::ButtonCondition::kOverDownToOutDown, "OverDownToOutDown");
+                condBit(swf::ButtonCondition::kOutDownToOverDown, "OutDownToOverDown");
+                condBit(swf::ButtonCondition::kOutDownToIdle, "OutDownToIdle");
+                condBit(swf::ButtonCondition::kIdleToOverDown, "IdleToOverDown");
+                condBit(swf::ButtonCondition::kOverDownToIdle, "OverDownToIdle");
+                std::string condText;
+                for (size_t c = 0; c < condNames.size(); ++c) {
+                    if (c) condText += "|";
+                    condText += condNames[c];
+                }
+                DisasmState st;
+                st.context = "DefineButton2 characterId=" + std::to_string(parsed->characterId) +
+                              " cond#" + std::to_string(i) + " (" + condText + ")" +
+                              (ca.keyCode ? " key=" + std::to_string(*ca.keyCode) : "");
+                st.eventsOut = &events;
+                walkActionStream(ca.actionBytes.data(), ca.actionBytes.size(), st);
+                buttonActionCount++;
+            }
+            continue;
+        }
+        if (code == swf::TagCode::PlaceObject2) {
+            // 2026-08-27 (Track A follow-up, docs/hobo-playability-
+            // verification.md): this static tool previously only walked
+            // DoAction/DoInitAction tag bodies -- it never looked inside
+            // PlaceObject2's own optional CLIPACTIONRECORD section, which
+            // is exactly where an `onClipEvent(enterFrame) { ... }`
+            // handler's bytecode lives (confirmed live/dispatching in the
+            // real interpreter per Phase 6 -- see CLAUDE.md). That gap is
+            // why a prior run of this tool found zero "isDown"/"Key"
+            // occurrences in hobo.swf despite the dynamic call trace
+            // showing Key.isDown() firing every tick: the polling code was
+            // never being scanned at all, not merely mis-disassembled.
+            swf::SwfReader r = movie->tagBodyReader(ct.tag);
+            auto parsed = swf::parsePlaceObject(r, ct.tag.code, movie->version);
+            if (!parsed || parsed->clipActions.empty()) continue;
+            for (size_t i = 0; i < parsed->clipActions.size(); ++i) {
+                const auto& rec = parsed->clipActions[i];
+                if (rec.actionBytes.empty()) continue;
+                std::vector<std::string> flagNames;
+                auto flagBit = [&](swf::ClipEventFlag f, const char* name) {
+                    if (rec.eventFlags & static_cast<uint32_t>(f)) flagNames.push_back(name);
+                };
+                flagBit(swf::ClipEventFlag::kLoad, "Load");
+                flagBit(swf::ClipEventFlag::kEnterFrame, "EnterFrame");
+                flagBit(swf::ClipEventFlag::kUnload, "Unload");
+                flagBit(swf::ClipEventFlag::kMouseMove, "MouseMove");
+                flagBit(swf::ClipEventFlag::kMouseDown, "MouseDown");
+                flagBit(swf::ClipEventFlag::kMouseUp, "MouseUp");
+                flagBit(swf::ClipEventFlag::kKeyDown, "KeyDown");
+                flagBit(swf::ClipEventFlag::kKeyUp, "KeyUp");
+                flagBit(swf::ClipEventFlag::kData, "Data");
+                flagBit(swf::ClipEventFlag::kInitialize, "Initialize");
+                flagBit(swf::ClipEventFlag::kPress, "Press");
+                flagBit(swf::ClipEventFlag::kRelease, "Release");
+                flagBit(swf::ClipEventFlag::kReleaseOutside, "ReleaseOutside");
+                flagBit(swf::ClipEventFlag::kRollOver, "RollOver");
+                flagBit(swf::ClipEventFlag::kRollOut, "RollOut");
+                flagBit(swf::ClipEventFlag::kDragOver, "DragOver");
+                flagBit(swf::ClipEventFlag::kDragOut, "DragOut");
+                flagBit(swf::ClipEventFlag::kKeyPress, "KeyPress");
+                flagBit(swf::ClipEventFlag::kConstruct, "Construct");
+                std::string flagsText;
+                for (size_t f = 0; f < flagNames.size(); ++f) {
+                    if (f) flagsText += "|";
+                    flagsText += flagNames[f];
+                }
+                std::string label = "onClipEvent(" + flagsText + ") depth=" +
+                                     std::to_string(parsed->depth) +
+                                     (parsed->name ? " name=\"" + *parsed->name + "\"" : "") +
+                                     " charId=" +
+                                     (parsed->characterId ? std::to_string(*parsed->characterId) : "?") +
+                                     " record#" + std::to_string(i) + " (treeDepth=" +
+                                     std::to_string(ct.depth) + ")";
+                DisasmState st;
+                st.context = label;
+                st.eventsOut = &events;
+                walkActionStream(rec.actionBytes.data(), rec.actionBytes.size(), st);
+                clipActionCount++;
+            }
+            continue;
+        }
         if (code != swf::TagCode::DoAction && code != swf::TagCode::DoInitAction) continue;
         swf::SwfReader r = movie->tagBodyReader(ct.tag);
         std::string label;
@@ -741,8 +941,10 @@ int main(int argc, char** argv) {
     }
 
     std::printf("=== %s ===\n", argv[1]);
-    std::printf("DoAction tags: %d, DoInitAction tags: %d, total events: %zu\n\n", doActionCount,
-                doInitActionCount, events.size());
+    std::printf(
+        "DoAction tags: %d, DoInitAction tags: %d, ClipActionRecords: %d, ButtonCondActions: %d, "
+        "total events: %zu\n\n",
+        doActionCount, doInitActionCount, clipActionCount, buttonActionCount, events.size());
 
     int printedCount = 0;
     for (const auto& e : events) {

@@ -207,6 +207,21 @@ if(FLASH3DS_BUILD_TOOLS)
     # docs/known-limitations.md L6.
     add_executable(pamplona_click_trace tools/real_game_harness/pamplona_click_trace.cpp)
     target_link_libraries(pamplona_click_trace PRIVATE flash3ds_core)
+
+    # Track A follow-up (2026-08-27, task #66): a static AVM1 disassembler
+    # that walks EVERY embedded-bytecode container this project's SWF
+    # parsing knows about -- DoAction/DoInitAction tag bodies, PlaceObject2's
+    # ClipActionRecord (onClipEvent) bytecode, and DefineButton/
+    # DefineButton2's own ButtonCondAction bytecode -- and prints a best-
+    # effort symbolic disassembly (see the file's own header comment for the
+    # linear-pass/no-branch-following caveats). Pre-existing tool, only now
+    # CMake-registered: previously built/run standalone via `g++` per-
+    # investigation (see docs/hobo-playability-verification.md's 2026-08-27
+    # addendum for what it found). Registering it here so it stays buildable
+    # without hand-reconstructing the right g++ invocation each time a future
+    # session needs it again.
+    add_executable(avm1_loader_disasm tools/real_game_harness/avm1_loader_disasm.cpp)
+    target_link_libraries(avm1_loader_disasm PRIVATE flash3ds_core)
 endif()
 
 # ---------------------------------------------------------------------------

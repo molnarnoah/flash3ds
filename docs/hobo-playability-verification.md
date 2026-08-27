@@ -187,3 +187,148 @@ warnings. `ctest`/`flash3ds_tests`: 368/368 passing, unchanged from before
 this phase (no new unit tests added — this is a real-corpus investigation
 matching the pattern of every other `real_game_harness` tool, not new
 production functionality).
+
+## Addendum — 2026-08-27, static disassembly closes Finding 3 (task #66)
+
+The prior section's open question ("what do the `Key.isDown()` `if`-branch
+bodies actually do") is now answered by directly reading them, not
+inferred from absence of traced side effects — and the answer explains
+Finding 2's zero-pixel-effect result completely, plus surfaces a second,
+still-open engine question that blocks Track A3-A5 for a different reason
+than originally suspected.
+
+### The tool gap that hid the answer
+
+`tools/real_game_harness/avm1_loader_disasm.cpp` (a pre-existing, not-yet-
+CMake-registered static AVM1 disassembler) only ever walked `DoAction`/
+`DoInitAction` tag bodies. Hobo1's `onEnterFrame`/`Key.isDown()` polling
+lives inside `PlaceObject2`'s own `ClipActionRecord` bytecode (Phase 6's
+`onClipEvent` mechanism — see `src/swf/PlaceObjectTag.h`), which the tool
+never scanned at all — a structural gap, not a bug in what it did scan.
+Fixed by extending the tool to also parse each `PlaceObject2` via
+`swf::parsePlaceObject()` and disassemble every `ClipActionRecord.
+actionBytes`, labeled with its event flags, placement depth/name/
+characterId, and record index. Also fixed two smaller gaps found along the
+way that would have corrupted or hidden output once the ClipActionRecord
+scan started surfacing real conditional code: the `If` action (0x9D) wasn't
+popping its one condition value (silently desyncing the symbolic stack for
+the rest of every conditional script — nearly all of them), and `Jump`,
+`GotoFrame` (0x81), `SetTarget` (0x8B), and the bare `Play`/`Stop`/
+`NextFrame`/`PreviousFrame` action codes were all silently dropped instead
+of emitted. Finally, a *third* previously-unscanned bytecode container was
+added: `DefineButton`/`DefineButton2`'s own click-handler bytecode
+(`ButtonCondAction` records for v2, the single implicit block for v1) —
+this lives inside the character *definition* itself, not in any
+`DoAction` tag or `ClipActionRecord`, and turned out to matter a lot (see
+below).
+
+### Finding 5 — the real "hobo" is a different character on a different frame
+
+Re-running the extended disassembler against `hobo.swf` finds every
+`Key.isDown()` call from Finding 3, and this time shows what surrounds
+them. Two entirely different characters are involved, both named/known as
+"hobo" in some sense, on two different root frames:
+
+- **Root frame 1** (the screen A1/A2 tested): an *unnamed* clip,
+  characterId=80, whose `onClipEvent(enterFrame)` handlers check
+  `Key.isDown(37/38/39/40/65/83)` and, on each, call
+  `_root.hobo.gotoAndStop(N)` (movement/facing frames) or set
+  `_root.punchallowed`/`kickallowed` flags (attack gating). This is a
+  decorative title-screen preview icon, not the player character.
+- **Root frame 10**: a real, *named* `"hobo"` clip, characterId=1913 —
+  confirmed via a small standalone frame-locator diagnostic that counts
+  `ShowFrame` tags against each `PlaceObject2`'s absolute tag offset — is
+  placed here alongside `enemy1`, `bg1`/`bg2`/`fg1`/`fg2` (parallax
+  layers), `hobohud`, a `"levels"` menu (29 `ClipActionRecord`s), `"go"`,
+  and other unmistakably-real-gameplay objects. This "hobo" instance's own
+  `onClipEvent(enterFrame)` handlers set `_root.downallowed`/
+  `upallowed` and call `this.swapDepths(this._y)` — real player-character
+  logic.
+
+Since `_root.hobo` does not exist as a display-list member until root
+reaches frame 10, every `_root.hobo.gotoAndStop(N)` call fired by the
+frame-1 preview icon during A1/A2's 90-tick test is a silent no-op against
+an undefined target (matches the pre-existing `[WARN] [AVM1] CallMethod:
+target is not an object` log line, previously unexplained) — **this is
+the full, direct explanation for Finding 2's zero pixel effect.** Holding
+every movement key really did dispatch real branching AVM1 code (Finding
+3's own trace numbers were correct), but that code's entire effect was
+aimed at a MovieClip that will not exist until 9 more root frames are
+reached, which nothing in the 90-tick/click-sweep window ever reached.
+This also resolves the open item this document's Recommendation section
+flagged as the next step — done, via static disassembly exactly as
+proposed there.
+
+### Finding 6 — a plausible frame1→4→10 progression path, and a new open question
+
+Frame membership was checked for every relevant placement (same
+frame-locator diagnostic): root frame 1 places the title/instructions
+screen, frame 4 places a 40-frame, unnamed sprite (characterId=1275) whose
+own local timeline ends in a `DoAction` calling `_root.gotoAndStop(10)`
+(along with resetting `_root.hobo._x/._y` to a spawn point and various
+combo/state flags) — consistent with a "get ready"/transition clip. What
+would carry root from frame 1 to frame 4 was the open question the new
+`DefineButton2` scan answered: nearly every button in `hobo.swf` (13
+`ButtonCondAction` records sampled) is gated by `CondKeyPress=4` ("End"
+per the SWF spec's key table) with **zero** mouse-transition bits — this
+specific pattern was already known real and dispatching correctly (see
+`docs/hobo-title-progression.md`'s Roadmap Phase 7 finding), but that
+investigation characterized its only observed effect as "a pause/quit-to-
+portal menu." The new disassembly shows that conclusion was incomplete:
+different End-key buttons, placed on different root frames, call
+`_root.gotoAndStop(2)`, `(3)`, `(6)`, `(9)`, **`(10)`** (real gameplay!),
+`(11)`, `(12)`, `(13)` — i.e. **End appears to be the game's actual
+"confirm/continue" screen-navigation key**, not a Hobo1-specific quirk.
+Concretely, the button whose action is `_root.gotoAndStop(2)`
+(characterId=32, byte-level-verified: raw tag body bytes `00 00 08 00` at
+its `ActionOffset` decode to `condActionSize=0`, `rawConditions=0x0008` →
+`CondKeyPress=4`, zero mouse bits, exactly as disassembled) is placed one
+level nested inside the "preloader" sprite (characterId=33, root frame 1,
+depth 27) — i.e. pressing End while the preloader is up is a plausible
+first domino toward frame 4, then frame 10.
+
+Re-running the existing `hobo_end_key_probe.cpp` (tap-only End, 90 ticks)
+against real `hobo.swf` confirms the call **fires**: its trace shows
+`CallMethod [object Object].gotoAndStop(2)` immediately after the tap,
+alongside a mute (`setVolume(0)` in place of `setVolume(100)`) and a
+`GetURL` to armorgames.com from a sibling End-triggered button on the same
+frame — matching Phase 7's "mute audio... open the armorgames.com portal
+link" observation exactly, and very plausibly explaining its "freeze an
+overlay clip at frame 2" observation too (i.e. Phase 7 likely already saw
+this exact effect and described it in different terms before this static
+evidence existed to name it). **But** `root->timeline().currentFrame()`
+never leaves 1 across all 90 ticks in that same run — the call happens,
+per the trace, yet the root timeline does not visibly move.
+
+Two new regression tests were written to isolate this
+(`tests/test_event_dispatch.cpp`:
+`EventDispatch_CondKeyPress_RootGotoAndStop_MovesRootPlayhead` and
+`..._FromNestedButton_MovesRootPlayhead`), reproducing the identical
+shape — a `CondKeyPress`-only button, calling `_root.gotoAndStop(2)` via
+`CallMethod`, both placed directly on root and nested one level inside
+another clip (matching the real preloader→button nesting exactly). **Both
+pass** — the engine moves the root playhead correctly in isolation. This
+rules out the two most likely culprits (broken `_root` resolution from a
+nested execution context; broken keyboard-triggered dispatch through a
+nested button) and narrows the real-corpus-only discrepancy to something
+that only manifests with `hobo.swf`'s full complexity — most likely
+another End-key or `EnterFrame` handler elsewhere in the same tick
+reverting the goto, or an interaction with the preloader's own bare
+`GotoFrame`/`Play`/`Stop` action-code bytecode (now visible via this same
+disassembly pass, previously silently dropped by the tool). Filed as task
+#68 — **A3 stays blocked on it**: wiring/shipping the 3DS entry point onto
+a screen that still doesn't actually navigate would not be progress.
+
+### Regression / build (this addendum)
+
+`tools/real_game_harness/avm1_loader_disasm.cpp`: added `PlaceObject2`/
+`ClipActionRecord` scanning, `DefineButton`/`DefineButton2`/
+`ButtonCondAction` scanning, and `If`/`Jump`/`GotoFrame`/`SetTarget`/
+`Play`/`Stop`/`NextFrame`/`PreviousFrame` opcode emission (still not
+CMake-registered — built/run standalone via `g++`, matching how this tool
+has always been used). Two new tests in `tests/test_event_dispatch.cpp`.
+Full clean rebuild: zero warnings. `ctest`/`flash3ds_tests`: 371/371
+passing (369 baseline as of the prior commit + the 2 new tests here — the
+369 baseline is itself 1 higher than this document's earlier "368/368"
+line, from a test added by the sibling Track B commit made the same
+session after that line was written).

@@ -830,6 +830,110 @@ TEST_CASE(EventDispatch_CondKeyPress_DispatchesEvenWhenButtonNotHovered) {
     CHECK_EQ(root->scriptObject()->getOwnProperty("fired").toNumber(), 1.0);
 }
 
+TEST_CASE(EventDispatch_CondKeyPress_RootGotoAndStop_MovesRootPlayhead) {
+    // 2026-08-27 (Track A follow-up, docs/hobo-playability-verification.md
+    // frame-progression addendum): a real Hobo-corpus button
+    // (characterId=32 in the actual hobo.swf) has condActionsV2 =
+    // { conditions=0, keyCode=4 (End), actionBytes = "_root.gotoAndStop(2)"
+    // } -- confirmed byte-for-byte against the raw tag body, and confirmed
+    // via hobo_end_key_probe.cpp's live call trace that
+    // "CallMethod [object Object].gotoAndStop(2)" DOES fire when End is
+    // tapped. But the SAME probe's root._currentframe column never leaves
+    // 1 across 90 ticks (tap-only, so the effect should be a one-shot
+    // flip that then PERSISTS, per the sibling mute/GetURL effects
+    // observed in the same trace -- it does not). This is the minimal
+    // repro isolating whether that's (a) `_root` not resolving to the
+    // true root instance when the call originates from a button's own
+    // dispatched condActionsV2 execution context, (b) the goto being
+    // applied then immediately reverted by something later in the same
+    // tick, or (c) something benign only reproducing in the full
+    // 3745-tag real corpus that this minimal fixture won't show at all --
+    // any of those is real, useful information for whoever picks up the
+    // fix. See EventDispatch_CondKeyPress_MatchingKey_Dispatches just
+    // above for the already-confirmed-working "SetMember on _root from a
+    // condActionsV2 body" case this is deliberately parallel to -- the
+    // only difference here is calling a native OOP method (gotoAndStop)
+    // on the resolved _root object instead of setting a member on it.
+    Asm a;
+    a.pushInt(2);  // arg: frame 2
+    a.pushInt(1);  // numArgs
+    a.pushString("_root");
+    a.op(0x1C);  // ActionGetVariable
+    a.pushString("gotoAndStop");
+    a.op(0x52);  // ActionCallMethod
+    auto bytes = buildMovieWithCondActionButton(0, static_cast<uint8_t>(4), a.build(), {},
+                                                  /*frameCount=*/3);
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+    CHECK_EQ(root->timeline().currentFrame(), static_cast<uint32_t>(1));
+
+    env.inputState().setKeyDown(flash3ds::runtime::InputState::kEnd, true);
+    env.inputState().commitFrame();  // UP -> DOWN: key-press edge
+    root->advanceFrame();
+    CHECK_EQ(root->timeline().currentFrame(), static_cast<uint32_t>(2));
+}
+
+TEST_CASE(EventDispatch_CondKeyPress_RootGotoAndStop_FromNestedButton_MovesRootPlayhead) {
+    // 2026-08-27 (Track A follow-up): the PREVIOUS test proved
+    // `_root.gotoAndStop(2)` works when the triggering button sits
+    // directly on ROOT's own display list. But the real hobo.swf button
+    // (characterId=32) is NOT placed at root level -- it's nested ONE
+    // level inside another sprite ("preloader", characterId=33),
+    // confirmed via a raw PlaceObject2 scan (treeDepth=1,
+    // enclosingSpriteId=33). This is the actual configuration
+    // (buildMovieWithNestedCondActionButton's own doc comment: "for
+    // nested-button dispatch tests exercising Phase F's execution-target
+    // contract"), rebuilt here with a 3-frame ROOT (that existing helper
+    // hardcodes root frameCount=1, which would make gotoAndStop(2) clamp
+    // right back to 1 and falsely "pass") so this actually distinguishes
+    // "root moved to frame 2" from "root was clamped back to frame 1".
+    uint16_t buttonId = 60, shapeId = 61, mcId = 62;
+    Asm a;
+    a.pushInt(2);  // arg: frame 2
+    a.pushInt(1);  // numArgs
+    a.pushString("_root");
+    a.op(0x1C);  // ActionGetVariable
+    a.pushString("gotoAndStop");
+    a.op(0x52);  // ActionCallMethod
+    auto nestedTags =
+        buildButtonWithCondActionTags(buttonId, shapeId, 40 * 20, 40 * 20, 0,
+                                       static_cast<uint8_t>(4), a.build());
+    nestedTags.push_back({26 /* PlaceObject2 */,
+                           swf_fixtures::buildPlaceObject2Bytes(
+                               1, false, buttonId, swf_fixtures::buildMatrixBytes(0, 0),
+                               std::string("btn"))});
+    nestedTags.push_back({1 /* ShowFrame */, {}});
+    auto spriteBody = swf_fixtures::buildDefineSpriteBytes(mcId, 1, nestedTags);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSprite), spriteBody},
+        {26, swf_fixtures::buildPlaceObject2Bytes(1, false, mcId, swf_fixtures::buildMatrixBytes(0, 0),
+                                                    std::string("mc"))},
+        {1, {}},
+        {1, {}},
+        {1, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(200 * 20, 200 * 20, 12.0, /*frameCount=*/3, tags);
+    auto bytes = swf_fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+    CHECK_EQ(root->timeline().currentFrame(), static_cast<uint32_t>(1));
+
+    env.inputState().setKeyDown(flash3ds::runtime::InputState::kEnd, true);
+    env.inputState().commitFrame();  // UP -> DOWN: key-press edge
+    root->advanceFrame();
+    CHECK_EQ(root->timeline().currentFrame(), static_cast<uint32_t>(2));
+}
+
 // ===========================================================================
 // AS2 property-handler dispatch (Extreme Pamplona pattern) -- buttons
 // ===========================================================================
