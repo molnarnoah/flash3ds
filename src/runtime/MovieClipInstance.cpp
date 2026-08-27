@@ -443,6 +443,24 @@ void ScriptEnvironment::notifyRemoved(MovieClipInstance* clip) {
     if (pressedButton_ && pressedButton_->parent() == clip) pressedButton_ = nullptr;
 }
 
+void ScriptEnvironment::notifyRemovedRecursive(MovieClipInstance* clip) {
+    // See this method's header doc comment (2026-08-27 crash fix) for why
+    // this recursion exists. Depth-first, children/buttons before `clip`
+    // itself — order doesn't matter for correctness (these are independent
+    // pointer-equality checks, not destructive operations), kept this way
+    // simply to clear from the leaves up.
+    if (!clip) return;
+    for (const auto& [depth, button] : clip->buttonInstances()) {
+        (void)depth;
+        if (button) notifyButtonRemoved(button.get());
+    }
+    for (const auto& [depth, child] : clip->children()) {
+        (void)depth;
+        if (child) notifyRemovedRecursive(child.get());
+    }
+    notifyRemoved(clip);
+}
+
 void ScriptEnvironment::fireButtonCondition(ButtonInstance& button, swf::ButtonCondition cond) {
     MovieClipInstance* parent = button.parent();
     if (!parent) return;
@@ -1386,7 +1404,7 @@ void MovieClipInstance::syncChildren() {
             // onClipEvent(unload) and clears a stale drag target for the
             // same reason removeFromParent() does.
             it->second->runClipEvent(swf::ClipEventFlag::kUnload);
-            env_->notifyRemoved(it->second.get());
+            env_->notifyRemovedRecursive(it->second.get());
             for (auto nameIt = childNameToDepth_.begin(); nameIt != childNameToDepth_.end();) {
                 if (nameIt->second == it->first) nameIt = childNameToDepth_.erase(nameIt);
                 else ++nameIt;
@@ -1764,7 +1782,7 @@ void MovieClipInstance::removeFromParent() {
         return;
     }
     runClipEvent(swf::ClipEventFlag::kUnload);
-    env_->notifyRemoved(this);
+    env_->notifyRemovedRecursive(this);
     parent_->timeline_->mutableDisplayListForScripting().remove(depthInParent_);
     for (auto nameIt = parent_->childNameToDepth_.begin();
          nameIt != parent_->childNameToDepth_.end();) {
@@ -2001,7 +2019,7 @@ bool MovieClipInstance::loadMovie(const std::string& url) {
         (void)depthValue;
         if (!child) continue;
         child->runClipEvent(swf::ClipEventFlag::kUnload);
-        env_->notifyRemoved(child.get());
+        env_->notifyRemovedRecursive(child.get());
     }
     for (auto& [depthValue, button] : buttonInstances_) {
         (void)depthValue;

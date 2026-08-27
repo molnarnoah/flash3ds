@@ -247,6 +247,35 @@ public:
     // docs/events.md's "Event target safety" section.
     void notifyRemoved(MovieClipInstance* clip);
 
+    // Real-corpus crash fix (2026-08-27, Track B B1 re-verification of
+    // Extreme Pamplona — see docs/known-limitations.md L6 and
+    // tools/real_game_harness/pamplona_click_trace.cpp): `notifyRemoved()`
+    // above only clears hoverClip_/pressedClip_/hoverButton_/pressedButton_
+    // when they point AT `clip` itself (or, for buttons, at a button whose
+    // immediate parent is `clip`). All three real removal call sites
+    // (syncChildren()'s display-list-driven prune, removeFromParent()'s
+    // explicit RemoveSprite, and loadMovie()'s target-clip teardown) tear
+    // down `clip`'s entire subtree at once, destroying every descendant
+    // MovieClipInstance/ButtonInstance along with it — but they only ever
+    // called notifyRemoved() for the single node being removed, not
+    // recursively for its descendants. If hoverClip_/pressedClip_/
+    // hoverButton_/pressedButton_ pointed at a GRANDCHILD (or deeper) of
+    // the node being removed, rather than the node itself, it survived the
+    // single-node check and was left dangling once the subtree was
+    // actually destroyed — a real, reproducibly crashing use-after-free
+    // (confirmed via gdb against real corpus content: a mouse hover over a
+    // nested clip, followed by removal of one of its ancestors, then any
+    // later pointer-event dispatch touching the stale hoverClip_,
+    // segfaults inside Object::getMember()). This walks `clip` and its
+    // FULL descendant tree (children AND each level's own buttonInstances)
+    // calling notifyRemoved()/notifyButtonRemoved() on every node, so no
+    // hover/press pointer into any depth of a torn-down subtree can
+    // survive it. Deliberately does NOT also make onClipEvent(kUnload)
+    // fire recursively for descendants — that's a separate (real, Flash
+    // Player does fire it recursively) but distinct semantic question this
+    // fix doesn't address, to stay scoped to the crash.
+    void notifyRemovedRecursive(MovieClipInstance* clip);
+
     // Called by syncChildren()'s buttonInstances_ prune loop (a button
     // itself is only ever removed via that DISPLAY-LIST-driven path —
     // never synchronously mid-dispatch, see docs/events.md — so this is

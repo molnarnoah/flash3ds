@@ -211,6 +211,76 @@ std::vector<uint8_t> buildMovieWithNestedCondActionButton(uint16_t conditions,
     return swf_fixtures::wrapFws(6, body);
 }
 
+// root -> "mc" (MovieClip) -> "inner" (a plain, GRANDCHILD-of-root
+// MovieClip carrying its own hit-testable shape) -- plus a root-level
+// "removeBtn" whose condActionsV2 is CondKeyPress-triggered (not mouse --
+// so it can fire without ever moving the mouse off "inner", which would
+// otherwise clear hoverClip_ the ordinary way before the bug this fixture
+// targets gets a chance to matter) and removes "mc" via RemoveSprite("mc").
+//
+// Regression fixture for the 2026-08-27 crash fix (see
+// ScriptEnvironment::notifyRemovedRecursive()'s header doc comment in
+// MovieClipInstance.h): hovering "inner" sets hoverClip_ to a GRANDCHILD of
+// root, two levels below "mc". removeFromParent()'s single-node
+// notifyRemoved(this=mc) call could not see past "mc" itself to notice
+// hoverClip_ pointed at "mc"'s own child "inner", so hoverClip_ survived
+// "mc" (and, cascading, "inner") being destroyed -- a dangling pointer that
+// the next hover-state-change tick would dereference and crash on
+// (confirmed via gdb against real corpus content, see
+// docs/known-limitations.md L6 and
+// tools/real_game_harness/pamplona_click_trace.cpp).
+std::vector<uint8_t> buildMovieWithGrandchildHoverAndKeyRemovableAncestor() {
+    uint16_t shapeId = 80, innerId = 81, mcId = 82, removeBtnId = 83, removeBtnShapeId = 84;
+
+    // "inner": places its own 40x40px shape at its own local origin -- this
+    // is what hitTestPointInOwnSpace() actually tests a hover point against.
+    std::vector<swf_fixtures::FixtureTag> innerTags = {
+        {static_cast<uint16_t>(TagCode::DefineShape2),
+         swf_fixtures::buildDefineShapeBytes(2, shapeId, 40 * 20, 40 * 20, 0x00, 0xFF, 0x00, 0xFF)},
+        {26,
+         swf_fixtures::buildPlaceObject2Bytes(1, false, shapeId, swf_fixtures::buildMatrixBytes(0, 0))},
+        {1, {}},
+    };
+    auto innerSpriteBody = swf_fixtures::buildDefineSpriteBytes(innerId, 1, innerTags);
+
+    // "mc": places "inner" (named) at a (30,30)px offset within itself.
+    std::vector<swf_fixtures::FixtureTag> mcTags = {
+        {static_cast<uint16_t>(TagCode::DefineSprite), innerSpriteBody},
+        {26, swf_fixtures::buildPlaceObject2Bytes(1, false, innerId,
+                                                   swf_fixtures::buildMatrixBytes(30 * 20, 30 * 20),
+                                                   std::string("inner"))},
+        {1, {}},
+    };
+    auto mcSpriteBody = swf_fixtures::buildDefineSpriteBytes(mcId, 1, mcTags);
+
+    // "removeBtn": a root-level button whose only condActionsV2 record is
+    // CondKeyPress=4 ("End") -- fires purely on keypress, independent of
+    // mouse position (see condKeyPressToInputKeyCode()'s doc comment / the
+    // existing EventDispatch_CondKeyPress_* tests below for this same
+    // convention) -- action is RemoveSprite("mc"), resolved relative to
+    // root (the button's own parent, per fireButtonCondition()'s
+    // `run(*parent, ...)`), i.e. removes root's child "mc".
+    Asm removeAction;
+    removeAction.pushString("mc");
+    removeAction.op(0x25);  // ActionRemoveSprite
+    auto removeBtnTags = buildButtonWithCondActionTags(removeBtnId, removeBtnShapeId, 40 * 20, 40 * 20,
+                                                         0, static_cast<uint8_t>(4), removeAction.build());
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSprite), mcSpriteBody},
+        {26, swf_fixtures::buildPlaceObject2Bytes(1, false, mcId,
+                                                   swf_fixtures::buildMatrixBytes(30 * 20, 30 * 20),
+                                                   std::string("mc"))},
+    };
+    for (auto& t : removeBtnTags) tags.push_back(t);
+    tags.push_back({26, swf_fixtures::buildPlaceObject2Bytes(
+                             2, false, removeBtnId, swf_fixtures::buildMatrixBytes(0, 0),
+                             std::string("removeBtn"))});
+    tags.push_back({1, {}});
+    auto body = swf_fixtures::buildMovieBody(300 * 20, 300 * 20, 12.0, 1, tags);
+    return swf_fixtures::wrapFws(6, body);
+}
+
 // `<targetVar>.<memberName> = function(){ <counterVar> = <counterVar> + 1; };`
 // -- root-level DoAction bytecode assigning a counting handler onto a named
 // object (button or clip) already resolvable from root scope.
@@ -1083,4 +1153,56 @@ TEST_CASE(EventDispatch_ButtonRemovedByDisplayList_HoverPressStateClearedNoStale
     // "fired" may or may not be set depending on exact same-tick ordering,
     // but the crucial assertion is simply that we got here without a
     // crash/UB -- that IS the regression this test guards.
+}
+
+TEST_CASE(EventDispatch_RemovingAncestor_ClearsGrandchildHoverClip_NoDanglingPointerCrash) {
+    // 2026-08-27 crash fix (see notifyRemovedRecursive()'s header doc
+    // comment and buildMovieWithGrandchildHoverAndKeyRemovableAncestor()'s
+    // own comment above): hoverClip_ points at "inner", a GRANDCHILD of
+    // root nested two levels below "mc"; a keypress removes "mc" (an
+    // ancestor of "inner", not "inner" itself) via removeFromParent()'s
+    // single-node path. Before this fix, removeFromParent()'s
+    // notifyRemoved(this=mc) call couldn't see past "mc" to clear a stale
+    // pointer into its own descendant -- this reproduced a real,
+    // gdb-confirmed segfault against real Extreme Pamplona corpus content
+    // (docs/known-limitations.md L6) inside firePropertyHandler() ->
+    // Object::getMember() on the next tick's hover-state-change dispatch.
+    auto bytes = buildMovieWithGrandchildHoverAndKeyRemovableAncestor();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+    CHECK(root->children().find(1) != root->children().end());  // "mc" exists
+
+    // Hover "inner" (world offset (30,30)+(30,30) = (60,60), within its
+    // 40x40 box) -- sets hoverClip_ to the grandchild "inner" instance.
+    env.inputState().setMousePosition(70.0, 70.0);
+    env.inputState().setMouseDown(false);
+    env.inputState().commitFrame();
+    root->advanceFrame();
+
+    // Press "End" -- CondKeyPress-triggered, independent of mouse position
+    // -- fires removeBtn's RemoveSprite("mc"), destroying "mc" AND, with
+    // it, "inner" (cascading unique_ptr/shared_ptr subtree destruction).
+    // The mouse is deliberately left exactly where it was (still "over"
+    // inner's now-vacated world position) so no ordinary hover-state
+    // change has a chance to clear hoverClip_ before this happens.
+    env.inputState().setKeyDown(flash3ds::runtime::InputState::kEnd, true);
+    env.inputState().commitFrame();
+    root->advanceFrame();
+
+    CHECK(root->children().find(1) == root->children().end());  // "mc" is genuinely gone
+
+    // One more tick with the key released and the mouse moved elsewhere --
+    // whichever tick's dispatchPointerEvents() first sees hitClip differ
+    // from a still-dangling hoverClip_ is where the old bug crashed. Simply
+    // getting through this without a segfault IS the regression this test
+    // guards (matching EventDispatch_ActionRemovesOwnParent_
+    // NoDanglingPointerCrash's own convention above).
+    env.inputState().setKeyDown(flash3ds::runtime::InputState::kEnd, false);
+    env.inputState().setMousePosition(200.0, 200.0);
+    env.inputState().commitFrame();
+    root->advanceFrame();
 }

@@ -596,6 +596,106 @@ re-pasting it.
   standalone assets, if a future session wants to test one that way
   manually/via the CLI rather than through Extreme Pamplona's own script.
 
+### L6 addendum — 2026-08-27 re-verification with a REAL simulated click (Track B B1)
+
+New evidence (found by direct inspection of the actual corpus files)
+prompted a re-check of the "proven negative" above before writing any new
+engine code, per two specific concerns about how that finding was
+produced: (1) the static disassembly scanned top-level `DoAction`/
+`DoInitAction`/button buffers, not the method bodies of 117 real
+`#initclip`-registered AS2 classes (`__Packages.*`, from a licensed AS2
+platform-game framework, `uk.co.flexiblefactory.platformgameframework`,
+including a `LevelShell` class and `loadLevel`/`loadPlayer`/`loadClip`/
+`MovieClipLoader`/`onLoadInit`/`onLoadProgress`/`getLevelsXML` method
+names) that this file's content actually carries; (2) the live runtime
+trace only ran idle ticks with no simulated click-through, so it could
+never reach a code path gated behind clicking "Play" on the embedded
+menu-state XML's `FrontPage`.
+
+**Method:** a new tool, `tools/real_game_harness/pamplona_click_trace.cpp`,
+combines `click_probe.cpp`'s real hover→press→release mouse simulation
+with `avm1_runtime_trace.cpp`'s full `ScriptEnvironment::callTraceSink`
+capture, run at every point of a grid sweep across the entire 800×400
+stage (253 points, ~35px spacing), each preceded by idle setup ticks and
+followed by idle settle ticks.
+
+**A real, reproducible crash was found and fixed first** (this blocked
+the investigation outright at some coordinates): several grid points
+segfaulted deterministically (confirmed via `gdb`, backtrace below)
+inside `ScriptEnvironment::firePropertyHandler()` →
+`Object::getMember()`, called on a dangling `hoverClip_` pointer.
+Root cause: `ScriptEnvironment::notifyRemoved()` (`MovieClipInstance.cpp`)
+only cleared `hoverClip_`/`pressedClip_`/`hoverButton_`/`pressedButton_`
+when they pointed AT the exact clip being removed (or, for buttons, at a
+button whose immediate parent was that clip) — but all three real removal
+call sites (`syncChildren()`'s display-list-driven prune,
+`removeFromParent()`'s explicit `RemoveSprite`, and `loadMovie()`'s
+target-clip teardown) destroy a clip's ENTIRE subtree at once. A
+hover/press pointer into a GRANDCHILD (or deeper descendant) of the node
+actually being removed survived the single-node check and dangled once
+the subtree was destroyed. Fixed with a new
+`ScriptEnvironment::notifyRemovedRecursive()` that walks the full subtree
+(see its doc comment in `MovieClipInstance.h`), used at all three call
+sites. Confirmed via AddressSanitizer: a synthetic regression test
+(`EventDispatch_RemovingAncestor_ClearsGrandchildHoverClip_
+NoDanglingPointerCrash`, `tests/test_event_dispatch.cpp`) reproduces a
+clean `heap-use-after-free` under ASan against the unfixed code and is
+clean against the fixed code; the original real-corpus crash (gdb
+backtrace: `Object::getMember` ← `firePropertyHandler` ←
+`dispatchPointerEvents` ← `MovieClipInstance::advanceFrame`) no longer
+reproduces anywhere in a 253-point re-sweep of the same file. 369/369
+tests passing, zero new compiler warnings.
+
+**B1's actual finding, now with a working click simulation:** the
+re-verification **confirms, rather than overturns, the proven-negative
+finding above** — every one of the 253 grid points (hover→press→release,
+full call trace captured) produces the exact same trace, with **zero**
+`CallMethod`/`NewObject`/`NewMethod`/`GetURL`/`GetURL2` anywhere, and no
+click-position-dependent difference of any kind. This directly answers
+B1's question: **no, clicking does not make `LevelShell`/`MovieClipLoader`
+calls fire** — not because clicking doesn't reach the interpreter (the
+crash fix and the ASan-verified test prove clicks and hover *do* reach
+real dispatch code), but because nothing on this file's frame-1 display
+list has a mouse handler wired to anything beyond what Step 1 already
+found (an anonymous-IIFE decode step).
+
+**A plausible (evidence-backed, not fully confirmed) explanation for
+*why*:** the only AS2 activity ever traced, click or no click, is a
+repeating `CallFunction` with an EMPTY resolved name (runtime-resolved,
+per `avm1_runtime_trace.cpp`'s own rationale — this isn't a static-guess
+artifact), firing roughly once per tick regardless of input — consistent
+with Step 1's "anonymous IIFE, immediately-invoked" finding, just
+re-confirmed dynamically. `grep -rn "fromCharCode\|charCodeAt\|charAt\|
+substr\|split\|join\|indexOf" src/avm1/` returns **zero hits** anywhere in
+this runtime: **no AS2 String-value prototype methods are implemented at
+all** (matches L2's "only `Math`, no `String`/`Number`/`Boolean`/`Date`"
+finding, extended here to string *methods*, not just the constructors).
+A dynamically-computed function/member name built via
+`String.fromCharCode(...)`/`.charAt()`/`.substr()`-style decode logic —
+exactly the shape real-world AS2 obfuscators use, and exactly what would
+produce a legitimately-empty resolved name if those calls silently
+resolve to `undefined` in this interpreter — is a plausible root cause,
+not a confirmed one. Confirming it would need either JPEXS/FFDec
+decompilation (unavailable this session — the `ffdecmcp` MCP server
+disconnected partway through this investigation) or manual disassembly of
+one of the 126 `DefineFunction` bodies to read its actual bytecode.
+
+**Updated recommendation:** do not implement a native `MovieClipLoader`/
+`loadClip` (B2) yet — B1's re-verification shows no code path reaches that
+API at all, clicking or not, so implementing it now would be speculative.
+The better-evidenced next step, if this file's own interactivity is worth
+pursuing further, is implementing AS2 `String` prototype methods
+(`fromCharCode`/`charAt`/`charCodeAt`/`substr`/`length`, the ones an
+obfuscated name-builder would plausibly need) and re-running this same
+click-trace sweep to see whether real, non-empty `CallMethod`/`NewObject`
+calls appear once name resolution can actually succeed — a concrete,
+falsifiable test of the hypothesis above, rather than another guess.
+B3 (path resolution through `LocalFileLoader`) and B4 (the bespoke
+external-XML-driven driver, a deliberate last resort) remain not started;
+B4 in particular should stay a last resort until the String-methods
+hypothesis above has actually been tried and found insufficient, not
+skipped to preemptively.
+
 ## L7 — `DefineShape4`/`DefineMorphShape`/`2`/`PlaceObject3`/`CsmTextSettings` not resolved
 
 - **Subsystem:** Rendering / SWF tag parsing.

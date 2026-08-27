@@ -180,6 +180,33 @@ if(FLASH3DS_BUILD_TOOLS)
     # docs/implementation-roadmap-2026-08-21-part2.md's Phase 9 section.
     add_executable(morph_ratio_scan tools/real_game_harness/morph_ratio_scan.cpp)
     target_link_libraries(morph_ratio_scan PRIVATE flash3ds_core)
+
+    # Task prompt Track A, A1 (2026-08-27): renders real pixel frames (via
+    # SceneRenderer/SoftwareRenderer) for a movie across many ticks while
+    # holding the exact keys hobo.swf polls every onEnterFrame tick
+    # (Left/Up/Right/Down + 'A'/'S'), plus a no-input control run, so the
+    # two PPM sequences can be diffed to determine whether the game is
+    # already playable at the engine level. See
+    # tools/real_game_harness/hobo_playability_probe.cpp and
+    # docs/hobo-title-progression.md.
+    add_executable(hobo_playability_probe tools/real_game_harness/hobo_playability_probe.cpp)
+    target_link_libraries(hobo_playability_probe PRIVATE flash3ds_core)
+
+    # Track A, A1 follow-up (2026-08-27): captures the actual AVM1 call
+    # trace for a held-movement-keys run vs an inert-key control, to
+    # characterize WHY hobo_playability_probe found zero pixel effect from
+    # holding those keys. See
+    # tools/real_game_harness/hobo_movement_key_trace.cpp.
+    add_executable(hobo_movement_key_trace tools/real_game_harness/hobo_movement_key_trace.cpp)
+    target_link_libraries(hobo_movement_key_trace PRIVATE flash3ds_core)
+
+    # Track B, B1 (2026-08-27): re-verifies Extreme Pamplona's L6 "proven
+    # negative" with a REAL simulated mouse click (idle-only traces cannot
+    # reach a code path gated behind a Play-button click). See
+    # tools/real_game_harness/pamplona_click_trace.cpp and
+    # docs/known-limitations.md L6.
+    add_executable(pamplona_click_trace tools/real_game_harness/pamplona_click_trace.cpp)
+    target_link_libraries(pamplona_click_trace PRIVATE flash3ds_core)
 endif()
 
 # ---------------------------------------------------------------------------

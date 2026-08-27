@@ -438,6 +438,21 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 Value valueVal = ctx.stack.pop();
                 Value indexVal = ctx.stack.pop();
                 Value targetVal = ctx.stack.pop();
+                // Diagnostic-only trace (2026-08-27, Track A A1 follow-up —
+                // see tools/real_game_harness/hobo_movement_key_trace.cpp's
+                // header comment): the legacy indexed SetProperty opcode
+                // (e.g. compiled from `_x = ...`) previously had no
+                // callTraceSink hook at all, unlike CallMethod/NewObject/
+                // CallFunction/NewMethod/GetURL — meaning a real property
+                // mutation could be happening every tick and be completely
+                // invisible to every existing trace-based diagnostic tool.
+                // No behavior change: only fires when a sink is installed,
+                // exactly like every other trace call site in this file.
+                if (ctx.callTraceSink) {
+                    ctx.callTraceSink("SetProperty target=\"" + targetVal.toString() +
+                                       "\" index=" + std::to_string(static_cast<int>(indexVal.toNumber())) +
+                                       " value=" + valueVal.toString());
+                }
                 if (ctx.host) {
                     ctx.host->setProperty(targetVal.toString(), static_cast<int>(indexVal.toNumber()),
                                             valueVal);
@@ -911,6 +926,23 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 Value valueVal = ctx.stack.pop();
                 Value nameVal = ctx.stack.pop();
                 Value objVal = ctx.stack.pop();
+                // Diagnostic-only trace (2026-08-27, Track A A1 follow-up —
+                // same rationale as SetProperty above). Only traces
+                // property names that plausibly affect rendering/position
+                // (_x/_y/_alpha/_visible/_rotation/_xscale/_yscale/etc, the
+                // underscore-prefixed AS2 display properties) rather than
+                // every SetMember in the movie, since a real corpus movie
+                // sets ordinary (non-display) object properties constantly
+                // and tracing all of them would swamp the signal this is
+                // actually looking for. No behavior change: only fires when
+                // a sink is installed.
+                if (ctx.callTraceSink && objVal.isObject() && objVal.asObject()) {
+                    std::string name = nameVal.toString();
+                    if (!name.empty() && name[0] == '_') {
+                        ctx.callTraceSink("SetMember " + objVal.toString() + "." + name + " = " +
+                                           valueVal.toString());
+                    }
+                }
                 if (objVal.isObject() && objVal.asObject()) {
                     objVal.asObject()->setMember(nameVal.toString(), valueVal);
                 }
