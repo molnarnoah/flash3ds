@@ -327,6 +327,99 @@ input (see `romfs/.gitignore`-equivalent note: `romfs/game.swf` in git is
 ONLY the small clean-room demo; swapping in real content is a local,
 uncommitted step, exactly as demonstrated in section 8).
 
+## 9b. Track A A3 (2026-08-27, task #58) — Hobo1 confirmed end-to-end through this exact layer, with a worked input-mapping example
+
+A real, unmodified copy of `hobo.swf` ("Hobo 1", ~4.97 MB, SWF6/CWS —
+absent from section 9's table above, since Hobo 1 wasn't in this
+project's uploads at the time that section was written) is now available
+and was used to close out two remaining A3 questions: does this exact
+`GamePackage`-mediated path (not `SwfLoader::loadSwf()` called directly,
+which every real-corpus tool before this one used) actually load and run
+it, and can `config.ini`'s existing, unmodified `[input]` grammar express
+what `hobo.swf`'s own AVM1 bytecode needs.
+
+**Input mapping — no code change needed, confirmed by evidence:**
+`docs/hobo-playability-verification.md` (Finding 5/6) and
+`docs/known-limitations.md` (L11) established, via static disassembly and
+dynamic tracing against the real file, exactly what `hobo.swf` polls:
+`Key.isDown(37/38/39/40)` (`InputState::kLeft/kUp/kRight/kDown` — see
+`runtime/InputState.h`) for movement, `Key.isDown(65)`/`Key.isDown(83)`
+(literal ASCII `'A'`/`'S'`, not the 3DS A button) for punch/kick-allow
+gating, and `CondKeyPress=4` (`InputState::kEnd`) on nearly every frame-1
+button for confirm/continue/pause navigation. The D-Pad/Circle Pad already
+feed `kLeft/kUp/kRight/kDown` unconditionally (section 5 above — not
+configurable, needs no `config.ini` entry). `'A'`/`'S'`/`End` are all
+already-supported tokens (single-character pass-through and the existing
+`"END"` named keyword — see `vc::parseKeyToken()`, `src/vc/GameConfig.cpp`)
+with zero parser changes required. A worked example config.ini for a
+Hobo1 package:
+
+```ini
+[game]
+swf=hobo.swf
+
+[input]
+X=A
+Y=S
+SELECT=END
+```
+
+Parsing this exact text is now a permanent regression test —
+`tests/test_vc_config.cpp`'s `GameConfig_Hobo1ExampleMapping_
+ParsesToExpectedKeyCodes` — asserting `xKeyCode`/`yKeyCode`/
+`selectKeyCode` resolve to `'A'`/`'S'`/`InputState::kEnd` exactly, plus the
+always-on arrow codes.
+
+**GamePackage integration — confirmed with a new tool, not committed
+content:** `tools/real_game_harness/hobo_vc_package_probe.cpp` (read-only,
+matching every other tool in that directory) builds a `vc::ResourceFetcher`
+backed by the config text above plus a locally-supplied `hobo.swf` path
+(given on the command line — never embedded in the tool's own source),
+calls `vc::buildGamePackage()` (the exact same entry point
+`nintendo3ds_main.cpp` calls), then runs the result through
+`CharacterDictionary::build()`/`MovieClipInstance::createRoot()`/
+`advanceFrame()` — the same unchanged pipeline every phase since Phase 5
+has used. Run against the real file:
+
+```
+=== GameConfig parsed from the Hobo1 example config.ini ===
+swfFilename           = hobo.swf
+input.xKeyCode        = 65 (expect 'A'=65)
+input.yKeyCode        = 83 (expect 'S'=83)
+input.selectKeyCode   = 35 (expect InputState::kEnd=35)
+
+=== movie loaded via buildGamePackage() (the exact path nintendo3ds_main.cpp uses) ===
+valid=1 frameCount=13 frameRate=25.00 version=6
+root created OK: currentFrame=1 displayListSize=22
+after 5 ticks (with Right + 'A' held via the parsed config mapping): currentFrame=1 displayListSize=22
+
+PASS: real hobo.swf loads and runs end-to-end through the exact GamePackage/CharacterDictionary/MovieClipInstance path nintendo3ds_main.cpp uses, with a Hobo1-shaped input mapping resolving to the expected InputState key codes.
+```
+
+**3DS cross-build — repeated section 8's own swap/rebuild/verify/restore
+procedure, this time with `hobo.swf`:** `romfs/game.swf`/`romfs/config.ini`
+were locally swapped for `hobo.swf` and the `[input]` example above,
+`cmake --build build_3ds` was re-run (fresh configure this session — no
+stale `build_3ds/` was carried over), and it built and packaged cleanly:
+`flash3ds_3ds.3dsx` grew from 867,108 bytes (the clean-room demo) to
+5,834,556 bytes (matching `hobo.swf`'s own ~4.97 MB), zero new undefined
+symbols, only the same pre-existing "not implemented" newlib stub warnings
+Phase 10 already documented as benign. `romfs/game.swf`/`romfs/config.ini`
+were restored immediately after and confirmed byte-identical to their
+pre-swap state via checksum (`md5sum`) — `git status --short romfs/` came
+back empty, confirming nothing about this test leaked into the tracked
+tree. As section 8 already established, no C++ source in this project
+references any specific game's content, so this was purely a RomFS-
+repackaging exercise, not a code change.
+
+**What this does and doesn't confirm:** this closes the interpreter/
+config/packaging side of A3 — `hobo.swf` genuinely loads and runs through
+the exact code path the 3DS entry point uses, and a documented input
+mapping resolves to precisely the key codes its own bytecode checks.
+**Real hardware/emulator confirmation remains open** (A4, task #59) — this
+environment has neither, same constraint Phase 10 already documented for
+the clean-room demo movie.
+
 ## 10. CIA packaging boundary
 
 **In scope / ready for CIAToolsR today:**

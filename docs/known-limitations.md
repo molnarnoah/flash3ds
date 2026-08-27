@@ -696,6 +696,69 @@ B4 in particular should stay a last resort until the String-methods
 hypothesis above has actually been tried and found insufficient, not
 skipped to preemptively.
 
+### L6 addendum — 2026-08-27 (Track B B3, task #63): content/ path resolution confirmed, independently reinforces the "unreachable via AVM1" finding
+
+B3 asked specifically whether the infrastructure a `loadMovie("content/
+...")` call would need — `runtime::LocalFileLoader`'s relative-path
+joining against the real, on-disk `content/` layout, then
+`swf::SwfLoader` parsing the fetched bytes — actually works, independent
+of whether Extreme Pamplona's own bytecode can ever reach it (the B1
+addendum above already answered that: no).
+
+**Method:** a new read-only tool,
+`tools/real_game_harness/pamplona_content_loadmovie_probe.cpp` (no
+copyrighted bytes committed — every path is discovered from the
+filesystem at runtime, given a base directory on the command line, same
+discipline as every other tool in that directory), run against the real
+corpus (`extreme-pamplona.swf` + its real 24-file `content/` sibling
+directory).
+
+**Finding 1 (new, independent angle on the same conclusion):** the
+literal substring `"loadMovie"` does not exist ANYWHERE in
+`extreme-pamplona.swf`'s decompressed body. Since AVM1's
+`ActionPush`/`ActionConstantPool` can only ever push a string that
+literally exists in the file's own bytes, this means no script in this
+file — however deeply obfuscated, however it resolves method names —
+can call `MovieClip.loadMovie()` by name. This isn't a new discovery (the
+B1 addendum's "zero `CallMethod` opcodes anywhere" finding already
+implies it), but it's a genuinely independent check (string presence vs.
+opcode-histogram absence — two different failure-proof angles on the
+same file), and it rules out one theoretical loophole the opcode count
+alone didn't: a `CallMethod` reached through some AVM1 mechanism this
+runtime doesn't yet interpret would still need the string `"loadMovie"`
+to exist somewhere to be usable, and it doesn't.
+
+**Finding 2 (the actual B3 question — infrastructure verification):**
+`LocalFileLoader(baseDir).loadFile("content/<name>")` was run against
+all 24 real `content/*.swf` siblings. Every single one: (a) resolved to
+the correct file (byte-for-byte identical to a direct absolute-path
+read), and (b) parsed successfully via `swf::SwfLoader::loadSwf()` —
+24/24, zero failures. `MovieClipInstance::loadMovie()`'s own C++ API
+(the exact method, called directly rather than through AVM1 dispatch)
+was also exercised end-to-end against a real content file
+(`content/sounds_pamplona.swf`) and succeeded.
+
+**What this confirms and doesn't:** the `LocalFileLoader`/`loadMovie()`
+infrastructure itself has no defect — it is fully ready for a future B4
+bespoke driver (or any other future title whose main file DOES reach
+`loadMovie()` via real AVM1 bytecode) to use as-is, with zero further
+plumbing work. It does **not** change B1/B2's conclusion that Extreme
+Pamplona's own main file cannot reach this infrastructure today — B3 was
+never expected to (see L6 addendum above's own recommendation, which
+this doesn't override): the next well-evidenced step for Extreme
+Pamplona's own interactivity remains task #67 (AS2 `String` prototype
+methods + a re-run of the click-trace sweep), with B4 staying a last
+resort until that's been tried.
+
+**Regression / build:** read-only tool, no runtime behavior modified. Not
+CMake-registered (matches this directory's established convention for
+most tools — built standalone via `g++`, see the tool's own usage
+comment). No new unit tests needed — `tests/test_local_file_loader.cpp`'s
+existing 5 tests already cover `LocalFileLoader`'s own logic against
+real (synthetic, temp-file) I/O; this tool's contribution is confirming
+that logic against the REAL corpus's specific directory shape, which a
+synthetic fixture can't stand in for.
+
 ## L7 — `DefineShape4`/`DefineMorphShape`/`2`/`PlaceObject3`/`CsmTextSettings` not resolved
 
 - **Subsystem:** Rendering / SWF tag parsing.

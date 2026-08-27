@@ -224,3 +224,56 @@ TEST_CASE(GameConfig_InvalidTouchScreen_FallsBackToDefault) {
     GameConfig config = GameConfig::fromIniText("[touch]\nscreen=sideways\n");
     CHECK(config.input.touchUsesBottomScreen);  // default is "bottom"
 }
+
+// Track A A3 (2026-08-27, task #58): confirms this ALREADY-GENERIC config
+// mechanism can express exactly what real hobo.swf's own AVM1 bytecode
+// checks (found via static disassembly, docs/hobo-playability-
+// verification.md's Finding 5/6, and dynamic tracing,
+// docs/hobo-title-progression.md) -- proving "wire the 3DS entry point to
+// hobo.swf" needed zero code changes to GameConfig/GamePackage/
+// nintendo3ds_main.cpp, only a title-specific config.ini a packager would
+// ship alongside hobo.swf (the CHECKED-IN romfs/config.ini stays the
+// generic documented default -- see this file's own
+// GameConfig_Defaults_MatchDocumentedConfigIniExample test and
+// docs/virtual-console.md's "guaranteed to never drift apart" note; this
+// test is a worked EXAMPLE, not a change to that default).
+//
+// Hobo1's frame-1 preview icon (characterId=80) and its real frame-10
+// player character (characterId=1913) poll Key.isDown(37/38/39/40) --
+// InputState::kLeft/kUp/kRight/kDown, matching this project's own
+// KeyCode enum values exactly (see runtime/InputState.h) -- for movement,
+// which the D-Pad/Circle Pad already feed unconditionally
+// (docs/virtual-console.md section 5: "D-Pad -> arrow keys is NOT
+// configurable"), needing no config.ini entry at all. It also polls
+// Key.isDown(65)/Key.isDown(83) ("A"/"S", ASCII, not the 3DS A button) for
+// punch/kick-allow gating, and every frame-1 DefineButton2's
+// condActionsV2 gates on CondKeyPress=4 ("End" per the SWF spec's legacy
+// key table, InputState::kEnd) -- confirmed dynamically to drive real
+// root-timeline navigation (docs/known-limitations.md L11). This example
+// maps X/Y (free after the documented default's SPACE/SHIFT) to literal
+// 'A'/'S', and SELECT (free after the documented default's ESCAPE, and
+// distinct from the START+SELECT-held quit gesture, which needs BOTH
+// held) to End.
+TEST_CASE(GameConfig_Hobo1ExampleMapping_ParsesToExpectedKeyCodes) {
+    GameConfig config = GameConfig::fromIniText(
+        "[game]\n"
+        "swf=hobo.swf\n"
+        "[input]\n"
+        "X=A\n"
+        "Y=S\n"
+        "SELECT=END\n");
+
+    CHECK_EQ(config.swfFilename, std::string("hobo.swf"));
+    CHECK_EQ(config.input.xKeyCode, static_cast<int>('A'));
+    CHECK_EQ(config.input.yKeyCode, static_cast<int>('S'));
+    CHECK_EQ(config.input.selectKeyCode, InputState::kEnd);
+
+    // Movement keys are NOT part of config.ini at all -- confirming they
+    // resolve to the exact codes hobo.swf's own Key.isDown() calls check,
+    // independent of anything parsed above (see this test's own header
+    // comment).
+    CHECK_EQ(static_cast<int>(InputState::kLeft), 37);
+    CHECK_EQ(static_cast<int>(InputState::kUp), 38);
+    CHECK_EQ(static_cast<int>(InputState::kRight), 39);
+    CHECK_EQ(static_cast<int>(InputState::kDown), 40);
+}
