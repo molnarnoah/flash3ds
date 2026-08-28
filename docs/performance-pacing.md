@@ -767,3 +767,81 @@ back to being the largest single real-work phase) is the next evidenced
 target the same way it was before the active-edge-table and span-fill
 fixes, though it's already been through two rounds of optimization and
 further gains there may be smaller than before.
+
+## Eighth fix: `std::lround()` in `fillPolygon()`'s span endpoints — real, verified, but smaller than the initial profile suggested
+
+Per the user's explicit direction ("keep optimizing renderTopRaster"),
+profiled `SoftwareRenderer::fillPolygon()`/`strokePolyline()` against real
+`hobo.swf` content with `valgrind --tool=callgrind` (desktop x86 — reading
+*instruction-count composition*, not wall-clock time, which is what
+carries over to ARM11's very different clock/cache characteristics; the
+*shape* of where time goes generally does, even if absolute cycles don't).
+This is the first time this task has had an actual profiler available,
+rather than the TickCounter sub-phase timers used for every prior
+measurement — a strictly finer-grained tool for finding the next fix
+*within* a single phase.
+
+**Finding:** `std::lround()` — called twice per filled scanline span, to
+compute `xStart`/`xEnd` from the floating-point edge-intersection x
+values — accounted for **over 20% of total program instructions**,
+dwarfing every other cost in the renderer, including the actual pixel
+writes (`fillSpan`'s `std::fill()`, ~12.7%). glibc's `lround()`/
+`llround()` is a real, non-inlined libm function call that has to handle
+the full IEEE-754 contract — NaN/Inf, out-of-representable-range values,
+and the current floating-point rounding-mode environment — none of which
+this call site can ever actually hit: `x` here is always a finite,
+small-magnitude screen-pixel coordinate.
+
+**Fix:** `roundToInt()`, a small inline function matching `std::lround()`'s
+own round-half-away-from-zero tie-breaking (`lround(2.5)==3`,
+`lround(-2.5)==-3`) via `x >= 0 ? x+0.5 : x-0.5` then truncate, with no
+libm call and no rounding-mode/exception-flag handling. This is
+bit-identical to true round-half-away-from-zero for every magnitude this
+renderer's coordinates can ever reach — a double's ~52-bit mantissa
+covers both the integer part and the 0.5 tie-breaker exactly until many
+orders of magnitude past any twip-derived pixel coordinate in this
+codebase — so it's a safe, general replacement for this specific,
+bounded use, not a hack that happens to work on today's test content.
+
+**An honest finding from the same profiling run, not just the fix
+itself:** most of that 20%+ program-wide `lround()` cost turned out to
+be **outside raster entirely**. `grep -rn lround src/renderer/` shows it's
+also called from `SceneRenderer.cpp`'s `toDevicePolyline()` and from
+`ShapeTessellator.cpp` — both called once per shape *vertex* (curve
+flattening, coordinate transforms), which for typical shape complexity
+runs far more often than `fillPolygon()`'s twice-per-scanline-*span*
+calls. Those call sites are part of the tree-walk phase (the difference
+between `renderTop`'s total and raster+blit), not raster — this fix does
+not touch them. Re-profiling after the change confirms the scope
+precisely: total `lround` instructions across the whole profiled run
+dropped by ~45M (444M → 399M), matching the two calls removed per
+`fillPolygon()` span; the remaining ~399M is attributable to those other,
+untouched call sites. **This fix captures exactly raster's own share of
+the problem, not the whole 20%** — reporting that plainly rather than
+implying a bigger win than actually landed. If more raster speed is
+wanted after this, this particular finding is now exhausted; the
+tree-walk-side `lround` cost is a real, separately-evidenced target, but
+a different phase than the one asked for this round.
+
+**Correctness:** rendered `hobo.swf` frames 1–5 before/after are
+byte-identical MD5s (`656e1f19ca0e3faed597ed305b9cfd04` for frames 1/3/5,
+`25e484e991e29af9b6dfad6ffc0e8d19` for frames 2/4) — matching every prior
+fix in this task all the way back to before the active-edge-table change.
+Full existing test suite (385/385) passes unmodified. 3DS cross-build
+clean, zero new warnings in `SoftwareRenderer.cpp` (forced incremental
+rebuild + grep, same method as every prior fix — the many "note: parameter
+passing... changed in GCC 7.1" lines from `std::sort`/`std::vector`
+internals in `fillPolygon()` are pre-existing, from the active-edge-table
+fix's own `std::sort` call, not new).
+
+### What's needed to close this out
+
+A recording of the `v8_lroundfix` build. Given the honest scope finding
+above, don't expect a dramatic jump — this removed a real but bounded
+slice of raster's own cost, not the eye-catching 20% the initial
+aggregate profile suggested. If the user wants to keep chasing raster
+speed after this, tessellation/edge-count reduction or the sort call
+itself are the remaining candidates visible in this profile; if they'd
+rather chase the bigger win, the tree-walk-side `lround` cost
+(`toDevicePolyline`/`ShapeTessellator`) is now a clearly evidenced,
+separate target.

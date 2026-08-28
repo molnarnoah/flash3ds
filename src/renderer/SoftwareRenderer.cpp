@@ -15,6 +15,41 @@ uint8_t blendChannel(uint8_t dst, uint8_t src, uint8_t alpha) {
                                  255);
 }
 
+// Performance fix (2026-08-28, continuing the "solid 25fps" task after the
+// blit-loop fix -- see docs/performance-pacing.md): profiled fillPolygon()
+// against real hobo.swf content with valgrind/callgrind (desktop x86, but
+// instruction-count composition -- not wall-clock -- is what's being read
+// off it, which carries over) after the blit fix made `raster` the largest
+// real-work phase again. Finding: std::lround() -- called twice per filled
+// span, computing xStart/xEnd -- accounted for over 20% of TOTAL PROGRAM
+// INSTRUCTIONS, dwarfing every other cost in the renderer including the
+// actual pixel writes. glibc's lround()/llround() is a real (non-inlined)
+// libm call that handles the full IEEE-754 contract: NaN/Inf, values
+// outside the representable range, and the current floating-point
+// rounding-mode environment -- none of which this call site can ever
+// actually hit (x is always a scanline/edge-intersection x-coordinate in
+// screen-pixel units, always finite and always small in magnitude for any
+// SWF this runtime renders).
+//
+// roundToInt() replaces it with the same round-half-away-from-zero
+// tie-breaking std::lround() uses (lround(2.5)==3, lround(-2.5)==-3), just
+// inlined and specialized for exactly the value range this renderer
+// produces, with no libm call, no rounding-mode/exception-flag handling,
+// and no NaN/Inf/overflow path. `x + 0.5` (or `x - 0.5`) then truncated is
+// only NOT bit-identical to true round-half-away-from-zero for magnitudes
+// large enough that a double's ~52 bits of mantissa can't represent both
+// the integer part and the 0.5 tie-breaker exactly -- many orders of
+// magnitude past any coordinate this renderer ever computes (twip-derived
+// pixel coordinates, realistically within a few thousand of zero).
+// Verified, not just reasoned about: rendered hobo.swf frames 1-5 before/
+// after are byte-identical MD5s (same standard as every prior raster fix
+// this task), and the full existing SoftwareRenderer test suite (including
+// the concave-polygon active-edge-table test, which exercises plenty of
+// non-integer intersection x-values) passes unmodified.
+inline int roundToInt(double x) {
+    return x >= 0.0 ? static_cast<int>(x + 0.5) : static_cast<int>(x - 0.5);
+}
+
 }  // namespace
 
 SoftwareRenderer::SoftwareRenderer(int widthPixels, int heightPixels)
@@ -194,8 +229,8 @@ void SoftwareRenderer::fillPolygon(const std::vector<PointTwips>& devicePoints,
         // measured to be ~146-148K redundant-bounds-checked pixel writes
         // per frame before this fix, docs/performance-pacing.md).
         for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
-            int xStart = static_cast<int>(std::lround(intersections[i]));
-            int xEnd = static_cast<int>(std::lround(intersections[i + 1]));
+            int xStart = roundToInt(intersections[i]);
+            int xEnd = roundToInt(intersections[i + 1]);
             xStart = std::max(xStart, 0);
             xEnd = std::min(xEnd, width_ - 1);
             fillSpan(y, xStart, xEnd, color);
