@@ -76,20 +76,73 @@ void SoftwareRenderer::fillPolygon(const std::vector<PointTwips>& devicePoints,
     maxY = std::min(maxY, height_ - 1);
 
     size_t n = devicePoints.size();
+
+    // Performance fix (2026-08-28, "resolve the 7-12 FPS pacing" task --
+    // see docs/performance-pacing.md for the on-device sub-phase timing
+    // evidence this was built on): this used to test EVERY edge of the
+    // polygon on EVERY scanline row of its bounding box -- an
+    // O(rows * edges) loop -- which on-device measurement confirmed was
+    // the single dominant real-frame cost by far (roughly 40-52% of every
+    // frame, even a fully static one), well past tessellation (fixed
+    // separately, commit 7dd6acb) or the framebuffer blit.
+    //
+    // Fix: build the edge list ONCE per fillPolygon() call, sorted by
+    // each edge's lower y bound, then sweep scanlines top to bottom
+    // maintaining an ACTIVE EDGE LIST -- only the edges whose y-range
+    // actually covers the current row -- instead of re-testing every
+    // edge on every row. This is the standard active-edge-table scanline
+    // algorithm. Deliberately NOT touched: the actual crossing test and
+    // x-intersection formula below (`t = (scanY - ay) / (by - ay); x = ...`)
+    // is copied byte-for-byte from the original per-scanline loop, just
+    // applied to a pre-filtered edge subset -- this keeps the floating-
+    // point arithmetic (and therefore the rendered output) IDENTICAL to
+    // before, verified via MD5-identical render output across hobo.swf
+    // frames 1-5 before/after this change (see docs/performance-pacing.md).
+    struct Edge {
+        double ax, ay, bx, by;
+        double yLo, yHi;  // min/max of ay,by -- the row range this edge can be active for
+    };
+    std::vector<Edge> edges;
+    edges.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        const PointTwips& a = devicePoints[i];
+        const PointTwips& b = devicePoints[(i + 1) % n];  // edge back to points[0] is implicit
+        double ay = a.y, by = b.y;
+        if (ay == by) continue;  // horizontal edge contributes no crossing, same as before
+        edges.push_back(Edge{static_cast<double>(a.x), ay, static_cast<double>(b.x), by,
+                              std::min(ay, by), std::max(ay, by)});
+    }
+    std::sort(edges.begin(), edges.end(),
+              [](const Edge& l, const Edge& r) { return l.yLo < r.yLo; });
+
     std::vector<double> intersections;
+    std::vector<const Edge*> active;
+    size_t nextEdge = 0;  // first not-yet-added index into the yLo-sorted `edges`
 
     for (int y = minY; y <= maxY; ++y) {
         double scanY = y + 0.5;  // sample at pixel center
-        intersections.clear();
 
-        for (size_t i = 0; i < n; ++i) {
-            const PointTwips& a = devicePoints[i];
-            const PointTwips& b = devicePoints[(i + 1) % n];  // edge back to points[0] is implicit
-            double ay = a.y, by = b.y;
-            if (ay == by) continue;  // horizontal edge contributes no crossing
-            if ((scanY >= ay && scanY < by) || (scanY >= by && scanY < ay)) {
-                double t = (scanY - ay) / (by - ay);
-                double x = a.x + t * (b.x - a.x);
+        // Bring in edges that just became eligible. `edges` is sorted by
+        // yLo and y only increases across this loop, so this is a single
+        // forward sweep over the whole call, not O(n) per row.
+        while (nextEdge < edges.size() && edges[nextEdge].yLo <= scanY) {
+            active.push_back(&edges[nextEdge]);
+            ++nextEdge;
+        }
+        // Drop edges whose range has already passed.
+        active.erase(std::remove_if(active.begin(), active.end(),
+                                     [scanY](const Edge* e) { return e->yHi <= scanY; }),
+                     active.end());
+
+        intersections.clear();
+        for (const Edge* e : active) {
+            // Same crossing test as the original (redundant given the
+            // active-list membership above already guarantees it, but
+            // kept so this is a provably direct transcription of the
+            // original per-edge test, not a reasoned-about replacement).
+            if ((scanY >= e->ay && scanY < e->by) || (scanY >= e->by && scanY < e->ay)) {
+                double t = (scanY - e->ay) / (e->by - e->ay);
+                double x = e->ax + t * (e->bx - e->ax);
                 intersections.push_back(x);
             }
         }

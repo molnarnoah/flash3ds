@@ -275,9 +275,119 @@ large tells us exactly where to aim the next fix:
   `MovieClipInstance` traversal machinery) — would need a further,
   separately-scoped instrumentation pass, not a blind guess.
 
-**Explicitly not done this task**, per its own scope: no blind
-optimization committed to `src/` beyond the already-verified tessellation
-cache and this pure instrumentation — no new fix has been applied or
-claimed based on a guess. No touching input/navigation code (confirmed
-working per `docs/hobo-playability-verification.md`). No RAM-related
-changes.
+## Fourth recording: raster confirmed as the dominant real cost
+
+A recording of the `v4_subphase` build was analyzed programmatically (not
+just eyeballed) — sampled the bar-chart's actual pixel colors/widths
+against the always-full-width period-reference row to get an exact
+percentage per phase, on 4 different screens (HOBO title w/ fish
+animation @10fps, Armor Games splash @12fps, SeethingSwarm splash @9fps,
+HOBO title screen @7fps):
+
+| phase                    | title (fish) | Armor splash | SeethingSwarm | HOBO title |
+|---------------------------|:---:|:---:|:---:|:---:|
+| input                      | 0%   | 0%   | 0%   | 0%   |
+| advance                    | 7%   | 4%   | 0%   | 31%* |
+| renderTop – tree-walk/other| 8%   | 5%   | 7%   | 4%   |
+| **renderTop – raster**     | **40%** | **47%** | **52%** | **46%** |
+| renderTop – blit           | 15%  | 15%  | 13%  | 9%   |
+| renderBottom               | 17%  | 17%  | 15%  | 12%  |
+| present                    | 1%   | 1%   | 1%   | 1%   |
+| vblankWait                 | 11%  | 9%   | 8%   | 7%   |
+
+(*advance's percentage is inflated by how it's averaged — cost-per-actual-
+`advanceFrame()`-call divided into the period, not diluted by iterations
+where it didn't run — a known artifact of the existing averaging scheme,
+not a new finding.)
+
+**This is the conclusive answer.** `renderTop – tree-walk/other` dropped
+to single digits everywhere (confirming the tessellation cache from
+commit `7dd6acb` IS working and IS cheap now), and `blit` is a real but
+secondary cost (9–15%). `raster` — `SoftwareRenderer`'s
+`fillPolygon()`/`strokePolyline()` scanline-fill work — is alone
+40–52% of every single frame, on every screen tested, including fully
+static ones. That's the actual bottleneck the tessellation fix never
+touched, exactly as this doc's "what's needed to close this out" section
+anticipated.
+
+**Why this is plausible, read against `SoftwareRenderer::fillPolygon()`'s
+actual code** (`src/renderer/SoftwareRenderer.cpp`): it's a textbook naive
+scanline fill — for every scanline row inside a shape's bounding box, it
+tests ALL of that shape's edges for a crossing (an O(rows × edges) loop,
+not an active-edge-table algorithm), and each edge test does a
+floating-point division (`t = (scanY - ay) / (by - ay)`) to find the
+crossing x. On ARM11 (weak, in-order, no fast hardware divide) this is a
+believable place for real per-frame cost to hide, especially since
+nothing here skips unchanged content — every shape on screen is
+rescanned and refilled from scratch every single frame, static or not
+(no dirty-rect/damage-tracking exists anywhere in this renderer).
+
+## The fix: active-edge-table scanline fill (user approved 2026-08-28)
+
+Implemented in `SoftwareRenderer::fillPolygon()`. The original loop tested
+every one of a polygon's edges on every scanline row of its bounding box
+(`O(rows × edges)`). The fix builds the edge list once per call (skipping
+horizontal edges, exactly as before), sorts it by each edge's lower `y`
+bound, then sweeps rows top to bottom maintaining an **active edge
+list** — only edges whose `[yLo, yHi)` range actually covers the current
+row — adding edges as the sweep reaches their `yLo` and dropping them once
+past their `yHi`, instead of re-testing every edge on every row.
+
+**Deliberately unchanged:** the crossing test and `x`-intersection formula
+themselves (`t = (scanY - ay) / (by - ay); x = ax + t * (bx - ax)`) are
+copied byte-for-byte from the original per-scanline-per-edge code, just
+applied to the pre-filtered active subset — so the floating-point
+arithmetic producing each intersection's `x` value is identical to
+before, not merely equivalent. `strokePolyline()` was NOT touched — its
+Bresenham-plus-stamped-square approach doesn't have the same
+all-edges-every-row structure, and this project's one-fix-at-a-time
+discipline says not to bundle an untested, unevidenced second change into
+this one.
+
+**Correctness verified two ways**, matching the standard this document
+has followed throughout:
+
+1. Rendered `hobo.swf` frames 1–5 through the desktop `flash_runtime
+   --render` CLI before and after the fix (via `git stash`/`git stash
+   pop` to isolate exactly the one file change) — **byte-identical MD5s
+   on every frame**.
+2. New regression test,
+   `SoftwareRenderer_FillPolygon_ConcaveShapeExercisesActiveEdgeAddAndRemove`
+   (`tests/test_software_renderer.cpp`): a concave "U"-shaped polygon (a
+   notch cut from the top-middle of a square) specifically chosen so two
+   of its edges become active partway through the sweep and inactive
+   again partway through, rather than spanning the whole shape height —
+   a plain convex square can't exercise the active-edge list's add/remove
+   logic at all, since it never changes membership mid-sweep. Confirms
+   both the notch gap (two separate spans on one scanline) and the
+   solid row below it (edges correctly dropped) render correctly.
+
+**Build/test:** 384/384 desktop tests passing (up from 383 — the new
+active-edge regression test), zero regressions, byte-identical render
+output, zero new compiler warnings. 3DS cross-build clean, zero new
+undefined symbols. A Hobo1-packaged `.3dsx` with this fix (on top of the
+sub-phase instrumentation) was built via the established swap/build/
+verify/restore procedure; `romfs/` restored and checksum-confirmed
+afterward.
+
+## What's needed to close this out
+
+A recording of the `v5_rasterfix` build (same procedure — hold steady on
+title and gameplay ~5–8s each). Read the sub-phase bars the same way the
+third and fourth recordings were: if `raster`'s share of the frame drops
+substantially and the real FPS climbs meaningfully above the 7–12 band
+this task started from, that's this fix confirmed and the task's Step 3
+report can be written. If `raster` is still large, the active-edge-table
+change didn't move the needle enough on its own (possible — `blendPixel`
+itself, called once per filled pixel, does real per-pixel work too, and
+wasn't touched by this fix) and would need its own separately-scoped
+look, not folded into this one.
+
+**Explicitly not done this task**, per its own scope: `strokePolyline()`
+was read but deliberately not modified (see above); no touching input/
+navigation code (confirmed working per
+`docs/hobo-playability-verification.md`); no RAM-related changes; the
+reported Azahar audio silence is a separate, not-yet-investigated issue
+(the `StartSound` → MP3-decode → `ndsp` pipeline is wired end-to-end in
+code, so the silence is unexplained, not obviously expected) — tracked
+separately from this pacing task, not folded in here.
