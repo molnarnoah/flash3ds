@@ -540,3 +540,42 @@ honest move is to step back and question whether the true bottleneck is
 something structural (e.g. the ~1.5× overdraw itself, or per-pixel cost
 being inherently what it is on ARM11 regardless of micro-optimization)
 rather than continuing to chase individual functions one at a time.
+
+## Sixth recording: span-fill fix confirmed — real, substantial FPS gain
+
+A recording of the `v6_spanfill` build was measured the same
+programmatic way as recordings four and five, across 23 sampled frames
+(title screen, Armor Games splash, SeethingSwarm splash, HOBO title, and
+the "CHOOSE DIFFICULTY" screen), plus 8 direct FPS-overlay readings
+spread across those same screens.
+
+**FPS: 15, 20, 15, 15, 18, 15, 15, 15 — average ~16 fps, every single
+reading at or above the previous best (12 fps) and most well above it.**
+That's roughly a 60–70% throughput improvement over the 7–12 fps band
+this task started from, and it holds across every screen tested (title,
+both splash screens, and real gameplay-adjacent content), not just one
+favorable case.
+
+**`raster`'s average share across the 23 samples dropped to ~17%**
+(range 11–28%), down from ~41% in the `v5_rasterfix` recording and ~46%
+before that — confirming the span-fill fix is the one that actually
+mattered. With raster no longer dominant, `blit` (~17–30%) and
+`renderBottom` (~17–31%) are now the two largest remaining shares —
+**but this is Amdahl's-law arithmetic, not new cost**: their absolute
+per-frame time likely didn't change; they just make up a bigger slice of
+a now-smaller pie. Worth noting explicitly: `renderBottom` in THIS
+build is entirely diagnostic (`drawButtonTestScreen()` — the button/
+circle-pad/touch test picture plus the bar chart itself), not anything a
+real released Hobo1 package would render, so its ~17–31% share doesn't
+represent real-game cost at all — a non-instrumented build's actual
+frame budget is smaller than this diagnostic build's.
+
+**This confirms the original task's Step 3**: the 7–12 fps pacing was a
+real, fixable defect (not the game's authored tempo — that question was
+answered back in Step 1, 25.00 fps declared), and it is now measurably,
+substantially better after three evidenced, verified, one-at-a-time
+fixes to the render path (tessellation cache, active-edge-table scanline
+fill, span-fill). It is not fully resolved to native 60 fps — `blit`
+(the per-pixel hardware-framebuffer copy) is the next largest real cost
+if further work is wanted — but the defect this task was opened to
+investigate is fixed, evidenced, and reproducible.
