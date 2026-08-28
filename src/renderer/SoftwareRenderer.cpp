@@ -24,6 +24,10 @@ SoftwareRenderer::SoftwareRenderer(int widthPixels, int heightPixels)
 
 void SoftwareRenderer::beginFrame(swf::RgbaColor backgroundColor) {
     std::fill(pixels_.begin(), pixels_.end(), backgroundColor);
+    // Start of a new frame's pixel-write tally -- see lastOpaquePixelWrites()/
+    // lastBlendedPixelWrites()'s doc comment in the header.
+    opaquePixelWrites_ = 0;
+    blendedPixelWrites_ = 0;
 }
 
 void SoftwareRenderer::endFrame() {
@@ -47,14 +51,45 @@ void SoftwareRenderer::blendPixel(int x, int y, swf::RgbaColor color) {
     if (x < 0 || y < 0 || x >= width_ || y >= height_) return;
     if (color.a == 255) {
         setPixel(x, y, color);
+        ++opaquePixelWrites_;
         return;
     }
-    if (color.a == 0) return;
+    if (color.a == 0) return;  // no-op: never touches the framebuffer, doesn't count as a write
     swf::RgbaColor& dst = pixels_[static_cast<size_t>(y) * width_ + x];
     dst.r = blendChannel(dst.r, color.r, color.a);
     dst.g = blendChannel(dst.g, color.g, color.a);
     dst.b = blendChannel(dst.b, color.b, color.a);
     dst.a = static_cast<uint8_t>(std::min(255, static_cast<int>(dst.a) + color.a));
+    ++blendedPixelWrites_;
+}
+
+void SoftwareRenderer::fillSpan(int y, int xStart, int xEnd, swf::RgbaColor color) {
+    if (xStart > xEnd) return;  // empty span, same as the per-pixel loop doing zero iterations
+    const size_t rowOffset = static_cast<size_t>(y) * static_cast<size_t>(width_);
+    const size_t count = static_cast<size_t>(xEnd - xStart + 1);
+
+    if (color.a == 255) {
+        // Fully opaque: every pixel in the span becomes exactly `color`,
+        // same as `blendPixel`'s `setPixel` fast path -- but as one bulk
+        // write instead of `count` individual bounds-checked calls.
+        auto begin = pixels_.begin() + static_cast<std::ptrdiff_t>(rowOffset + static_cast<size_t>(xStart));
+        std::fill(begin, begin + static_cast<std::ptrdiff_t>(count), color);
+        opaquePixelWrites_ += count;
+        return;
+    }
+    if (color.a == 0) return;  // no-op, same as blendPixel() -- never touches the framebuffer
+
+    // Partially transparent: same per-pixel blend math as blendPixel(),
+    // just without re-checking bounds that are already guaranteed by the
+    // caller (see this function's doc comment in the header).
+    for (int x = xStart; x <= xEnd; ++x) {
+        swf::RgbaColor& dst = pixels_[rowOffset + static_cast<size_t>(x)];
+        dst.r = blendChannel(dst.r, color.r, color.a);
+        dst.g = blendChannel(dst.g, color.g, color.a);
+        dst.b = blendChannel(dst.b, color.b, color.a);
+        dst.a = static_cast<uint8_t>(std::min(255, static_cast<int>(dst.a) + color.a));
+    }
+    blendedPixelWrites_ += count;
 }
 
 void SoftwareRenderer::fillPolygon(const std::vector<PointTwips>& devicePoints,
@@ -151,14 +186,19 @@ void SoftwareRenderer::fillPolygon(const std::vector<PointTwips>& devicePoints,
         std::sort(intersections.begin(), intersections.end());
 
         // Even-odd fill: fill between each pair of consecutive crossings.
+        // fillSpan() (not a per-pixel blendPixel() loop) -- xStart/xEnd
+        // are clamped right here, and y is already known in-bounds from
+        // the minY/maxY clamp above, so this span-level call is exactly
+        // the "bounds already established once" case fillSpan() requires
+        // (see its doc comment in the header for why this matters: it was
+        // measured to be ~146-148K redundant-bounds-checked pixel writes
+        // per frame before this fix, docs/performance-pacing.md).
         for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
             int xStart = static_cast<int>(std::lround(intersections[i]));
             int xEnd = static_cast<int>(std::lround(intersections[i + 1]));
             xStart = std::max(xStart, 0);
             xEnd = std::min(xEnd, width_ - 1);
-            for (int x = xStart; x <= xEnd; ++x) {
-                blendPixel(x, y, color);
-            }
+            fillSpan(y, xStart, xEnd, color);
         }
     }
 }

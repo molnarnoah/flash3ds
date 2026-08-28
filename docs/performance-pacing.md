@@ -391,3 +391,152 @@ reported Azahar audio silence is a separate, not-yet-investigated issue
 (the `StartSound` → MP3-decode → `ndsp` pipeline is wired end-to-end in
 code, so the silence is unexplained, not obviously expected) — tracked
 separately from this pacing task, not folded in here.
+
+## Fifth recording: the active-edge-table fix is verified correct but only a modest real-world win
+
+A recording of the `v5_rasterfix` build was measured the same
+programmatic way as the fourth recording, across all 22 sampled frames
+(covering the Armor Games splash, SeethingSwarm splash, the HOBO title,
+and — new, good news for Track A — the game actually reaching a
+**"CHOOSE DIFFICULTY" screen with real background art**, reconfirming
+forward progress past the title screen independent of this task).
+
+**Result: raster's average share across all 22 samples was ~41% (range
+26–51%), against ~46% average (range 40–52%) in the fourth recording
+(pre-fix).** That's a real but modest ~5-percentage-point drop — nowhere
+near enough to explain 40–52%'s worth of frame time, and the FPS overlay
+is still reading in roughly the same band (mostly 8–12, one 15 and one
+anomalous 1 spike — the latter on a screen-transition frame, not
+representative of steady state). **This fix is correct (verified above)
+and did produce a small measurable improvement, but it did not solve the
+pacing problem.**
+
+**Before proposing another algorithmic change, did a cheap sanity check
+first** (same "check the cheap thing before the expensive thing"
+discipline this whole task has followed): is the 3DS cross-build even
+being compiled with optimizations on? Checked `build_3ds`'s actual
+generated compile command directly (not just `CMakeLists.txt`'s stated
+intent) — `CXX_FLAGS` includes `-O2 -g -DNDEBUG` (RelWithDebInfo, as
+`CMakeLists.txt` line 8-9 sets by default when no build type is
+specified). **Confirmed optimizations are on** — `CMakeCache.txt` shows
+`CMAKE_BUILD_TYPE:STRING=` (empty) because the default is set via a
+non-cache `set()` that shadows the cache for that configure run without
+persisting to the cache file's display, which is misleading to glance at
+but doesn't affect the actual build. Ruled out, not a red herring left
+uninvestigated.
+
+**Most likely remaining explanation, based on what's actually different
+about `raster` between the two fixes:** the active-edge-table change
+only removed redundant EDGE-TESTING work; it never touched
+`blendPixel()`, which is called once per FILLED PIXEL regardless of edge
+count — so if the real cost is dominated by the sheer number of pixels
+touched (and, per `blendPixel()`'s code, especially by its alpha-blend
+path — three integer divisions per channel per pixel for any fill with
+alpha < 255, vs. a single direct write for fully opaque fills), then an
+edge-testing fix was always going to be a second-order improvement, not
+the main one. This is a plausible, not yet confirmed, next lead — the
+idle character animation visibly includes a semi-transparent
+smoke/particle effect (see the recording), which is exactly the kind of
+content that would hit the slow alpha-blend path repeatedly, every
+frame, for overlapping particles.
+
+**Proposed next step (NOT started — needs a go-ahead):** instrument
+`blendPixel()` (or `SoftwareRenderer` as a whole) to count/time opaque
+vs. alpha-blended pixel writes per frame, the same "measure before
+guessing" approach used for every fix so far in this task, before writing
+any actual blend-path optimization.
+
+## blendPixel() instrumentation (user approved): the alpha-blend hypothesis was WRONG
+
+Added `SoftwareRenderer::lastOpaquePixelWrites()`/`lastBlendedPixelWrites()`
+— counters incremented inside `blendPixel()` depending on which path a
+given pixel write takes (opaque direct-write vs. the alpha-blend divide
+path; a fully-transparent alpha=0 write is a real no-op and counts as
+neither), reset each `beginFrame()`. New regression test
+(`SoftwareRenderer_PixelWriteCounters_ClassifyOpaqueVsBlendedAndResetPerFrame`)
+confirms the classification and the per-frame reset. 385/385 tests
+passing (up from 384), 3DS cross-build clean.
+
+**Then measured it directly against the real corpus file** — no on-device
+recording needed for this part, since pixel-write composition is purely
+geometric (which pixels get touched and by what alpha), not an ARM11
+timing question, so a desktop measurement answers it exactly. A
+throwaway harness (like the earlier tessellation desktop benchmark, not
+committed) advanced and rendered all 13 of `hobo.swf`'s root-timeline
+frames and printed the counters:
+
+```
+frame  1: opaque= 148022 blended=    658 total= 148680 blended%=0.4%
+frame  2: opaque= 145677 blended=    658 total= 146335 blended%=0.4%
+...(alternates between these two states across all 13 frames)...
+```
+
+**The alpha-blend hypothesis is wrong.** Blended pixels are 0.4% of all
+writes — negligible. The smoke/particle effect visible in the user's
+recording is composed of opaque pixel art, not real alpha compositing (at
+least not on the root-timeline content this harness can reach without
+live input). `blendPixel()`'s divide path is not where the time is going.
+
+**What the counts DO show:** ~146,000–148,000 opaque writes per frame
+against a 400×240 = 96,000-pixel top screen — roughly **1.5× overdraw**
+(each screen pixel gets written about one and a half times per frame on
+average, from overlapping shapes drawn back-to-front with no occlusion
+culling — expected for this renderer's design, not a bug). So the real
+cost is simply the raw volume of opaque pixel writes, each paying real
+per-pixel overhead that's larger than it needs to be: `fillPolygon()`'s
+inner loop calls `blendPixel(x, y, color)` for every pixel in an
+already-computed, already-clamped `[xStart, xEnd]` span — but
+`blendPixel()` re-checks `x`/`y` bounds itself, then (for the opaque
+case) calls `setPixel()`, which checks bounds AGAIN — two fully redundant
+bounds checks per pixel for work whose bounds were already established
+once, at the span level, before the loop started.
+
+## The fix: span-fill fast path (user approved 2026-08-28)
+
+Added `SoftwareRenderer::fillSpan(y, xStart, xEnd, color)`, used only by
+`fillPolygon()`'s inner loop (not `strokePolyline()`, whose
+stamped-square points aren't pre-clamped the same way and weren't shown
+to be a problem — left calling `blendPixel()` unchanged). Since
+`fillPolygon()` already clamps `xStart`/`xEnd` to `[0, width_-1]` and `y`
+is already known in-bounds from the `minY`/`maxY` clamp before the
+per-pixel loop begins, `fillSpan()` skips the two redundant bounds
+checks (`blendPixel()`'s, then `setPixel()`'s) entirely: a fully-opaque
+span becomes one `std::fill()` call over the row range (no per-pixel
+branch at all), and a partially-transparent span uses the same per-pixel
+blend math as `blendPixel()`, just without re-checking bounds the caller
+already guarantees.
+
+**Correctness verified two ways**, same standard as every fix in this
+task:
+
+1. Rendered `hobo.swf` frames 1–5 before/after — byte-identical MD5s,
+   matching all the way back to the pre-`fillPolygon`-fix baseline (this
+   task has now made three real changes to the render path — tessellation
+   cache, active-edge-table, span-fill — and every one of them has
+   produced the exact same pixels).
+2. Existing `SoftwareRenderer` test suite (including the pixel-write
+   counter test and the concave-shape active-edge test) all still pass
+   unmodified — `fillSpan()` reuses the exact same counters and blend
+   formula, so nothing about what gets counted or how a blended pixel is
+   computed changed, only how an already-known-safe span gets written.
+
+**Build/test:** 385/385 desktop tests passing, zero regressions, zero new
+warnings. 3DS cross-build clean, zero new undefined symbols. A
+Hobo1-packaged `.3dsx` with this fix was built via the established
+swap/build/verify/restore procedure; `romfs/` restored and
+checksum-confirmed afterward.
+
+## What's needed to close this out
+
+A recording of the `v6_spanfill` build (same procedure as every prior
+recording). This is the third targeted fix to the render path this task
+has made (tessellation cache → modest, unmeasured on its own; active-edge
+→ ~46%→~41% raster share; this one → not yet measured on-device). If
+`raster`'s share drops substantially and FPS climbs meaningfully past the
+7–12 band this task started from, that's confirmation. If it's still
+large, the redundant-bounds-check waste this fix removed was real but
+apparently not the dominant remaining cost either — at that point the
+honest move is to step back and question whether the true bottleneck is
+something structural (e.g. the ~1.5× overdraw itself, or per-pixel cost
+being inherently what it is on ARM11 regardless of micro-optimization)
+rather than continuing to chase individual functions one at a time.

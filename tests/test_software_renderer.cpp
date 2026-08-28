@@ -49,6 +49,56 @@ TEST_CASE(SoftwareRenderer_FillPolygon_OutOfBoundsPointsDoNotCrash) {
     CHECK_EQ(center.g, 255);
 }
 
+// Diagnostic instrumentation (2026-08-28, "resolve the 7-12 FPS pacing"
+// task -- see docs/performance-pacing.md): after the active-edge-table
+// fix only produced a modest improvement, the next hypothesis is that
+// blendPixel()'s alpha-blend divide path (hit by any fill with alpha <
+// 255) -- not the edge-testing the previous fix targeted -- is a bigger
+// factor. These counters measure that composition before any further
+// fix is attempted. This test just confirms the counters classify each
+// path correctly and that beginFrame() resets them for the next frame.
+TEST_CASE(SoftwareRenderer_PixelWriteCounters_ClassifyOpaqueVsBlendedAndResetPerFrame) {
+    SoftwareRenderer renderer(20, 20);
+    renderer.beginFrame(RgbaColor{255, 255, 255, 255});
+    CHECK_EQ(renderer.lastOpaquePixelWrites(), static_cast<size_t>(0));
+    CHECK_EQ(renderer.lastBlendedPixelWrites(), static_cast<size_t>(0));
+
+    // A 10x10 opaque square: every one of its interior pixels should
+    // count as an opaque write, none as blended.
+    std::vector<PointTwips> square = {
+        {2, 2}, {12, 2}, {12, 12}, {2, 12},
+    };
+    renderer.fillPolygon(square, RgbaColor{255, 0, 0, 255});
+    CHECK(renderer.lastOpaquePixelWrites() > 0);
+    CHECK_EQ(renderer.lastBlendedPixelWrites(), static_cast<size_t>(0));
+    size_t opaqueAfterFirstFill = renderer.lastOpaquePixelWrites();
+
+    // A second, semi-transparent square overlapping the first: those
+    // pixels should count as blended, on top of (not replacing) the
+    // opaque count already tallied this frame.
+    std::vector<PointTwips> translucentSquare = {
+        {5, 5}, {15, 5}, {15, 15}, {5, 15},
+    };
+    renderer.fillPolygon(translucentSquare, RgbaColor{0, 0, 255, 128});
+    CHECK(renderer.lastBlendedPixelWrites() > 0);
+    CHECK_EQ(renderer.lastOpaquePixelWrites(), opaqueAfterFirstFill);  // unchanged by the second fill
+
+    // A fully-transparent fill (alpha=0) is a real no-op -- it must not
+    // be counted as either kind of write.
+    size_t blendedBeforeNoop = renderer.lastBlendedPixelWrites();
+    std::vector<PointTwips> invisibleSquare = {
+        {0, 0}, {19, 0}, {19, 19}, {0, 19},
+    };
+    renderer.fillPolygon(invisibleSquare, RgbaColor{0, 0, 0, 0});
+    CHECK_EQ(renderer.lastOpaquePixelWrites(), opaqueAfterFirstFill);
+    CHECK_EQ(renderer.lastBlendedPixelWrites(), blendedBeforeNoop);
+
+    // beginFrame() starts the next frame's tally at zero.
+    renderer.beginFrame(RgbaColor{255, 255, 255, 255});
+    CHECK_EQ(renderer.lastOpaquePixelWrites(), static_cast<size_t>(0));
+    CHECK_EQ(renderer.lastBlendedPixelWrites(), static_cast<size_t>(0));
+}
+
 // Performance fix (2026-08-28, "resolve the 7-12 FPS pacing" task -- see
 // docs/performance-pacing.md): fillPolygon() now builds an active-edge
 // table instead of testing every edge on every scanline. A plain convex
