@@ -100,6 +100,35 @@ std::shared_ptr<Object> GlobalObject::create() {
     mathObj->setOwnProperty("E", Value::number(kE));
     global->setOwnProperty("Math", Value::object(mathObj));
 
+    // --- String (task #67, 2026-08-27) --------------------------------------
+    // See GlobalObject.h's doc comment for the full evidence trail. Only
+    // `fromCharCode` lives here: it's called as the STATIC
+    // `String.fromCharCode(...)`, so it's an ordinary native function
+    // property on this constructor object, resolved through the normal
+    // CallMethod path exactly like Math's methods above — no interpreter
+    // change needed. The corresponding INSTANCE methods
+    // (charAt/charCodeAt/substr, for a call like `someString.charAt(0)`)
+    // are handled separately in Interpreter.cpp's CallMethod
+    // (tryStringPrimitiveMethod()), since a bare string primitive has no
+    // Object/prototype to attach a method to here.
+    auto stringCtor = std::make_shared<Object>();
+    stringCtor->setOwnProperty(
+        "fromCharCode",
+        Value::object(makeNativeFunction(
+            "fromCharCode", [](ExecutionContext&, const Value&, const std::vector<Value>& args) {
+                std::string result;
+                result.reserve(args.size());
+                for (const auto& a : args) {
+                    // Byte-oriented (truncates to a single byte), matching
+                    // this codebase's documented non-Unicode simplification
+                    // — the exact inverse of charCodeAt()'s
+                    // static_cast<unsigned char> in Interpreter.cpp.
+                    result.push_back(static_cast<char>(static_cast<int64_t>(a.toNumber())));
+                }
+                return Value::string(result);
+            })));
+    global->setOwnProperty("String", Value::object(stringCtor));
+
     return global;
 }
 

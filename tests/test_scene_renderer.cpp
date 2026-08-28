@@ -441,3 +441,92 @@ TEST_CASE(SceneRenderer_DefineMorphShape_RendersStartSideGeometryAndColorOnly) {
     CHECK_EQ(insideEndOnly.g, 255);
     CHECK_EQ(insideEndOnly.b, 255);
 }
+
+// --- Performance fix (2026-08-28, "resolve the 7-12 FPS pacing" task):
+// renderShapeCharacter() used to call tessellateShape() fresh on every
+// single call, even though a swf::ShapeDef's geometry is immutable and
+// tessellation is done in shape-local space (independent of the world
+// transform applied afterward) -- so the same shapeDef always produces the
+// same TessellatedShape. Now cached per-SceneRenderer, keyed by the
+// shapeDef's swf::Shape address (see SceneRenderer.h's
+// shapeTessellationCache_ doc comment for why that's safe). Regression
+// coverage: two DISTINCT shape characters, both placed and rendered
+// TWICE through the same SceneRenderer instance (the second render()
+// call is a pure cache-hit for both), confirming (a) the cache doesn't
+// confuse two different shapes' geometry with each other and (b) a
+// repeated render produces exactly the same correct pixels as the first,
+// not stale/wrong geometry from a cache bug. ---------------------------
+
+namespace {
+
+// 100x100px stage, TWO distinct shape characters at two different depths:
+// a 30x30px RED rectangle (id=10) at (5px,5px), and a 30x30px GREEN
+// rectangle (id=11) at (60px,60px) -- non-overlapping, distinguishable by
+// both position and color, so a cache keying bug (e.g. two different
+// shapes accidentally sharing one cache entry) would show up as one
+// region rendering the WRONG color, not just "some region is unfilled".
+std::vector<uint8_t> buildTwoDistinctShapesMovie() {
+    auto redBody = fixtures::buildDefineShapeBytes(2, /*characterId=*/10, 30 * 20, 30 * 20, 0xFF,
+                                                     0x00, 0x00, 0xFF);
+    auto greenBody = fixtures::buildDefineShapeBytes(2, /*characterId=*/11, 30 * 20, 30 * 20, 0x00,
+                                                       0xFF, 0x00, 0xFF);
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineShape2), redBody},
+        {static_cast<uint16_t>(TagCode::DefineShape2), greenBody},
+        {26 /* PlaceObject2 */,
+         fixtures::buildPlaceObject2Bytes(1, false, 10, fixtures::buildMatrixBytes(5 * 20, 5 * 20))},
+        {26 /* PlaceObject2 */,
+         fixtures::buildPlaceObject2Bytes(2, false, 11,
+                                            fixtures::buildMatrixBytes(60 * 20, 60 * 20))},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    return fixtures::wrapFws(6, body);
+}
+
+}  // namespace
+
+TEST_CASE(SceneRenderer_TessellationCache_RepeatedRenderStaysCorrectAndDistinguishesShapes) {
+    auto bytes = buildTwoDistinctShapesMovie();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    int width = static_cast<int>(movie->frameSize.widthPixels());
+    int height = static_cast<int>(movie->frameSize.heightPixels());
+    SoftwareRenderer renderer(width, height);
+    SceneRenderer scene(*movie, characters);
+
+    auto checkBothShapes = [&]() {
+        // Inside the red rectangle [5,35)x[5,35).
+        auto red = renderer.pixelAt(20, 20);
+        CHECK_EQ(red.r, 255);
+        CHECK_EQ(red.g, 0);
+        CHECK_EQ(red.b, 0);
+        // Inside the green rectangle [60,90)x[60,90).
+        auto green = renderer.pixelAt(75, 75);
+        CHECK_EQ(green.r, 0);
+        CHECK_EQ(green.g, 255);
+        CHECK_EQ(green.b, 0);
+        // Background elsewhere, between the two shapes.
+        auto bg = renderer.pixelAt(45, 45);
+        CHECK_EQ(bg.r, 255);
+        CHECK_EQ(bg.g, 255);
+        CHECK_EQ(bg.b, 255);
+    };
+
+    // First render: both shapes' tessellations are cache MISSES (populate
+    // the cache for the first time).
+    scene.render(*root, renderer, width, height);
+    checkBothShapes();
+
+    // Second render through the SAME SceneRenderer instance: both shapes'
+    // tessellations are now cache HITS. If the cache were keyed wrong (or
+    // returned stale/uninitialized data on a hit) this would diverge from
+    // the first render's correct output.
+    scene.render(*root, renderer, width, height);
+    checkBothShapes();
+}

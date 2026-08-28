@@ -759,6 +759,79 @@ real (synthetic, temp-file) I/O; this tool's contribution is confirming
 that logic against the REAL corpus's specific directory shape, which a
 synthetic fixture can't stand in for.
 
+### L6 addendum — 2026-08-27 (Track B, task #67): AS2 `String` prototype methods implemented — click-trace re-run is a confirmed NEGATIVE result
+
+**What was implemented:** exactly the surface the L6 addendum above named,
+nothing broader — `String.fromCharCode(...)` (a static method on a new
+`String` global constructor object, `src/avm1/GlobalObject.cpp`) plus
+`someString.charAt(pos)`/`.charCodeAt(pos)`/`.substr(start[, length])` as
+new autoboxed instance methods on bare string PRIMITIVES
+(`tryStringPrimitiveMethod()`, `src/avm1/Interpreter.cpp`'s
+`ActionCode::CallMethod` handler — a bare AS2 string value has no
+`avm1::Object`/prototype to attach a method to, so these are special-cased
+directly against the raw `std::string`, the same pattern
+`ActionCode::GetMember` already used for `someString.length`). 7 new
+regression tests (`String_*`, `tests/test_avm1_interpreter.cpp`); the
+existing `Math_UnknownGlobal_StringNumberBooleanDate_AreNotDefined` test
+was renamed to `Math_UnknownGlobal_NumberBooleanDate_AreNotDefined` and had
+its `String` assertion removed, per that test's own stated update
+criteria. 382/382 tests passing (up from 375), zero new compiler warnings.
+
+**Re-run of the click-trace sweep (the actual point of this task):**
+`tools/real_game_harness/pamplona_click_trace.cpp`, rebuilt against the new
+interpreter, re-run against the real `extreme-pamplona.swf` at a 32-point
+grid sample (coarser than B1's original 253-point sweep, but spanning the
+full stage) with the same hover→press→release→settle shape. **Result: byte-
+identical to before this task.** Every trace line at every sampled point is
+still exactly `CallFunction ()` — an empty resolved name — and a
+grep across the full sweep output for `CallMethod`/`NewObject`/
+`NewMethod`/`GetURL` still returns **zero** matches, unchanged from the B1
+re-verification's finding.
+
+**Why this is a clean (not inconclusive) negative result:** the L6
+addendum's hypothesis was specifically that the empty `CallFunction` names
+were the OUTPUT of an obfuscated name-builder using
+`String.fromCharCode`/`.charAt`/`.charCodeAt`/`.substr` that this
+interpreter previously couldn't evaluate (so any such expression would
+have silently coerced to `undefined`, i.e. an empty string once
+`Value::toString()`'d). That hypothesis makes a concrete, falsifiable
+prediction: once those methods actually work, a script that depends on
+them should start producing a non-empty, meaningfully different resolved
+name. It didn't — the trace is identical down to the exact call count and
+shape at every sampled point. This rules out the specific mechanism the
+hypothesis proposed; it does not (and cannot) rule out some other,
+unidentified obfuscation technique, but there is no remaining
+evidence-backed reason to suspect one. Combined with L6's original Step 1
+finding (all 126 `DefineFunction`s are anonymous and each is invoked
+exactly once via `CallFunction`, live-confirmed), the simplest explanation
+consistent with every piece of evidence gathered so far (Step 1's static
+disassembly, the B1 re-verification's click-driven live trace, and this
+task's String-methods re-run) remains the original one: a genuinely
+anonymous, immediately-invoked config/constant-table decode step running
+once per tick, not a name-resolution failure this runtime was causing.
+
+**Updated recommendation:** per L6's own addendum, B4 (a bespoke
+external-XML-driven driver) was to stay a last resort until the
+String-methods hypothesis had "actually been tried and found
+insufficient" — it now has been. Extreme Pamplona's own main-file
+interactivity has exhausted the well-evidenced AVM1-runtime-feature
+avenues this investigation identified (B1 disassembly+live-trace,
+B3 infrastructure verification, this task's String methods); B4 is now the
+only remaining path to Extreme Pamplona's own content specifically, should
+a future session want to pursue it. This does not affect any Hobo file
+(zero relationship to Extreme Pamplona's specific obfuscation/loading
+situation), and the `String.fromCharCode`/`charAt`/`charCodeAt`/`substr`
+methods themselves remain real, permanent, evidence-motivated engine
+capability regardless of this negative result — they were a reasonable,
+falsifiable thing to try, and having tried them narrows the remaining
+hypothesis space for anyone picking this up later.
+
+**Regression / build:** `cmake --build build -j` clean, zero warnings;
+`ctest`/`./build/tests/flash3ds_tests` 382/382 passing. Click-trace re-run
+is read-only (no runtime behavior recorded/changed by the tool itself);
+raw sweep output not committed (matches this directory's real-corpus-output
+discipline — no copyrighted trace content, only this summary).
+
 ## L7 — `DefineShape4`/`DefineMorphShape`/`2`/`PlaceObject3`/`CsmTextSettings` not resolved
 
 - **Subsystem:** Rendering / SWF tag parsing.

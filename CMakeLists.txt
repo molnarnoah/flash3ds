@@ -200,6 +200,20 @@ if(FLASH3DS_BUILD_TOOLS)
     add_executable(hobo_movement_key_trace tools/real_game_harness/hobo_movement_key_trace.cpp)
     target_link_libraries(hobo_movement_key_trace PRIVATE flash3ds_core)
 
+    # Track A, A1 follow-up (2026-08-27, Hobo1 Track A Step 0 gap): taps
+    # InputState::kEnd every other tick (guaranteeing many real press-edges
+    # spread across a long run, rather than one continuous hold's single
+    # tick-0 edge) while holding the movement keys throughout, reporting
+    # every root-timeline frame change and gotoAndStop/gotoAndPlay/GetURL
+    # call as it happens -- to find out whether ordinary repeated player
+    # input can drive root all the way from frame 1 to frame 10 (where the
+    # real "hobo" player-character clip lives), not just the single
+    # timed-by-hand press docs/hobo-playability-verification.md's task #68
+    # addendum confirmed. See
+    # tools/real_game_harness/hobo_frame_progression_probe.cpp.
+    add_executable(hobo_frame_progression_probe tools/real_game_harness/hobo_frame_progression_probe.cpp)
+    target_link_libraries(hobo_frame_progression_probe PRIVATE flash3ds_core)
+
     # Track B, B1 (2026-08-27): re-verifies Extreme Pamplona's L6 "proven
     # negative" with a REAL simulated mouse click (idle-only traces cannot
     # reach a code path gated behind a Play-button click). See

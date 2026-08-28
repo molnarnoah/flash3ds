@@ -29,6 +29,21 @@
 // minimum" baseline set for a `Math` implementation — but `ceil`/`random`
 // are the only two with an actual traced call site in this corpus.
 //
+// Task #67 (2026-08-27) added a narrow `String` — NOT because of new
+// corpus evidence of a real call site (there still isn't one — see
+// docs/known-limitations.md's L6 addendum), but as a falsifiable test of
+// that addendum's specific hypothesis: that Extreme Pamplona's main file's
+// 126 anonymous, always-empty-name `CallFunction` calls are an obfuscated
+// name-builder using `String.fromCharCode`/`.charAt`/`.charCodeAt`/
+// `.substr` that this runtime previously couldn't resolve at all. Only
+// `fromCharCode` (a static method on the `String` object below) plus the
+// instance methods `charAt`/`charCodeAt`/`substr` (special-cased directly
+// against string primitives in Interpreter.cpp's CallMethod — see
+// tryStringPrimitiveMethod()'s doc comment there) were added — exactly the
+// set the addendum named, nothing broader. `Number`/`Boolean`/`Date`
+// remain out of scope; so does `new String(...)` (a real boxed String
+// object) — only the specific static/instance surface above.
+//
 // Later phases can extend GlobalObject::create() to seed more built-ins
 // without changing callers.
 

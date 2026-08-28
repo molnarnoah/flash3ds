@@ -148,9 +148,96 @@ constexpr RgbaColor kOutline{140, 140, 160, 255};
 constexpr RgbaColor kCirclePadDot{80, 200, 255, 255};
 constexpr RgbaColor kTouchDot{255, 200, 60, 255};
 
+// Per-phase frame-timing diagnostic (2026-08-28, "resolve the 7-12 FPS
+// pacing" task -- see docs/performance-pacing.md for the full writeup).
+// Averaged over a window of real loop iterations, drawn as horizontal bars
+// in the bottom screen's unused middle column (x=106..214 -- none of
+// kButtonBoxes/the circle pad/the touch dot touch that region) rather than
+// printed as numbers, same "no font rendering available in this project"
+// constraint showFatalErrorScreen()'s counted-squares technique above
+// already works around. The same numbers also go to LOG_INFO once per
+// window for anyone who *can* see a debug log viewer.
+//
+// Bars are drawn as a PROPORTION of the real measured period (not an
+// absolute ms scale) -- a first version used an absolute px/ms scale
+// capped at 20ms, which on the very first real recording immediately
+// saturated BOTH the period bar (expected -- 7-12fps is 83-142ms, way
+// past any fixed low cap) AND the renderTop bar at the same time, so it
+// was impossible to tell whether renderTop was 20ms or 120ms -- i.e.
+// whether it explained ALL of the missing time or just some of it. A
+// period-relative bar has no such cap: each phase bar's length is
+// literally "what fraction of one real frame this phase consumed," so a
+// bar reaching the same length as the (always-full-width) period
+// reference means that phase alone accounts for essentially the entire
+// frame.
+struct PhaseTimingWindow {
+    double inputMs = 0.0;
+    double advanceMs = 0.0;
+    double renderTopMs = 0.0;
+    double renderBottomMs = 0.0;
+    double presentMs = 0.0;
+    double vblankWaitMs = 0.0;
+    double periodMs = 0.0;  // real wall-clock time between successive loop tops
+    int samples = 0;
+    int advanceSamples = 0;  // advanceFrame() isn't called every iteration
+};
+
+constexpr RgbaColor kBarInput{120, 120, 255, 255};
+constexpr RgbaColor kBarAdvance{255, 120, 120, 255};
+constexpr RgbaColor kBarRenderTop{255, 200, 60, 255};
+constexpr RgbaColor kBarRenderBottom{255, 160, 200, 255};
+constexpr RgbaColor kBarPresent{120, 255, 180, 255};
+constexpr RgbaColor kBarWait{100, 100, 110, 255};
+constexpr RgbaColor kBarPeriodRef{255, 255, 255, 255};
+
+// Draws one averaged timing window as 6 horizontal bars (in the order the
+// phases run in the main loop below), each scaled as a FRACTION of the
+// real measured period (kRefPx wide = 100% of one real frame) -- plus a
+// 7th row: the period reference itself, always drawn as a full-width white
+// OUTLINE (not filled -- it's the ruler, not a measurement) so every other
+// bar's length is directly comparable to "the whole frame" at a glance.
+void drawPhaseTimingBars(IRenderer& renderer, const PhaseTimingWindow& w) {
+    if (w.samples == 0 || w.periodMs <= 0.0) return;
+    constexpr int kBarX = 106;
+    constexpr int kBarH = 24;
+    constexpr int kBarGap = 4;
+    constexpr int kRefPx = 100;  // width representing 100% of one real frame
+
+    const double periodMs = w.periodMs / w.samples;
+
+    struct Row {
+        double ms;
+        RgbaColor color;
+    };
+    const Row rows[] = {
+        {w.inputMs / w.samples, kBarInput},
+        {w.advanceSamples > 0 ? w.advanceMs / w.advanceSamples : 0.0, kBarAdvance},
+        {w.renderTopMs / w.samples, kBarRenderTop},
+        {w.renderBottomMs / w.samples, kBarRenderBottom},
+        {w.presentMs / w.samples, kBarPresent},
+        {w.vblankWaitMs / w.samples, kBarWait},
+    };
+
+    int y = 10;
+    for (const Row& row : rows) {
+        int px = static_cast<int>((row.ms / periodMs) * kRefPx);
+        if (px > kRefPx) px = kRefPx;  // a phase can't exceed the period it's part of
+        if (px < 1) px = 1;
+        drawFilledRect(renderer, kBarX, y, px, kBarH, row.color);
+        drawRectOutline(renderer, kBarX, y, kRefPx, kBarH, kOutline);
+        y += kBarH + kBarGap;
+    }
+    // The reference row: always full-width, outline only, brighter white --
+    // "this is what 100% of one real frame looks like."
+    drawRectOutline(renderer, kBarX, y, kRefPx, kBarH, kBarPeriodRef);
+    drawRectOutline(renderer, kBarX + 1, y + 1, kRefPx - 2, kBarH - 2, kBarPeriodRef);
+}
+
 // Draws the full button/circle-pad/touch test picture for this frame onto
-// `renderer`. `held` is this frame's hidKeysHeld() snapshot.
-void drawButtonTestScreen(IRenderer& renderer, u32 held) {
+// `renderer`. `held` is this frame's hidKeysHeld() snapshot. `timing` is
+// the most recently completed averaging window (samples==0 until the
+// first window closes, in which case nothing is drawn for it yet).
+void drawButtonTestScreen(IRenderer& renderer, u32 held, const PhaseTimingWindow& timing) {
     renderer.beginFrame(kBgColor);
 
     for (const ButtonBox& box : kButtonBoxes) {
@@ -186,6 +273,8 @@ void drawButtonTestScreen(IRenderer& renderer, u32 held) {
         drawFilledRect(renderer, static_cast<int>(touch.px) - 5, static_cast<int>(touch.py) - 5,
                         10, 10, kTouchDot);
     }
+
+    drawPhaseTimingBars(renderer, timing);
 
     renderer.endFrame();
 }
@@ -411,10 +500,29 @@ int main(int argc, char** argv) {
     constexpr double kVBlankHz = 60.0;
     int vblanksPerSwfFrame = std::max(1, static_cast<int>(std::lround(kVBlankHz / swfFrameRate)));
     int vblankCounter = 0;
+    LOG_INFO("PERF", "swfFrameRate=%.2f fps -> vblanksPerSwfFrame=%d (target movie-tick rate %.2f fps)",
+             swfFrameRate, vblanksPerSwfFrame, kVBlankHz / vblanksPerSwfFrame);
+
+    // Per-phase timing (see PhaseTimingWindow's own comment above) --
+    // `loopTimer` measures the REAL wall-clock period between successive
+    // loop tops (ground truth: how long one real frame actually took,
+    // independent of what the individual phases below add up to); `phase`
+    // is reused to time each phase in turn. Averaged over
+    // kTimingWindowSize real iterations, then logged and handed to
+    // drawButtonTestScreen() as bars, then reset.
+    constexpr int kTimingWindowSize = 60;
+    PhaseTimingWindow timingAccum;
+    PhaseTimingWindow timingLatest;  // last CLOSED window -- what gets drawn
+    TickCounter loopTimer;
+    osTickCounterStart(&loopTimer);
 
     while (aptMainLoop()) {
+        TickCounter phase;
+        osTickCounterStart(&phase);
         hidScanInput();
         input.poll(env.inputState());
+        osTickCounterUpdate(&phase);
+        timingAccum.inputMs += osTickCounterRead(&phase);
 
         const u32 kHeld = hidKeysHeld();
         const u32 kDown = hidKeysDown();
@@ -437,27 +545,64 @@ int main(int argc, char** argv) {
         if (kDown & KEY_X) audioBackend.playTestTone(554.0, 0.15);   // C#5
         if (kDown & KEY_Y) audioBackend.playTestTone(659.0, 0.15);   // E5
 
+        osTickCounterStart(&phase);
         if (++vblankCounter >= vblanksPerSwfFrame) {
             vblankCounter = 0;
             root->advanceFrame();
+            osTickCounterUpdate(&phase);
+            timingAccum.advanceMs += osTickCounterRead(&phase);
+            timingAccum.advanceSamples++;
             if (!loggedFirstFrame) {
                 loggedFirstFrame = true;
                 flash3ds::platform::checkpoint("after first frame (advanceFrame)");
             }
         }
 
+        osTickCounterStart(&phase);
         scene.render(*root, topRenderer, kTopWidth, kTopHeight);
+        osTickCounterUpdate(&phase);
+        timingAccum.renderTopMs += osTickCounterRead(&phase);
         if (!loggedFirstRender) {
             loggedFirstRender = true;
             flash3ds::platform::checkpoint("after first render (SceneRenderer::render)");
         }
-        drawButtonTestScreen(bottomRenderer, kHeld);
+
+        osTickCounterStart(&phase);
+        drawButtonTestScreen(bottomRenderer, kHeld, timingLatest);
+        osTickCounterUpdate(&phase);
+        timingAccum.renderBottomMs += osTickCounterRead(&phase);
+
         // Present BOTH screens together -- see Nintendo3DSRenderer::
         // presentFrame()'s comment for why this must be called exactly
         // once per real frame rather than once per renderer.
+        osTickCounterStart(&phase);
         Nintendo3DSRenderer::presentFrame();
+        osTickCounterUpdate(&phase);
+        timingAccum.presentMs += osTickCounterRead(&phase);
 
+        osTickCounterStart(&phase);
         gspWaitForVBlank();
+        osTickCounterUpdate(&phase);
+        timingAccum.vblankWaitMs += osTickCounterRead(&phase);
+
+        osTickCounterUpdate(&loopTimer);
+        timingAccum.periodMs += osTickCounterRead(&loopTimer);
+        timingAccum.samples++;
+
+        if (timingAccum.samples >= kTimingWindowSize) {
+            const double n = static_cast<double>(timingAccum.samples);
+            const double avgPeriod = timingAccum.periodMs / n;
+            LOG_INFO("PERF",
+                     "avg ms/frame (n=%d): input=%.2f advance=%.2f(n=%d) renderTop=%.2f "
+                     "renderBottom=%.2f present=%.2f vblankWait=%.2f | period=%.2f (%.1f fps)",
+                     timingAccum.samples, timingAccum.inputMs / n,
+                     timingAccum.advanceSamples > 0 ? timingAccum.advanceMs / timingAccum.advanceSamples : 0.0,
+                     timingAccum.advanceSamples, timingAccum.renderTopMs / n, timingAccum.renderBottomMs / n,
+                     timingAccum.presentMs / n, timingAccum.vblankWaitMs / n, avgPeriod,
+                     avgPeriod > 0.0 ? 1000.0 / avgPeriod : 0.0);
+            timingLatest = timingAccum;
+            timingAccum = PhaseTimingWindow{};
+        }
     }
 
     flash3ds::platform::checkpoint("shutdown (peak reflects the whole session)");

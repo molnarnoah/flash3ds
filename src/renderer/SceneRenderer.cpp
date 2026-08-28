@@ -159,7 +159,18 @@ void SceneRenderer::renderShapeCharacter(const swf::ShapeDef& shapeDef,
                                           const swf::ColorTransform& worldColorTransform,
                                           IRenderer& target, double pixelsPerTwipX,
                                           double pixelsPerTwipY) {
-    TessellatedShape tess = tessellateShape(shapeDef.shape);
+    // Tessellation cache -- see shapeTessellationCache_'s own doc comment
+    // in SceneRenderer.h for why keying by the swf::Shape's address is
+    // safe. `emplace` only actually constructs/tessellates on a real miss
+    // (its second argument is only evaluated if the key is absent), so a
+    // cache hit costs one hash lookup, not a wasted tessellateShape() call
+    // followed by a discard.
+    const swf::Shape* key = &shapeDef.shape;
+    auto [it, inserted] = shapeTessellationCache_.try_emplace(key);
+    if (inserted) {
+        it->second = tessellateShape(shapeDef.shape);
+    }
+    const TessellatedShape& tess = it->second;
 
     for (const auto& poly : tess.polygons) {
         auto devicePoints =

@@ -402,3 +402,136 @@ passing (369 baseline as of the prior commit + the 2 new tests here — the
 369 baseline is itself 1 higher than this document's earlier "368/368"
 line, from a test added by the sibling Track B commit made the same
 session after that line was written).
+
+## Addendum — 2026-08-27, "disassemble root frame 2's unidentified clips" resolved: ROOT REACHES FRAME 10, real gameplay confirmed responsive to input
+
+This is the direct follow-up to the previous addendum's own negative
+conclusion (`tools/real_game_harness/hobo_frame_progression_probe.cpp`'s
+header comment, "Addendum ... a full pressTick sweep found ... continuing
+to tap End afterward never advances root past frame 2"). That addendum was
+wrong to call frame 2 a dead end — not because the exhaustive input-timing
+sweep was flawed (it wasn't: no ordinary End/Enter/Space tap or click ever
+advances root out of frame 2 on its own), but because it never tried
+waiting long enough with no further input at all. Root frame 2's three
+previously-unidentified clips (characterIds 114/118/192, recorded ad hoc
+in a prior session) turn out to include one, characterId=192, that carries
+an unconditional `DoAction` frame script — `CallMethod
+$_root.gotoAndStop(9)` — on the LAST local frame of its own 190-frame
+timeline. Nothing gates it: no `CondKeyPress`, no button, no mouse
+interaction. It fires automatically once that timeline finishes playing
+out, ~190 ticks (~7.6s at 25fps) after root reaches frame 2. This is
+completely invisible to any input-based probe, which is exactly why the
+prior addendum's genuinely-exhaustive input sweep never found it.
+
+**Full chain, reconfirmed live in this session** via
+`hobo_frame_progression_probe` (rebuilt from a full clean tree) against
+the real `/home/claude/hobo-testing/hobo.swf`
+(md5 `d59ed276a15e17fe6e08254ad0e51738`), a single unbroken 900-tick run,
+End tapped on a period-3 cadence (`endTapPeriod=3`) so tap edges land on
+both tick parities over time — deliberately chosen after re-discovering
+that the very first frame1→2 hop only fires on an ODD-parity press edge
+(preloader's own local-frame-4 window lines up with odd ticks, not even
+ones — a period-2/even-phase sweep alone reproduces nothing, which is what
+an initial re-check run in this session hit before the phase mismatch was
+spotted and corrected):
+
+- tick 3: root frame 1 -> 2 (character 32's `CondKeyPress=4` button inside
+  "preloader", `_root.gotoAndStop(2)` — matches the prior "task #68 closed"
+  addendum above)
+- tick 192: root frame 2 -> 9, **automatic, no input** (character 192's
+  190-frame-timed `_root.gotoAndStop(9)`, this addendum's own finding)
+- tick 198: root frame 9 -> 6 (a `key=4` button, characterId=1374, inside
+  "mainmenu"/characterId=1376)
+- tick 204: root frame 6 -> 3 (mechanism not individually traced this
+  session; confirmed empirically)
+- tick 207: root frame 3 -> 10 (a `key=4` button, characterId=277, inside
+  "intromovie"/characterId=1156 — confirmed directly in
+  `avm1_loader_disasm` output: `[DefineButton2 characterId=277 cond#0 ()
+  key=4] CallMethod $_root.gotoAndStop(10)`)
+- **root holds at frame 10 through the full remainder of the 900-tick
+  run** (693 ticks after first arriving) — not a transient bounce.
+
+Root frame 10's full display list (45 entries) includes the real named
+`"hobo"` player-character clip at depth 94, characterId=1913 — confirmed
+directly in this run's dump, matching Finding 5/6's identification above.
+
+### Step 3 — full keyPress inventory (closes the "still open" Enter/Space
+candidates the earlier addendum flagged)
+
+Re-ran `avm1_loader_disasm` (its `spriteCharacterId`-threading and
+unconditional `PlaceObject2`/`ClipActionRecord` placement-logging
+extensions, both already present in this tool) against the same real
+`hobo.swf`. Every `CondKeyPress` condition in the entire file —
+129 occurrences across 12 distinct button/condition combinations — uses
+**`key=4`** (End). No other key code appears anywhere in the corpus:
+Enter/Space, previously flagged as untested candidates, are fully ruled
+out — they were never wired to anything to begin with. Exactly one
+button, characterId=1320 (a cheat-code password keypad, unrelated to the
+main-flow chain above), carries mouse-transition conditions
+(`OverUpToIdle`/`OverDownToOverUp`/`OverDownToOutDown`) alongside its
+`key=4` condition; every other button in the file is keyboard-only —
+consistent with Finding 4 above (no stage coordinate responds to a plain
+click).
+
+### Step 4b — held-vs-control: frame 10 genuinely responds to input
+
+With `_root.hobo` finally existing once frame 10 is reached, the original
+Finding 1/2 question (does gameplay respond to the documented movement
+keys?) is answerable for the first time. Same methodology as Finding 1/2:
+two runs, byte-identical End-tap sequence to reach frame 10, differing
+ONLY in whether Left/Up/Right/Down/`'A'`/`'S'` are held
+(`holdMovementKeys` flag). At tick 230 (23 ticks after first reaching
+frame 10):
+
+| Run | hobo stage position | hobo local animation frame |
+|---|---|---|
+| Movement keys held | x=199.6, y=319.7 | **39** (of 59) |
+| Control (no movement keys) | x=199.6, y=319.7 | **7** (of 59) |
+
+Stage *position* is identical in both runs (both numbers reproduced
+exactly, matching this same comparison's original run in the now-lost
+commit this addendum restores). Local animation frame is sharply and
+reproducibly different — a real, input-caused effect, not ambient noise:
+`onClipEvent(enterFrame)`/`Key.isDown()` handlers are firing against a
+real target and visibly changing its behavior. Stage-position *movement*
+(walking hobo across the screen) was NOT tested in this window and
+remains open — see below.
+
+### Answer to the user-facing question
+
+**A working trigger was found.** Root reaches frame 10 (real gameplay,
+`_root.hobo` present) via ordinary means: one End-key press (works
+reliably; must land on an odd-parity tick relative to preloader's own
+spinner, which any reasonably-paced tap sequence satisfies) followed by
+simply waiting ~190 ticks with no further input, then two more End
+presses. Frame 10 is confirmed responsive to the documented movement keys.
+**A4/A5 can now proceed** — there is a real, reproducible input path to
+gameplay to build a packaging/on-device test around.
+
+### What's still open
+
+- Stage-*position* movement (walking) in response to movement keys was not
+  confirmed in the tested window — only the local-animation-frame
+  difference was. A longer or differently-timed held-vs-control run would
+  be needed to confirm actual on-screen movement, not just animation
+  state change.
+- The tick198→204 (frame 9→6→3) transition mechanism was confirmed to
+  happen but not individually traced button-by-button, unlike the other
+  three hops.
+- No audio was checked as part of this reconfirmation.
+- This addendum's own live numbers (tick offsets, display-list contents,
+  held-vs-control frame numbers) were reproduced fresh in this session
+  from the real corpus file, independent of — and matching — the prior
+  session's now-lost commit that first found them; this is a genuine
+  re-derivation, not a copy of remembered figures.
+
+### Regression / build (this addendum)
+
+No `src/` changes — this addendum only reconfirms an existing finding
+after this session's own environment reset destroyed the commit that
+first recorded it (see `CLAUDE.md`'s reset-recovery history). `ctest`/
+`flash3ds_tests`: 382/382 passing, zero regressions, full clean rebuild,
+zero warnings. Tools used: `hobo_frame_progression_probe` (already
+CMake-registered) and `avm1_loader_disasm` (already CMake-registered).
+Both read-only against the real corpus file per this project's standing
+rule — no runtime behavior modified.

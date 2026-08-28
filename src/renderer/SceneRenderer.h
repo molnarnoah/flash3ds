@@ -39,6 +39,8 @@
 
 #pragma once
 
+#include <unordered_map>
+
 #include "renderer/IRenderer.h"
 #include "renderer/ShapeTessellator.h"
 #include "runtime/CharacterDictionary.h"
@@ -116,6 +118,32 @@ private:
 
     const runtime::Movie* movie_;
     const runtime::CharacterDictionary* characters_;
+
+    // Performance fix (2026-08-28, "resolve the 7-12 FPS pacing" task --
+    // see docs/performance-pacing.md for the measured evidence this was
+    // built on): renderShapeCharacter() used to call tessellateShape()
+    // fresh on every single render() call for every placed shape, even
+    // though a swf::ShapeDef's geometry is immutable once parsed (no
+    // drawing API exists anywhere in this runtime that could mutate a
+    // Shape's edges/styles post-parse) and tessellation is done entirely
+    // in the shape's own local twip space (world transform is applied
+    // separately, AFTER tessellation, in toDevicePolyline) -- so the same
+    // shapeDef always tessellates to the exact same TessellatedShape,
+    // frame after frame, whether or not anything on screen actually
+    // changed. On-device phase timing showed this was the dominant cost
+    // by far (roughly 60% of every real frame, even on a static screen).
+    // Cached here, keyed by the address of the shapeDef's own swf::Shape
+    // (stable for the CharacterDictionary's lifetime: parsedCharacters_
+    // is a std::unordered_map, which never invalidates existing elements'
+    // addresses on insertion -- only iterators -- and entries are never
+    // erased, per the M2/Roadmap-Phase-6 "no eviction" decision already
+    // documented in docs/memory-audit.md). `mutable` because caching is
+    // an internal render-time optimization, not user-visible state --
+    // render() itself stays logically const-compatible with its callers'
+    // expectations (it already wasn't const, but this keeps the cache
+    // from forcing every call site to be non-const for a reason unrelated
+    // to what render() actually does).
+    mutable std::unordered_map<const swf::Shape*, TessellatedShape> shapeTessellationCache_;
 
     // Guards against a malformed/cyclic sprite OR button reference (a
     // sprite/button that directly or indirectly places itself) recursing

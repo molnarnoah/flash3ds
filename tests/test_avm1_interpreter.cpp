@@ -914,17 +914,132 @@ TEST_CASE(Math_Random_UsesInjectedRandomSourceAndStaysInZeroToOneRange) {
     CHECK(nearOne > 0.999);
 }
 
-TEST_CASE(Math_UnknownGlobal_StringNumberBooleanDate_AreNotDefined) {
-    // Roadmap Phase 8 deliberately did NOT implement String/Number/
-    // Boolean/Date as global constructors — zero real corpus evidence of
-    // their use (see GlobalObject.h's Phase 8 doc comment). This test
-    // documents that as an explicit, checked assumption rather than a
-    // silent gap: if a future phase adds one of these, this test's
-    // corresponding CHECK should be removed/updated as part of that
-    // phase's own completion criteria, not left stale.
+TEST_CASE(Math_UnknownGlobal_NumberBooleanDate_AreNotDefined) {
+    // Roadmap Phase 8 deliberately did NOT implement Number/Boolean/Date
+    // as global constructors — zero real corpus evidence of their use
+    // (see GlobalObject.h's Phase 8 doc comment). `String` was here too
+    // until task #67 (2026-08-27) added a narrow slice of it (see
+    // GlobalObject.h's task #67 doc comment) — its own CHECK was removed
+    // as part of that phase's completion criteria, per this test's
+    // original warning below; the rest of that warning still applies to
+    // whatever's left. This test documents the remaining gaps as an
+    // explicit, checked assumption rather than a silent one: if a future
+    // phase adds one of these, its CHECK should be removed/updated as
+    // part of that phase's own completion criteria, not left stale.
     auto ctx = makeContext();
-    CHECK(ctx.globalObject->getOwnProperty("String").isUndefined());
     CHECK(ctx.globalObject->getOwnProperty("Number").isUndefined());
     CHECK(ctx.globalObject->getOwnProperty("Boolean").isUndefined());
     CHECK(ctx.globalObject->getOwnProperty("Date").isUndefined());
+}
+
+// ===========================================================================
+// Task #67 (2026-08-27): the narrow String surface added to test the L6
+// addendum's obfuscated-name-builder hypothesis (see GlobalObject.h's task
+// #67 doc comment and docs/known-limitations.md's L6 addendum). Exercised
+// via real AS2 bytecode (ActionCallMethod/ActionGetMember), same
+// discipline as the Math_* tests above.
+// ===========================================================================
+
+TEST_CASE(String_FromCharCode_StaticMethod_BuildsStringFromCodes) {
+    // String.fromCharCode(72, 105) -> "Hi" — the exact obfuscated
+    // name-builder shape the L6 addendum hypothesized.
+    auto ctx = makeContext();
+    Asm a;
+    a.pushString("result");
+    a.pushInt(72);
+    a.pushInt(105);
+    a.pushInt(2);
+    a.pushString("String");
+    a.op(op(AC::GetVariable));
+    a.pushString("fromCharCode");
+    a.op(op(AC::CallMethod));
+    a.op(op(AC::SetVariable));
+    run(ctx, a.build());
+    CHECK_EQ(ctx.scope.getVariable("result").toString(), "Hi");
+}
+
+TEST_CASE(String_FromCharCode_NoArgs_ProducesEmptyString) {
+    auto ctx = makeContext();
+    Asm a;
+    a.pushString("result");
+    a.pushInt(0);
+    a.pushString("String");
+    a.op(op(AC::GetVariable));
+    a.pushString("fromCharCode");
+    a.op(op(AC::CallMethod));
+    a.op(op(AC::SetVariable));
+    run(ctx, a.build());
+    CHECK_EQ(ctx.scope.getVariable("result").toString(), "");
+}
+
+// Calls `<stringLiteral>.<method>(args...)` via CallMethod against a bare
+// string PRIMITIVE (not a String global lookup) — the autoboxing path
+// tryStringPrimitiveMethod() adds in Interpreter.cpp.
+Value callStringPrimitiveMethod(ExecutionContext& ctx, const std::string& str,
+                                 const std::string& method, const std::vector<double>& args) {
+    Asm a;
+    a.pushString("result");
+    for (double v : args) a.pushDouble(v);
+    a.pushInt(static_cast<int32_t>(args.size()));
+    a.pushString(str);
+    a.pushString(method);
+    a.op(op(AC::CallMethod));
+    a.op(op(AC::SetVariable));
+    run(ctx, a.build());
+    return ctx.scope.getVariable("result");
+}
+
+TEST_CASE(String_CharAt_ReturnsSingleCharOrEmptyOutOfRange) {
+    auto ctx = makeContext();
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello", "charAt", {1}).toString(), "e");
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello", "charAt", {0}).toString(), "h");
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello", "charAt", {4}).toString(), "o");
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello", "charAt", {5}).toString(), "");
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello", "charAt", {-1}).toString(), "");
+    // No-arg form defaults pos to 0, matching real AS2.
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello", "charAt", {}).toString(), "h");
+}
+
+TEST_CASE(String_CharCodeAt_ReturnsByteCodeOrNanOutOfRange) {
+    auto ctx = makeContext();
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "Hi", "charCodeAt", {0}).toNumber(), 72.0);
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "Hi", "charCodeAt", {1}).toNumber(), 105.0);
+    CHECK(std::isnan(callStringPrimitiveMethod(ctx, "Hi", "charCodeAt", {2}).toNumber()));
+    CHECK(std::isnan(callStringPrimitiveMethod(ctx, "Hi", "charCodeAt", {-1}).toNumber()));
+}
+
+TEST_CASE(String_Substr_HandlesNegativeStartAndOmittedLength) {
+    auto ctx = makeContext();
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello world", "substr", {6}).toString(), "world");
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello world", "substr", {0, 5}).toString(), "hello");
+    // Negative start counts back from the end.
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello world", "substr", {-5}).toString(), "world");
+    // Length running past the end clamps rather than throwing.
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello", "substr", {2, 100}).toString(), "llo");
+    // Negative length clamps to an empty result (ECMA-262 Annex B).
+    CHECK_EQ(callStringPrimitiveMethod(ctx, "hello", "substr", {1, -1}).toString(), "");
+}
+
+TEST_CASE(String_Length_StillWorksAsPlainPropertyNotMethod) {
+    // `.length` was already handled in ActionCode::GetMember before task
+    // #67 (it's a property read, not a CallMethod) — this just confirms
+    // the new CallMethod autoboxing path didn't regress it.
+    auto ctx = makeContext();
+    Asm a;
+    a.pushString("result");
+    a.pushString("hello");
+    a.pushString("length");
+    a.op(op(AC::GetMember));
+    a.op(op(AC::SetVariable));
+    run(ctx, a.build());
+    CHECK_EQ(ctx.scope.getVariable("result").toNumber(), 5.0);
+}
+
+TEST_CASE(String_UnknownMethodOnPrimitive_FallsThroughToUndefinedNotCrash) {
+    // A method name this runtime doesn't recognize on a string primitive
+    // (e.g. the still-unimplemented `toUpperCase`) should fall through to
+    // CallMethod's ordinary "not a function" handling — undefined, no
+    // crash — not be silently swallowed by the new autoboxing path.
+    auto ctx = makeContext();
+    CHECK(callStringPrimitiveMethod(ctx, "hello", "toUpperCase", {}).isUndefined());
 }

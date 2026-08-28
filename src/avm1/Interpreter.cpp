@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <random>
 
 #include "avm1/ActionCode.h"
@@ -88,6 +89,61 @@ std::vector<Value> popArgs(Stack& stack, double numArgsRaw) {
         args[numArgs - 1 - i] = stack.pop();
     }
     return args;
+}
+
+// Task #67 (2026-08-27): the small set of AS2 String.prototype INSTANCE
+// methods with real corpus-motivated evidence — see docs/known-
+// limitations.md's L6 addendum (the obfuscated-name-builder hypothesis
+// this was added to test). Real Flash autoboxes a bare string primitive
+// (e.g. a local variable holding "abc") into a temporary String wrapper
+// object whenever a method is called on it; this codebase's Object has no
+// [[PrimitiveValue]] wrapper slot to build a real String.prototype chain
+// on, so — same precedent as ActionCode::GetMember's existing
+// `someString.length` special case just below — these are special-cased
+// directly against the raw std::string instead. `fromCharCode` is NOT
+// here: it's a STATIC method called as `String.fromCharCode(...)`, not on
+// a string instance, so it lives as an ordinary native function property
+// on GlobalObject's `String` object (see GlobalObject.cpp) and needs no
+// interpreter change at all. Byte-oriented throughout (matches Value.h's
+// documented non-Unicode simplification, same as charCodeAt()'s mirror in
+// GlobalObject.cpp's fromCharCode). Returns false (leaving `out`
+// untouched) for any method name this doesn't recognize, so CallMethod's
+// normal "not a function" warning still fires for anything else called on
+// a string primitive.
+bool tryStringPrimitiveMethod(const std::string& str, const std::string& methodName,
+                               const std::vector<Value>& args, Value& out) {
+    const int64_t len = static_cast<int64_t>(str.size());
+    if (methodName == "charAt") {
+        int64_t pos = args.empty() ? 0 : static_cast<int64_t>(args[0].toNumber());
+        out = (pos < 0 || pos >= len) ? Value::string("")
+                                       : Value::string(std::string(1, str[static_cast<size_t>(pos)]));
+        return true;
+    }
+    if (methodName == "charCodeAt") {
+        int64_t pos = args.empty() ? 0 : static_cast<int64_t>(args[0].toNumber());
+        out = (pos < 0 || pos >= len)
+                  ? Value::number(std::numeric_limits<double>::quiet_NaN())
+                  : Value::number(static_cast<double>(static_cast<unsigned char>(str[static_cast<size_t>(pos)])));
+        return true;
+    }
+    if (methodName == "substr") {
+        // ECMA-262 Annex B String.prototype.substr (what AS2's compiler
+        // targets — a legacy JS1.2 method, distinct from the newer
+        // `substring`, which this runtime does NOT implement — no corpus
+        // evidence for it, same "evidence before implementation"
+        // discipline as GlobalObject.h's Phase 8 doc comment): a negative
+        // `start` counts back from the end (clamped to 0, never wraps
+        // past it); an omitted `length` takes the rest of the string; a
+        // `length` that would run past the end (or is negative) clamps to
+        // however many characters actually remain, never throws.
+        int64_t start = args.empty() ? 0 : static_cast<int64_t>(args[0].toNumber());
+        start = std::clamp<int64_t>(start < 0 ? len + start : start, 0, len);
+        int64_t count = (args.size() > 1) ? static_cast<int64_t>(args[1].toNumber()) : (len - start);
+        count = std::clamp<int64_t>(count, 0, len - start);
+        out = Value::string(str.substr(static_cast<size_t>(start), static_cast<size_t>(count)));
+        return true;
+    }
+    return false;
 }
 
 // --- value operations (bytecode-level semantics, not core Value methods) -
@@ -1089,13 +1145,29 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 Value objectVal = ctx.stack.pop();
                 double numArgsRaw = ctx.stack.pop().toNumber();
                 std::vector<Value> args = popArgs(ctx.stack, numArgsRaw);
+                std::string methodName = methodNameVal.toString();
+
+                // String-primitive autoboxing (task #67) — see
+                // tryStringPrimitiveMethod()'s doc comment above. Checked
+                // BEFORE the isObject() bail-out below since a bare AS2
+                // string value is never itself an avm1::Object.
+                if (objectVal.isString()) {
+                    Value result;
+                    if (tryStringPrimitiveMethod(objectVal.asStringRaw(), methodName, args, result)) {
+                        if (ctx.callTraceSink) {
+                            ctx.callTraceSink("CallMethod \"" + objectVal.asStringRaw() + "\"." + methodName +
+                                               "(" + formatTraceArgs(args) + ")");
+                        }
+                        ctx.stack.push(result);
+                        break;
+                    }
+                }
 
                 if (!objectVal.isObject() || !objectVal.asObject()) {
                     LOG_WARN("AVM1", "CallMethod: target is not an object");
                     ctx.stack.push(Value::undefined());
                     break;
                 }
-                std::string methodName = methodNameVal.toString();
                 if (ctx.callTraceSink) {
                     ctx.callTraceSink("CallMethod " + objectVal.toString() + "." + methodName + "(" +
                                        formatTraceArgs(args) + ")");

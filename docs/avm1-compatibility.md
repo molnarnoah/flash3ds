@@ -82,7 +82,9 @@ keyword-filtered for `Math`/`String`/`Number`/`Boolean`/`Date`) across all
 | `Math.random()` | Called in hobo2/hobo3/hobo5/hobo6/hobo7 (66 sites) | EXECUTED |
 | `Math.ceil()` | Called in hobo2/hobo3/hobo5/hobo6/hobo7 (66 sites, always paired with `Math.random()` — the `Math.ceil(Math.random() * n)` idiom) | EXECUTED |
 | `Math.floor/round/abs/sqrt/pow/min/max/PI/E` | No traced call site in this corpus | EXECUTED (added alongside the evidenced two — same trivial/stateless shape, zero extra cost, matches the roadmap's own "at minimum" baseline) |
-| `String`/`Number`/`Boolean`/`Date` (as global constructors/conversion functions) | Zero `CallFunction`/`NewObject`/`CallMethod` hits anywhere in the corpus | **DELIBERATELY NOT IMPLEMENTED** — see `docs/known-limitations.md` L2 |
+| `String.fromCharCode(...)` (static) | No traced call site — added task #67 (2026-08-27) as a falsifiable test of the Extreme Pamplona obfuscated-name-builder hypothesis in `docs/known-limitations.md`'s L6 addendum, not new corpus evidence | EXECUTED |
+| `someString.charAt/.charCodeAt/.substr(...)` (instance methods on string PRIMITIVES, autoboxed) | Same task #67 rationale as `fromCharCode` above | EXECUTED — special-cased in `Interpreter.cpp`'s `ActionCode::CallMethod` (`tryStringPrimitiveMethod()`), not a real `String.prototype` chain (`Object` has no `[[PrimitiveValue]]` wrapper slot) |
+| `String` (as `new String(...)`, a real boxed object) / `Number`/`Boolean`/`Date` (as global constructors/conversion functions) | Zero `CallFunction`/`NewObject`/`CallMethod` hits anywhere in the corpus | **DELIBERATELY NOT IMPLEMENTED** — see `docs/known-limitations.md` L2 (`Number`/`Boolean`/`Date`) and its L6 addendum (why `String`'s narrow slice above was added despite no direct evidence, and why the rest of `String` still isn't) |
 
 `Math` is a plain object (`GlobalObject::create()` populates it directly,
 no `nativeImpl`-framework changes needed — reuses the exact seam Phase 6's

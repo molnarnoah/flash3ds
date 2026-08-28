@@ -59,17 +59,28 @@ namespace {
 struct CollectedTag {
     swf::TagRecord tag;
     int depth;
+    // 2026-08-27 (Hobo1 "disassemble root frame 2's unidentified clips"
+    // follow-up): the characterId of the innermost enclosing DefineSprite
+    // this tag lives inside (0 = top-level movie tag stream). Previously
+    // read and immediately discarded ("characterId, unused here") -- now
+    // threaded through so a DoAction/DoInitAction frame script found deep
+    // inside a specific sprite can be attributed to that sprite's
+    // characterId directly, instead of only the tree-nesting `depth`
+    // (which says "how many DefineSprite levels deep" but not "which
+    // sprite"). This is what Step 1 of the disassembly prompt needs: find
+    // every DoAction that belongs to characterId 114/118/192 specifically.
+    uint16_t spriteCharacterId;
 };
 
 void collectTagsRecursive(const runtime::Movie& movie, const std::vector<swf::TagRecord>& tags,
-                           int depth, std::vector<CollectedTag>& out) {
+                           int depth, uint16_t spriteCharacterId, std::vector<CollectedTag>& out) {
     for (const auto& tag : tags) {
-        out.push_back({tag, depth});
+        out.push_back({tag, depth, spriteCharacterId});
         if (static_cast<swf::TagCode>(tag.code) == swf::TagCode::DefineSprite) {
             if (tag.bodyLength < 4) continue;
             swf::SwfReader header = movie.tagBodyReader(tag);
-            header.readU16();
-            header.readU16();
+            uint16_t thisSpriteCharacterId = header.readU16();
+            header.readU16();  // frameCount, unused here
             if (header.failed()) continue;
             std::vector<swf::TagRecord> nested;
             swf::SwfReader full(movie.data.data(), movie.data.size());
@@ -82,7 +93,7 @@ void collectTagsRecursive(const runtime::Movie& movie, const std::vector<swf::Ta
                 if (static_cast<swf::TagCode>(nestedTag.code) == swf::TagCode::End) break;
                 full.skip(nestedTag.bodyLength);
             }
-            collectTagsRecursive(movie, nested, depth + 1, out);
+            collectTagsRecursive(movie, nested, depth + 1, thisSpriteCharacterId, out);
         }
     }
 }
@@ -788,7 +799,7 @@ int main(int argc, char** argv) {
     }
 
     std::vector<CollectedTag> allTags;
-    collectTagsRecursive(*movie, movie->tags, 0, allTags);
+    collectTagsRecursive(*movie, movie->tags, 0, /*spriteCharacterId=*/0, allTags);
 
     std::vector<std::string> events;
     int doActionCount = 0, doInitActionCount = 0, clipActionCount = 0, buttonActionCount = 0;
@@ -865,7 +876,22 @@ int main(int argc, char** argv) {
             // never being scanned at all, not merely mis-disassembled.
             swf::SwfReader r = movie->tagBodyReader(ct.tag);
             auto parsed = swf::parsePlaceObject(r, ct.tag.code, movie->version);
-            if (!parsed || parsed->clipActions.empty()) continue;
+            if (!parsed) continue;
+            // 2026-08-27 (Hobo1 "disassemble root frame 2's unidentified
+            // clips" follow-up, Step 1): unconditionally log every
+            // placement's characterId/depth/name/enclosing sprite, even
+            // with no clip actions -- needed to answer "what characters
+            // does sprite X actually place inside itself", which the
+            // clip-action-only scan above can't answer (most placements
+            // carry no onClipEvent at all, but still matter for finding
+            // e.g. a button nested inside a menu sprite).
+            if (parsed->characterId) {
+                events.push_back("[placement enclosingSpriteCharId=" + std::to_string(ct.spriteCharacterId) +
+                                  "] depth=" + std::to_string(parsed->depth) + " characterId=" +
+                                  std::to_string(*parsed->characterId) +
+                                  (parsed->name ? " name=\"" + *parsed->name + "\"" : ""));
+            }
+            if (parsed->clipActions.empty()) continue;
             for (size_t i = 0; i < parsed->clipActions.size(); ++i) {
                 const auto& rec = parsed->clipActions[i];
                 if (rec.actionBytes.empty()) continue;
@@ -903,7 +929,8 @@ int main(int argc, char** argv) {
                                      " charId=" +
                                      (parsed->characterId ? std::to_string(*parsed->characterId) : "?") +
                                      " record#" + std::to_string(i) + " (treeDepth=" +
-                                     std::to_string(ct.depth) + ")";
+                                     std::to_string(ct.depth) + ", enclosingSpriteCharId=" +
+                                     std::to_string(ct.spriteCharacterId) + ")";
                 DisasmState st;
                 st.context = label;
                 st.eventsOut = &events;
@@ -918,11 +945,13 @@ int main(int argc, char** argv) {
         if (code == swf::TagCode::DoInitAction) {
             uint16_t characterId = r.readU16();
             label = "DoInitAction(characterId=" + std::to_string(characterId) + ", depth=" +
-                    std::to_string(ct.depth) + ")";
+                    std::to_string(ct.depth) + ", enclosingSpriteCharId=" +
+                    std::to_string(ct.spriteCharacterId) + ")";
             doInitActionCount++;
         } else {
             label = "DoAction(depth=" + std::to_string(ct.depth) + ", tagOffset=" +
-                     std::to_string(ct.tag.bodyOffset) + ")";
+                     std::to_string(ct.tag.bodyOffset) + ", enclosingSpriteCharId=" +
+                     std::to_string(ct.spriteCharacterId) + ")";
             doActionCount++;
         }
         DisasmState st;
