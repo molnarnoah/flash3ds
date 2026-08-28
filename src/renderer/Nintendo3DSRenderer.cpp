@@ -73,19 +73,46 @@ void Nintendo3DSRenderer::endFrame() {
     TickCounter blitTimer;
     osTickCounterStart(&blitTimer);
 
-    for (int y = 0; y < blitH; ++y) {
-        for (int x = 0; x < blitW; ++x) {
-            const swf::RgbaColor px = software_.pixelAt(x, y);
-            // Documented rotated/column-major indexing formula (see header
-            // comment and the fbWidth/fbHeight note above) — physical row
-            // index within the destination column runs bottom-to-top
-            // relative to our logical top-to-bottom y.
-            const int physIndex =
-                (x * static_cast<int>(fbWidth) + (static_cast<int>(fbWidth) - 1 - y)) *
-                kBytesPerPixel;
+    // Performance fix (2026-08-28, "resolve the 7-12 FPS pacing" task,
+    // continuing after the span-fill fix -- see docs/performance-pacing.md):
+    // two changes to this loop, both reasoned from the indexing formula
+    // itself (this file is 3DS-only, so unlike every prior fix in this
+    // task there is no desktop MD5 check available -- correctness here
+    // rests on this reasoning plus the next on-device recording, not on
+    // an automated test).
+    //
+    // 1. pixelAt() -> pixelAtUnchecked(): blitW/blitH are already
+    //    std::min()'d against srcW/srcH above, so every (x, y) this loop
+    //    visits is provably in [0, srcW) x [0, srcH) before the loop
+    //    starts -- pixelAt()'s own bounds check was pure redundant work
+    //    on every one of up to 96,000 pixels/frame (same class of fix as
+    //    fillSpan() in SoftwareRenderer.cpp).
+    //
+    // 2. Loop nesting swapped from (y outer, x inner) to (x outer, y
+    //    inner). `physIndex = (x*fbWidth + (fbWidth-1-y)) * 3` means: for
+    //    FIXED y, stepping x writes `fb` in fbWidth*3-byte STRIDES (the
+    //    original nesting) -- but for FIXED x, stepping y writes `fb` at
+    //    physIndex DECREASING by exactly 3 each step, i.e. sequentially.
+    //    Writing the destination framebuffer contiguously matters more
+    //    than reading the source contiguously: `fb` is display memory
+    //    (likely write-combined/uncached, where a strided write pattern
+    //    is much more expensive than a strided read from ordinary cached
+    //    system RAM), and it's `fb`, not `pixels_`, whose access pattern
+    //    this loop actually controls via its own nesting -- `pixels_` is
+    //    read-only here regardless of which loop is outer. The pixel
+    //    VALUES written are identical either way (each (x, y) still maps
+    //    to the exact same physIndex via the exact same formula); only
+    //    the order they're computed in changes, and every iteration
+    //    writes a distinct location with no cross-iteration dependency,
+    //    so reordering cannot change the final framebuffer contents.
+    for (int x = 0; x < blitW; ++x) {
+        int physIndex = (x * static_cast<int>(fbWidth) + (static_cast<int>(fbWidth) - 1)) * kBytesPerPixel;
+        for (int y = 0; y < blitH; ++y) {
+            const swf::RgbaColor& px = software_.pixelAtUnchecked(x, y);
             fb[physIndex + 0] = px.b;
             fb[physIndex + 1] = px.g;
             fb[physIndex + 2] = px.r;
+            physIndex -= kBytesPerPixel;
         }
     }
 

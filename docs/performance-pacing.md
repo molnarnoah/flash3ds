@@ -579,3 +579,191 @@ fill, span-fill). It is not fully resolved to native 60 fps — `blit`
 (the per-pixel hardware-framebuffer copy) is the next largest real cost
 if further work is wanted — but the defect this task was opened to
 investigate is fixed, evidenced, and reproducible.
+
+## Revised target (2026-08-28): user set a numeric bar — "a solid 25 fps to 50 fps ... for now focus on the 25 fps"
+
+The sixth recording's ~16 fps average, while a genuine 60–70% win over
+the 7–12 fps starting band, is **not** the finish line. The user
+responded to that result with an explicit target: a solid 25 fps as the
+near-term goal (matching the SWF's own declared 25.00 fps frame rate,
+confirmed back in Step 1), with 50 fps as a further stretch goal to defer
+for now. Everything from here is measured against 25 fps specifically,
+not against "better than before."
+
+With `raster` down to ~17% average, the sixth recording's own numbers
+point at the next target: `blit` and `renderBottom` are now the two
+largest remaining shares (~17–30% and ~17–31% respectively). As noted
+above, `renderBottom`'s size is mostly diagnostic-build-only overhead
+(`drawButtonTestScreen()`), not something a real release build pays —
+but `blit` is real, unconditional cost paid by **both** screens every
+single frame (`Nintendo3DSRenderer::endFrame()` is called once per
+screen per frame), making it the most broadly-applicable target
+available: unlike `renderBottom`, fixing `blit` helps the top screen
+(the one that actually matters for a released Hobo1 package) too.
+
+### Seventh fix: `blit`-loop redundant bounds check + framebuffer write locality
+
+Two changes to `Nintendo3DSRenderer::endFrame()`'s per-pixel copy from
+the software-rendered frame into the real LCD framebuffer, both reasoned
+directly from the existing indexing formula (see the in-code comments in
+both files for the full reasoning — summarized here):
+
+1. **`SoftwareRenderer::pixelAtUnchecked()`** (new, header-only,
+   `src/renderer/SoftwareRenderer.h`): `endFrame()` already computes its
+   loop bounds as `blitW = std::min(srcW, fbHeight)` /
+   `blitH = std::min(srcH, fbWidth)`, so every `(x, y)` the blit loop
+   visits is provably inside `[0, width_) x [0, height_)` before the
+   loop even starts. `pixelAt()`'s own bounds check was therefore pure
+   redundant work on every one of up to 96,000 pixels/frame — the exact
+   same class of waste `fillSpan()` eliminated for `fillPolygon()` in
+   the previous fix. `pixelAtUnchecked()` returns a `const&` (the caller
+   only reads it once per pixel) instead of `pixelAt()`'s by-value copy,
+   and is documented as UB-if-misused/caller-must-guarantee-bounds
+   rather than relaxing `pixelAt()`'s own contract.
+
+2. **Loop nesting swapped** from `y`-outer/`x`-inner to `x`-outer/
+   `y`-inner, with `physIndex` computed incrementally (`-= 3` each `y`
+   step) instead of recomputed from scratch every iteration. The
+   physical framebuffer is column-major/rotated (documented in
+   `Nintendo3DSRenderer.h`): `physIndex(x, y) = (x*fbWidth +
+   (fbWidth-1-y)) * 3`. Under the *original* nesting (`y` outer), each
+   step of the inner `x` loop jumps `fbWidth*3` bytes in `fb` — a
+   strided write. Under the *new* nesting (`x` outer, `y` inner), each
+   step of the inner `y` loop decreases `physIndex` by exactly 3 bytes —
+   a sequential write. The trade being made deliberately: `software_`'s
+   `pixels_` array (the read side) is ordinary cached system RAM, fairly
+   tolerant of a strided access pattern, while `fb` (the write side) is
+   real LCD display memory, plausibly write-combined/uncached, where
+   sequential writes matter far more. Since `pixels_` is read-only in
+   this loop regardless of which axis is outer, only `fb`'s access
+   pattern is actually in this loop's control — so optimizing for `fb`'s
+   locality at the cost of `pixels_`'s is the right trade either way.
+   Every iteration still writes to the exact same `physIndex` for a
+   given `(x, y)` as the original formula — verified algebraically, not
+   just visually — and every iteration's target address is distinct
+   with no cross-iteration dependency, so the reordering provably cannot
+   change the final framebuffer contents, only the order they're
+   produced in.
+
+**Correctness — an important caveat unlike every prior fix in this
+task**: `Nintendo3DSRenderer.cpp` is 3DS-only. Every previous fix in this
+task (tessellation cache, active-edge-table, span-fill) touched
+`SoftwareRenderer`, which is desktop-buildable and testable, so each had
+a real automated check: byte-identical PPM/MD5 renders of `hobo.swf`
+before and after. This fix has no such path — there is no desktop build
+of `Nintendo3DSRenderer.cpp` to render and MD5-compare against. Its
+correctness rests entirely on the indexing-formula reasoning above (both
+changes are individually provably index-preserving) plus, ultimately,
+the next on-device recording actually looking right — not on any
+automated test this task has been able to run for every fix before it.
+
+**Build/test:** desktop — clean rebuild, 385/385 tests passing, unchanged
+(this fix only adds a header method desktop code never calls, plus edits
+a `.cpp` file the desktop build doesn't compile at all). 3DS cross-build
+— clean; confirmed via a forced incremental rebuild that
+`Nintendo3DSRenderer.cpp` recompiled with **zero new compiler warnings**
+(grepped the build log specifically for this file) — only the same
+pre-existing weak-libc-symbol linker notes (`_close`, `_fstat`, etc.)
+every prior 3DS build has had.
+
+### What's needed to close this out
+
+A recording of the `v7_blitfix` build, measured the same way as every
+prior recording (bar-chart pixel measurement + direct FPS-overlay
+readings across the same handful of screens). Two separate things need
+checking, not just one: (1) is FPS meaningfully closer to the 25 fps
+target, and (2) — new, because this fix is unverified any other way —
+does the game still look correct on both screens, since a mistake in the
+write-locality reasoning above would show up as visibly wrong pixels
+(e.g. a rotated/mirrored/torn image) rather than as a silent slowdown.
+If `blit`'s share drops and FPS climbs toward 25, and the picture still
+looks right, that's confirmation and the next-largest remaining share
+(likely `renderBottom`'s real non-diagnostic component, or something
+structural like the ~1.5× overdraw noted in the pixel-write-counter
+investigation) becomes the next target. If FPS is still well short of 25
+after this fix, the honest move — same discipline as every fix in this
+task — is to measure the new composition before guessing at the next
+one, rather than assuming another micro-optimization is the answer.
+
+## Seventh recording: blit fix confirmed correct AND a real, large FPS gain — plus an architectural finding about "25 fps" itself
+
+A recording of the `v7_blitfix` build (`test6.mkv`, ~64s) was measured
+the same programmatic way as recordings four through six: pixel-measured
+bar chart across 24 sampled overlay frames, cross-checked against
+Azahar's own built-in "App: N FPS" counter (OCR'd via `tesseract` across
+all 32 extracted frames — a second, independent FPS source this
+recording happened to make readable, not used in prior recordings).
+
+**Correctness — checked first, since this fix uniquely had no desktop
+verification path:** the top screen was visually inspected across the
+Azahar game-list, the HOBO title/PLAY screen, the ArmorGames splash, the
+SeethingSwarm splash, and the "CHOOSE DIFFICULTY" screen. All render
+correctly — no mirroring, rotation, tearing, or corruption of any kind.
+This confirms the loop-nesting/write-locality reasoning in the fix's own
+comment was correct, not just plausible.
+
+**FPS: a rock-solid steady-state 20 fps**, per Azahar's own counter, across
+every one of the ~20 in-content OCR samples that weren't a scene-load
+transition blip (a handful of single-frame outliers — 27, 13, 30, 23, 5 —
+all land on the black loading transition between splash screens, the same
+kind of transient dip prior recordings also saw and correctly treated as
+not representative). This is a real, large jump from the sixth recording's
+15/20/15/15/18/15/15/15 (avg ~16) — every single frame now sampled sits
+at exactly 20, not just averaging near it.
+
+**Sub-phase composition (24 samples, `renderBottom`'s HUD included since
+this is still the diagnostic build):**
+
+| phase | avg share | prior (6th recording) |
+|---|---|---|
+| `renderTopRaster` | 25.3% | ~17% |
+| `vblankWait` | 20.5% | (not separately tracked before) |
+| `renderBottom` | 16.4% | ~17–31% |
+| `renderTopTree` | 14.5% | (part of a larger `renderTop`) |
+| `renderTopBlit` | 10.0% | ~17–30% |
+| `advance` | 7.4% (only ~half of frames advance the movie) | — |
+
+**`blit` dropped from co-dominant (~17–30%) to a clear non-issue
+(~10%)** — the fix worked exactly as reasoned. `raster` is now the
+largest single real-work share again (Amdahl's-law arithmetic, same as
+every previous fix: shrinking one phase makes the others a bigger slice
+of a smaller pie).
+
+**Architectural finding, worth being explicit about:** this loop calls
+`gspWaitForVBlank()` exactly once per iteration and does not otherwise
+throttle — so the *achievable* steady-state frame rate is always
+`60 / n` for some integer `n` (60, 30, 20, 15, 12, ...), whichever rung
+is just above how long one iteration's real CPU work actually takes.
+**A literal, exact "25 fps" is not a value this architecture can produce
+at all** — it can only land on 30 (if per-frame work drops under ~33.3ms)
+or 20 (if it's between ~33.3ms and 50ms), never the number in between.
+Given the SWF's own declared rate is 25.00 fps (Step 1, this task's very
+first finding), the practically-correct interpretation of "a solid 25
+fps" is **30 fps** — the nearest rung that actually clears the bar,
+and itself sits inside the user's stated 25–50 fps band.
+
+**How close 30 fps actually is:** converting the measured shares back to
+absolute time at the observed ~50ms real period: `renderTopRaster`
+≈12.7ms, `vblankWait` ≈10.3ms (idle, not work), `renderBottom` ≈8.2ms,
+`renderTopTree` ≈7.3ms, `renderTopBlit` ≈5.0ms, `advance` ≈3.7ms — total
+real work ≈37ms. The 30 fps rung needs real work under ~33.3ms — **only
+about 3.5ms (~10%) more needs to come out.** Notably, `renderBottom`'s
+~8.2ms is *entirely* the diagnostic HUD (`drawButtonTestScreen()` — the
+button/circle-pad/touch picture and the bar chart itself, see the sixth
+recording's note above) — not anything a real, non-instrumented Hobo1
+build would ever pay. That alone is more than double the ~3.5ms needed:
+**a non-diagnostic build is very likely already at or past 30 fps**, this
+diagnostic build just can't show that number directly since the HUD that
+measures the frame is itself part of what's being measured.
+
+### What's needed to close this out
+
+Two independent paths, not mutually exclusive: (1) measure a build with
+the diagnostic HUD disabled/minimized to see the real, undistorted frame
+rate a released Hobo1 package would actually get — this doesn't require
+guessing at a new fix, just removing the measurement's own overhead; (2)
+if the diagnostic HUD needs to stay for now, `renderTopRaster` (~12.7ms,
+back to being the largest single real-work phase) is the next evidenced
+target the same way it was before the active-edge-table and span-fill
+fixes, though it's already been through two rounds of optimization and
+further gains there may be smaller than before.

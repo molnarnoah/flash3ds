@@ -36,6 +36,27 @@ public:
     // file round-trip.
     swf::RgbaColor pixelAt(int x, int y) const;
 
+    // Performance fix (2026-08-28, "resolve the 7-12 FPS pacing" task,
+    // continuing after the span-fill fix brought raster's share of the
+    // frame down to ~17% and made `blit` -- Nintendo3DSRenderer::
+    // endFrame()'s per-pixel copy into the real LCD framebuffer -- one of
+    // the two largest remaining costs, see docs/performance-pacing.md):
+    // same pattern as fillSpan() -- a bounds-check-free read for a caller
+    // that has ALREADY established x/y are in range by construction, not
+    // per-call. endFrame()'s blit loop computes its iteration bounds as
+    // `std::min(srcW, ...)`/`std::min(srcH, ...)`, so every (x, y) it
+    // passes here is provably within [0, width_) x [0, height_) before
+    // the loop even starts -- pixelAt()'s bounds check on every one of
+    // up to 96,000 pixels/frame was therefore pure waste for that call
+    // site. Returns a reference (not pixelAt()'s by-value copy) since the
+    // caller only reads it once per pixel; UB if x/y are actually
+    // out-of-bounds, which is exactly why this is a separate, clearly
+    // documented method rather than pixelAt() itself relaxing its
+    // contract.
+    const swf::RgbaColor& pixelAtUnchecked(int x, int y) const {
+        return pixels_[static_cast<size_t>(y) * static_cast<size_t>(width_) + static_cast<size_t>(x)];
+    }
+
     // Writes the current framebuffer as a binary PPM (P6 — RGB, alpha
     // dropped) to `path`. Returns false if the file couldn't be opened for
     // writing.
