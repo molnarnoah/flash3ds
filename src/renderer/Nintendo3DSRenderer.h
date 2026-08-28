@@ -83,6 +83,29 @@ public:
     int width() const { return software_.width(); }
     int height() const { return software_.height(); }
 
+    // Sub-phase timing (2026-08-28, continuing the "resolve the 7-12 FPS
+    // pacing" task after the tessellation-cache fix showed no on-device
+    // improvement -- see docs/performance-pacing.md). The main loop's
+    // single "renderTop" measurement wraps the ENTIRE
+    // SceneRenderer::render() call, which per its own doc comment calls
+    // beginFrame()/endFrame() on this renderer itself -- so that one
+    // number bundles together three very different costs: the
+    // MovieClipInstance tree walk + (now-cached) tessellation lookups,
+    // SoftwareRenderer's CPU scanline-fill rasterization (every
+    // fillPolygon()/strokePolyline() call SceneRenderer makes while
+    // walking the tree), and this class's own endFrame() blit loop
+    // (copying the finished software-rendered buffer into the real/
+    // emulated 3DS LCD framebuffer, one function call + 3 byte writes per
+    // pixel, up to 400x240 times). These two getters expose the latter
+    // two directly so the caller can subtract them out of its own
+    // "renderTop" total and see what's actually left for the tree walk.
+    // Both reflect the MOST RECENTLY COMPLETED frame only (rasterMs_ is
+    // reset and re-accumulated in beginFrame(); blitMs_ is overwritten
+    // fresh every endFrame()) -- read them right after the render() call
+    // they're timing, not later.
+    double lastRasterMs() const { return rasterMs_; }
+    double lastBlitMs() const { return blitMs_; }
+
     // Presents everything blitted into every active screen's framebuffer
     // since the last call. Call exactly ONCE per real frame, after every
     // active Nintendo3DSRenderer's endFrame() has already run this frame
@@ -93,6 +116,10 @@ public:
 private:
     SoftwareRenderer software_;
     gfxScreen_t screen_;
+
+    // See lastRasterMs()/lastBlitMs() above for what these measure and why.
+    double rasterMs_ = 0.0;
+    double blitMs_ = 0.0;
 };
 
 }  // namespace flash3ds::renderer

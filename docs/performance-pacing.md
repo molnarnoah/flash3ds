@@ -192,19 +192,92 @@ proportion-scale instrumentation AND this fix was built via the
 established swap/build/verify/restore procedure and handed to the user;
 `romfs/` restored and checksum-confirmed afterward.
 
+## Third recording: tessellation cache fix confirmed to have no visible effect
+
+A recording of the `v3_tesscache` build (proportion bars + the tessellation
+cache) showed `renderTop` (yellow) still at roughly 60% of every frame —
+essentially unchanged from the pre-fix (`v2`) recording, across a static
+title screen (10 FPS), the Armor Games splash (12 FPS), the SeethingSwarm
+splash (9 FPS), and the HOBO title screen (8 FPS). The FPS overlay reads
+consistently in the same 8–12 band the original task started from.
+
+This ruled out a wrong hypothesis carefully rather than just leaving the
+fix in place unverified: could the fix simply not be taking effect
+on-device (e.g. an unstable cache key causing perpetual misses)? Read
+`CharacterDictionary::find()`'s return type directly —
+`const CharacterDef*`, a pointer into `parsedCharacters_`'s stable
+`std::unordered_map` storage, not a by-value copy — so `renderShapeCharacter()`'s
+`&shapeDef.shape` cache key is stable across calls. The cache should be
+hitting correctly. So the flat "no change" result isn't a caching bug —
+it means tessellation genuinely wasn't the dominant cost inside the
+bundled `renderTop` measurement to begin with, exactly the risk this doc
+already flagged above.
+
+## Sub-phase instrumentation: splitting `renderTop` into tree-walk / raster / blit
+
+The single `renderTop` timer in `nintendo3ds_main.cpp` wraps the entire
+`SceneRenderer::render()` call, which (per its own doc comment) calls
+`Nintendo3DSRenderer::beginFrame()`/`endFrame()` on the top-screen renderer
+itself. That one number was bundling together three very different costs
+with no way to see their individual shares from outside:
+
+1. The `MovieClipInstance` tree walk + character resolution + (now-cached)
+   tessellation lookups, done in `SceneRenderer` itself.
+2. `SoftwareRenderer`'s CPU scanline-fill rasterization — every
+   `fillPolygon()`/`strokePolyline()` call `SceneRenderer` makes while
+   walking the tree.
+3. `Nintendo3DSRenderer::endFrame()`'s per-pixel blit loop, copying the
+   finished software-rendered buffer into the real/emulated 3DS LCD
+   framebuffer (one function call + 3 byte writes per pixel, up to
+   400×240 = 96,000 times for the top screen).
+
+**Added:** `Nintendo3DSRenderer` now times its own `fillPolygon()`/
+`strokePolyline()` calls (accumulated per frame, reset in `beginFrame()`)
+and its own `endFrame()` blit loop, exposed via `lastRasterMs()`/
+`lastBlitMs()`. `nintendo3ds_main.cpp`'s main loop reads both right after
+the `renderTop`-timed `scene.render()` call and threads them through
+`PhaseTimingWindow` as `renderTopRasterMs`/`renderTopBlitMs`; the
+remainder (`renderTop` minus both, clamped to ≥0) is the tree-walk cost.
+The bottom-screen bar chart now draws these as three separate rows
+(`renderTop-other` / `renderTop-raster` / `renderTop-blit`) instead of one
+combined `renderTop` bar, and the `PERF` log line reports all three
+alongside the existing total. This is pure instrumentation — no rendering
+behavior changed, nothing to regression-test beyond "still builds/links/
+passes."
+
+**Build/test:** 383/383 desktop tests passing (unaffected — these files
+are `__3DS__`-guarded). 3DS cross-build clean, zero new undefined symbols
+beyond the same pre-existing 8 weak libctru/C++-runtime hooks. A
+Hobo1-packaged `.3dsx` with this instrumentation was built via the
+established swap/build/verify/restore procedure; `romfs/` restored and
+checksum-confirmed afterward.
+
 ## What's needed to close this out
 
 A recording of THIS build's bars (same procedure: hold steady on title
-and on gameplay for ~5–8 seconds each). If `renderTop`'s share of the
-period bar drops substantially and the real FPS climbs, this fix is
-confirmed and this task is done. If `renderTop` is still large, the
-remaining cost is inside `SoftwareRenderer`'s actual pixel-fill/blit path
-rather than tessellation — a different, separately-scoped follow-up (not
-blindly bundled into this fix, per this project's one-fix-at-a-time
-discipline).
+and on gameplay for ~5–8 seconds each). Whichever of the three new
+`renderTop` sub-bars (tree-walk, raster, blit) turns out to actually be
+large tells us exactly where to aim the next fix:
+
+- If **raster** (orange) is large: `SoftwareRenderer`'s scanline fill
+  itself is the bottleneck (per-pixel/per-scanline CPU cost, likely
+  compounded by the every-frame full-viewport clear in `beginFrame()`).
+- If **blit** (purple) is large: the `endFrame()` pixel-copy loop itself
+  (a `pixelAt()` call + 3 byte writes per pixel, ~96,000 times for a
+  400×240 top screen) is the bottleneck — a much narrower, more
+  mechanical fix (e.g. a direct buffer-to-buffer copy instead of a
+  per-pixel function-call loop, if `SoftwareRenderer`'s internal layout
+  can support it without changing its tested behavior).
+- If neither is large and **tree-walk/other** (yellow) is still ~60%:
+  the earlier hypothesis was wrong in a different way, and the real cost
+  is somewhere this instrumentation still doesn't reach (e.g. inside
+  `CharacterDictionary`'s per-call resolution itself, or the AVM1/
+  `MovieClipInstance` traversal machinery) — would need a further,
+  separately-scoped instrumentation pass, not a blind guess.
 
 **Explicitly not done this task**, per its own scope: no blind
-optimization committed to `src/` yet (the tessellation-caching fix above
-is a hypothesis based on one qualitative reading of a saturated chart, not
-yet confirmed), no touching input/navigation code (confirmed working per
-`docs/hobo-playability-verification.md`), no RAM-related changes.
+optimization committed to `src/` beyond the already-verified tessellation
+cache and this pure instrumentation — no new fix has been applied or
+claimed based on a guess. No touching input/navigation code (confirmed
+working per `docs/hobo-playability-verification.md`). No RAM-related
+changes.

@@ -174,6 +174,16 @@ struct PhaseTimingWindow {
     double inputMs = 0.0;
     double advanceMs = 0.0;
     double renderTopMs = 0.0;
+    // Sub-split of renderTopMs (2026-08-28, see Nintendo3DSRenderer::
+    // lastRasterMs()/lastBlitMs()'s doc comment for exactly what each
+    // covers): renderTopRasterMs is SoftwareRenderer's CPU scanline-fill
+    // work (every fillPolygon()/strokePolyline() call during the tree
+    // walk), renderTopBlitMs is Nintendo3DSRenderer::endFrame()'s
+    // per-pixel copy into the real LCD framebuffer. Whatever's left of
+    // renderTopMs after subtracting both is the tree-walk/character-
+    // resolution/tessellation-lookup cost itself.
+    double renderTopRasterMs = 0.0;
+    double renderTopBlitMs = 0.0;
     double renderBottomMs = 0.0;
     double presentMs = 0.0;
     double vblankWaitMs = 0.0;
@@ -184,26 +194,36 @@ struct PhaseTimingWindow {
 
 constexpr RgbaColor kBarInput{120, 120, 255, 255};
 constexpr RgbaColor kBarAdvance{255, 120, 120, 255};
-constexpr RgbaColor kBarRenderTop{255, 200, 60, 255};
+constexpr RgbaColor kBarRenderTop{255, 200, 60, 255};       // tree walk / char resolution (post-raster/blit subtraction)
+constexpr RgbaColor kBarRenderTopRaster{255, 140, 0, 255};  // SoftwareRenderer fill/stroke
+constexpr RgbaColor kBarRenderTopBlit{200, 80, 255, 255};   // endFrame() pixel blit to LCD fb
 constexpr RgbaColor kBarRenderBottom{255, 160, 200, 255};
 constexpr RgbaColor kBarPresent{120, 255, 180, 255};
 constexpr RgbaColor kBarWait{100, 100, 110, 255};
 constexpr RgbaColor kBarPeriodRef{255, 255, 255, 255};
 
-// Draws one averaged timing window as 6 horizontal bars (in the order the
-// phases run in the main loop below), each scaled as a FRACTION of the
-// real measured period (kRefPx wide = 100% of one real frame) -- plus a
-// 7th row: the period reference itself, always drawn as a full-width white
-// OUTLINE (not filled -- it's the ruler, not a measurement) so every other
-// bar's length is directly comparable to "the whole frame" at a glance.
+// Draws one averaged timing window as horizontal bars (in the order the
+// phases run in the main loop below -- renderTop is now split into three:
+// tree-walk, raster, blit, per the 2026-08-28 sub-phase instrumentation
+// added after the tessellation-cache fix alone showed no on-device
+// improvement, see docs/performance-pacing.md), each scaled as a FRACTION
+// of the real measured period (kRefPx wide = 100% of one real frame) --
+// plus a final row: the period reference itself, always drawn as a
+// full-width white OUTLINE (not filled -- it's the ruler, not a
+// measurement) so every other bar's length is directly comparable to "the
+// whole frame" at a glance.
 void drawPhaseTimingBars(IRenderer& renderer, const PhaseTimingWindow& w) {
     if (w.samples == 0 || w.periodMs <= 0.0) return;
     constexpr int kBarX = 106;
-    constexpr int kBarH = 24;
-    constexpr int kBarGap = 4;
+    constexpr int kBarH = 22;
+    constexpr int kBarGap = 3;
     constexpr int kRefPx = 100;  // width representing 100% of one real frame
 
     const double periodMs = w.periodMs / w.samples;
+    const double renderTopRaster = w.renderTopRasterMs / w.samples;
+    const double renderTopBlit = w.renderTopBlitMs / w.samples;
+    double renderTopOther = (w.renderTopMs / w.samples) - renderTopRaster - renderTopBlit;
+    if (renderTopOther < 0.0) renderTopOther = 0.0;  // TickCounter overhead/rounding, not a real negative cost
 
     struct Row {
         double ms;
@@ -212,13 +232,15 @@ void drawPhaseTimingBars(IRenderer& renderer, const PhaseTimingWindow& w) {
     const Row rows[] = {
         {w.inputMs / w.samples, kBarInput},
         {w.advanceSamples > 0 ? w.advanceMs / w.advanceSamples : 0.0, kBarAdvance},
-        {w.renderTopMs / w.samples, kBarRenderTop},
+        {renderTopOther, kBarRenderTop},
+        {renderTopRaster, kBarRenderTopRaster},
+        {renderTopBlit, kBarRenderTopBlit},
         {w.renderBottomMs / w.samples, kBarRenderBottom},
         {w.presentMs / w.samples, kBarPresent},
         {w.vblankWaitMs / w.samples, kBarWait},
     };
 
-    int y = 10;
+    int y = 8;
     for (const Row& row : rows) {
         int px = static_cast<int>((row.ms / periodMs) * kRefPx);
         if (px > kRefPx) px = kRefPx;  // a phase can't exceed the period it's part of
@@ -562,6 +584,11 @@ int main(int argc, char** argv) {
         scene.render(*root, topRenderer, kTopWidth, kTopHeight);
         osTickCounterUpdate(&phase);
         timingAccum.renderTopMs += osTickCounterRead(&phase);
+        // Sub-phase split (2026-08-28) -- read right after render() since
+        // both reflect only the frame just rendered (see Nintendo3DSRenderer::
+        // lastRasterMs()/lastBlitMs()'s doc comment).
+        timingAccum.renderTopRasterMs += topRenderer.lastRasterMs();
+        timingAccum.renderTopBlitMs += topRenderer.lastBlitMs();
         if (!loggedFirstRender) {
             loggedFirstRender = true;
             flash3ds::platform::checkpoint("after first render (SceneRenderer::render)");
@@ -594,12 +621,16 @@ int main(int argc, char** argv) {
             const double avgPeriod = timingAccum.periodMs / n;
             LOG_INFO("PERF",
                      "avg ms/frame (n=%d): input=%.2f advance=%.2f(n=%d) renderTop=%.2f "
-                     "renderBottom=%.2f present=%.2f vblankWait=%.2f | period=%.2f (%.1f fps)",
+                     "(raster=%.2f blit=%.2f other=%.2f) renderBottom=%.2f present=%.2f "
+                     "vblankWait=%.2f | period=%.2f (%.1f fps)",
                      timingAccum.samples, timingAccum.inputMs / n,
                      timingAccum.advanceSamples > 0 ? timingAccum.advanceMs / timingAccum.advanceSamples : 0.0,
-                     timingAccum.advanceSamples, timingAccum.renderTopMs / n, timingAccum.renderBottomMs / n,
-                     timingAccum.presentMs / n, timingAccum.vblankWaitMs / n, avgPeriod,
-                     avgPeriod > 0.0 ? 1000.0 / avgPeriod : 0.0);
+                     timingAccum.advanceSamples, timingAccum.renderTopMs / n,
+                     timingAccum.renderTopRasterMs / n, timingAccum.renderTopBlitMs / n,
+                     std::max(0.0, timingAccum.renderTopMs / n - timingAccum.renderTopRasterMs / n -
+                                       timingAccum.renderTopBlitMs / n),
+                     timingAccum.renderBottomMs / n, timingAccum.presentMs / n, timingAccum.vblankWaitMs / n,
+                     avgPeriod, avgPeriod > 0.0 ? 1000.0 / avgPeriod : 0.0);
             timingLatest = timingAccum;
             timingAccum = PhaseTimingWindow{};
         }

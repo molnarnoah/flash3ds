@@ -14,17 +14,32 @@ Nintendo3DSRenderer::Nintendo3DSRenderer(int widthPixels, int heightPixels, gfxS
     : software_(widthPixels, heightPixels), screen_(screen) {}
 
 void Nintendo3DSRenderer::beginFrame(swf::RgbaColor backgroundColor) {
+    // Reset the rasterization accumulator here, not in the constructor --
+    // SceneRenderer::render() calls beginFrame() itself once per real
+    // frame (see this class's header), so this is exactly "start of a new
+    // frame's fillPolygon()/strokePolyline() cost tally." blitMs_ isn't
+    // reset here since endFrame() always overwrites it fresh below rather
+    // than accumulating.
+    rasterMs_ = 0.0;
     software_.beginFrame(backgroundColor);
 }
 
 void Nintendo3DSRenderer::fillPolygon(const std::vector<PointTwips>& devicePoints,
                                        swf::RgbaColor color) {
+    TickCounter t;
+    osTickCounterStart(&t);
     software_.fillPolygon(devicePoints, color);
+    osTickCounterUpdate(&t);
+    rasterMs_ += osTickCounterRead(&t);
 }
 
 void Nintendo3DSRenderer::strokePolyline(const std::vector<PointTwips>& devicePoints,
                                           swf::RgbaColor color, int widthPixels) {
+    TickCounter t;
+    osTickCounterStart(&t);
     software_.strokePolyline(devicePoints, color, widthPixels);
+    osTickCounterUpdate(&t);
+    rasterMs_ += osTickCounterRead(&t);
 }
 
 void Nintendo3DSRenderer::endFrame() {
@@ -55,6 +70,9 @@ void Nintendo3DSRenderer::endFrame() {
 
     constexpr int kBytesPerPixel = 3;  // default GSP_BGR8_OES format
 
+    TickCounter blitTimer;
+    osTickCounterStart(&blitTimer);
+
     for (int y = 0; y < blitH; ++y) {
         for (int x = 0; x < blitW; ++x) {
             const swf::RgbaColor px = software_.pixelAt(x, y);
@@ -70,6 +88,9 @@ void Nintendo3DSRenderer::endFrame() {
             fb[physIndex + 2] = px.r;
         }
     }
+
+    osTickCounterUpdate(&blitTimer);
+    blitMs_ = osTickCounterRead(&blitTimer);
 
     // NOTE: deliberately does NOT call gfxFlushBuffers()/gfxSwapBuffers()
     // here — see presentFrame()'s comment below for why (both are GLOBAL,
