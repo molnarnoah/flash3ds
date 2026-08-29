@@ -5,9 +5,12 @@
 added `Nintendo3DSAudioBackend`, a real ndsp-backed implementation.
 Roadmap Phase 3 (2026-08-21) closed the remaining gap for MP3 content —
 the format every one of the 8 corpus games actually uses — end to end:
-real decode, real caching, real `ndsp` PCM playback. Other codecs
-(ADPCM/Nellymoser/Speex/uncompressed) still aren't decoded; see
-`docs/known-limitations.md` L1 for the exact remaining scope.**
+real decode, real caching, real `ndsp` PCM playback. Fidelity-audit TASK 1
+divergence #6 (2026-08-29) added real decode for the two uncompressed
+`SoundFormat`s (0/3) and ADPCM (1) too — see that section below. Nellymoser
+(4/5/6) and Speex (11) remain undecoded (no public spec / deferred by
+explicit user choice); see `docs/known-limitations.md` L1 for the exact
+remaining scope.**
 
 `IAudioBackend` (`src/audio/IAudioBackend.h`) is the abstract seam
 `ScriptEnvironment` dispatches `StartSound` tags and AS2
@@ -511,7 +514,7 @@ session's changes — left untouched, out of scope for a Task 1 sound fix,
 noted here so a future session doesn't mistake them for something this
 change introduced.
 
-### Items #5/#6 — evidence-based, deliberately NOT implemented
+### Items #5/#6 — evidence-based, initially deliberately NOT implemented
 
 See `docs/flash-fidelity-audit.md`'s TASK 1 list for the full writeup —
 summary: a corpus-wide scan (`/tmp/corpus_sound_evidence_scan.cpp`,
@@ -522,6 +525,106 @@ and ZERO non-MP3 `DefineSound` codec usage (430 real `DefineSound` tags,
 exact kind of decision (Roadmap Part 2 Phase 6's `loadMovie`
 cache-eviction call, Phase 8's `Math`-only `GlobalObject` decision): building
 either would be tuning against a purely hypothetical need with zero real
-content to validate against or even compile-test meaningfully. Revisit
-only if a future target title's own corpus is shown to actually need one
-of these.
+content to validate against or even compile-test meaningfully.
+
+**Update (2026-08-29):** the user explicitly asked to proceed with item #6
+anyway, as legitimate forward-looking capability rather than "don't build
+against a hypothetical" — see the new section immediately below for what
+was actually built and how it was scoped/verified. Item #5 (streaming
+`SoundStreamHead`/`Block` audio) remains deliberately deferred per the
+user's own explicit choice when asked ("Hold off (Recommended)") — still
+zero real content anywhere to test it against. Revisit item #5 only if a
+future target title's own corpus is shown to actually need it.
+
+### Item #6, Uncompressed + ADPCM sub-scope — implemented 2026-08-29
+
+Per explicit user instruction ("continue with items 5 and 6"), clarified
+via a follow-up question given real technical/licensing distinctions
+within item #6: the user chose **"Uncompressed + ADPCM"** (not Nellymoser,
+not Speex) for item #6, and **"Hold off"** on item #5 (see above). This
+section covers what was built for that Uncompressed+ADPCM sub-scope.
+
+**Scope decision, and why Nellymoser/Speex are still excluded:**
+Nellymoser (`SoundFormat` 4/5/6) has no public Adobe specification at
+all — every existing decoder (including FFmpeg's) is reverse-engineered,
+not built from documentation, which conflicts with this project's own
+`CLAUDE.md` "implement against the public SWF File Format Specification"
+rule; a clean-room attempt would be genuinely hard to get bit-exact
+without a reference implementation to check against. Speex IS a real
+open/publicly-specified codec (Xiph), but vendoring `libspeex` (the same
+pattern used for MP3's `minimp3`) was scoped out this pass — it can be
+revisited if a target title's corpus is later shown to actually need it.
+
+**What was implemented** (`src/audio/PcmSoundDecoder.h/.cpp`, new files;
+`src/runtime/MovieClipInstance.cpp`'s
+`ScriptEnvironment::ensureSoundDecoded()` now dispatches on
+`soundDef->format` the same way it already dispatched to
+`decodeSwfMp3Sound()` for MP3):
+
+- **Uncompressed** (`SoundFormat` 0 = platform-native-endian, 3 =
+  little-endian): per the public spec, `DefineSound`'s `SoundData` for
+  these formats is raw sample data with no framing of its own — exactly
+  `sampleCount` samples per channel, 8-bit unsigned (centered at 128) or
+  16-bit signed, interleaved L/R if stereo. Since both of this project's
+  build targets (x86_64 desktop, ARM11 3DS) are little-endian, formats 0
+  and 3 are byte-identical to decode — one function
+  (`decodeSwfUncompressedSound()`) handles both.
+- **ADPCM** (`SoundFormat` 1): SWF's own variable-bit-width (2/3/4/5-bit)
+  variant of IMA ADPCM, per the spec's `ADPCMSOUNDDATA`/`ADPCMPACKET`
+  records. Implemented clean-room from the bit-layout/tables documented
+  across independent public sources (fad.sourceforge.net's SWF reference,
+  wiki.multimedia.cx's "Flash IMA ADPCM" and "IMA ADPCM" pages) — a
+  leading 2-bit `ADPCMCodeSize` field (mapped to 2/3/4/5 bits) read once
+  for the whole stream, then 4096-sample blocks, each starting with a
+  per-channel 16-bit signed initial predictor + 6-bit unsigned initial
+  step-table index (both real output, not just seed state), followed by
+  `bits`-wide delta codes (interleaved per-sample across channels for
+  stereo — confirmed against a real decoder's behavior, the one point the
+  primary prose sources were ambiguous on) decoded via the standard
+  IMA-style shift-and-add diff computation.
+
+**A real mistake caught before it shipped:** the first diff-computation
+formula derived from the prose sources, a closed-form
+`diff = (step * (2*magnitude+1)) >> (bits-1)`, looked numerically
+plausible (matched by hand at `magnitude=0` and `magnitude=max`) but is
+**not** bit-exact for non-power-of-2 step values — caught by a targeted
+follow-up research request that checked FFmpeg's actual
+`adpcm_swf_decode` behavior, which produced a concrete counterexample
+(`step=7, magnitude=7, bits=4`: correct shift-and-add gives 11, the
+closed form gives 13). The shipped `decodeAdpcmDiff()` uses the corrected
+shift-and-add loop; the full correction history is documented in
+`PcmSoundDecoder.cpp`'s own top-of-file comment so a future session
+doesn't have to rediscover it.
+
+**Verification, given zero real corpus content exists for either format**
+(all 430 real `DefineSound` tags across the corpus are MP3 — see above):
+`tests/test_pcm_sound_decoder.cpp` builds synthetic SWF-format bitstreams
+by hand (a small MSB-first bit writer mirroring `SwfReader`'s own bit
+order) and, for ADPCM, cross-checks decoder output against an
+independently-transcribed reference implementation of the same
+tables/algorithm (not a call into the production decoder's own helper
+functions) — this catches transcription bugs a test that merely re-derives
+expected values from the same production code could not. Covers: exact
+16-bit/8-bit uncompressed round-trip (including 8-bit's 128-centering and
+stereo interleaving), truncated/null/zero-sample-count rejection, ADPCM
+mono and stereo-interleaved decode against the independent reference for
+multiple code sizes (2/3/4/5-bit), a real multi-block stream confirming
+the second block's header — not the first block's running state — governs
+its first sample, and malformed-input rejection. 10 new tests. Two more
+integration tests in `tests/test_movieclip_instance.cpp`
+(`MovieClipInstance_StartSoundTag_UncompressedPayload_...` /
+`..._AdpcmPayload_...`) confirm a real `DefineSound`+`StartSound` tag pair
+of each new format actually reaches `IAudioBackend::loadSound()` with the
+right decoded PCM before `playSound()` fires, mirroring the existing MP3
+integration test. **398 → 400 tests, all passing, zero regressions.**
+Both the desktop build and the 3DS cross-build (`build_3ds`) compile
+clean with zero new compiler warnings — one new `%u`/`uint32_t`
+cross-compile format warning was introduced and immediately fixed with an
+explicit `static_cast<unsigned int>()`, following this project's
+established pattern for this exact ARM-target quirk (see divergences
+#2–#7's writeup above).
+
+Not exercised against real content (same caveat as the round-trip-only
+verification above implies) — this is real, spec-clean, tested code, but
+genuinely unconfirmed against an actual SWF file using either format,
+since none exists anywhere in the corpus.

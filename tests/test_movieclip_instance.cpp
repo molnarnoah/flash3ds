@@ -1483,6 +1483,109 @@ TEST_CASE(MovieClipInstance_StartSoundTag_Mp3Payload_DecodesAndLoadsPcmBeforePla
     CHECK_EQ(spy.playCalls.size(), static_cast<size_t>(2));
 }
 
+// Fidelity-audit TASK 1, divergence #6 (docs/flash-fidelity-audit.md,
+// docs/audio.md — 2026-08-29, Uncompressed+ADPCM sub-scope): confirms
+// ScriptEnvironment::ensureSoundDecoded() actually dispatches a
+// SoundFormat::kUncompressedNative (0) DefineSound tag to
+// audio::decodeSwfUncompressedSound() and that real decoded PCM reaches
+// IAudioBackend::loadSound() -- mirrors
+// MovieClipInstance_StartSoundTag_Mp3Payload_DecodesAndLoadsPcmBeforePlay
+// above, but for the new decode path. Bit-level decode correctness itself
+// is covered by tests/test_pcm_sound_decoder.cpp; this test is
+// runtime-wiring-only.
+TEST_CASE(MovieClipInstance_StartSoundTag_UncompressedPayload_DecodesAndLoadsPcmBeforePlay) {
+    // Three 16-bit little-endian mono samples: 100, -200, 300.
+    const std::vector<uint8_t> rawSamples = {
+        0x64, 0x00,  // 100
+        0x38, 0xFF,  // -200
+        0x2C, 0x01,  // 300
+    };
+    // format=0 (kUncompressedNative), rate=1 (11025Hz), is16Bit=true, stereo=false.
+    auto soundBody = swf_fixtures::buildDefineSoundBytes(/*soundId=*/60, /*format=*/0, /*rate=*/1,
+                                                           /*is16Bit=*/true, /*stereo=*/false,
+                                                           /*sampleCount=*/3, rawSamples);
+    auto soundInfo =
+        swf_fixtures::buildSoundInfoBytes(false, false, std::nullopt, std::nullopt, std::nullopt);
+    auto startSoundBody = swf_fixtures::buildStartSoundBytes(60, soundInfo);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSound), soundBody},
+        {static_cast<uint16_t>(TagCode::StartSound), startSoundBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = swf_fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    SpyAudioBackend spy;
+    env.setAudioBackend(&spy);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(spy.loadCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.loadCalls[0].soundId, static_cast<uint16_t>(60));
+    CHECK_EQ(spy.loadCalls[0].sampleRate, 11025);
+    CHECK_EQ(spy.loadCalls[0].channels, 1);
+    CHECK_EQ(spy.loadCalls[0].samples.size(), static_cast<size_t>(3));
+    CHECK_EQ(spy.loadCalls[0].samples[0], static_cast<int16_t>(100));
+    CHECK_EQ(spy.loadCalls[0].samples[1], static_cast<int16_t>(-200));
+    CHECK_EQ(spy.loadCalls[0].samples[2], static_cast<int16_t>(300));
+
+    CHECK_EQ(spy.playCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.playCalls[0].soundId, static_cast<uint16_t>(60));
+}
+
+// Same as above, for SoundFormat::kAdpcm (1). The raw bytes below are a
+// hand-built ADPCMSOUNDDATA stream: ADPCMCodeSize=2 (-> 4-bit codes),
+// initial predictor=1000, initial step index=0, then two 4-bit delta
+// codes (3, 9) -- see this test's own derivation in the session that
+// added it (docs/audio.md's Uncompressed+ADPCM section) for how the
+// expected decoded values (1000, 1004, 1003) were computed independently
+// against the documented shift-and-add algorithm.
+TEST_CASE(MovieClipInstance_StartSoundTag_AdpcmPayload_DecodesAndLoadsPcmBeforePlay) {
+    const std::vector<uint8_t> adpcmData = {0x80, 0xFA, 0x00, 0x39};
+    // format=1 (kAdpcm), rate=0 (5512.5Hz -- is16Bit/stereo are ignored by
+    // ADPCM decode per PcmSoundDecoder.h's own doc comment, passed as
+    // false/false here since they don't affect anything).
+    auto soundBody = swf_fixtures::buildDefineSoundBytes(/*soundId=*/61, /*format=*/1, /*rate=*/0,
+                                                           /*is16Bit=*/false, /*stereo=*/false,
+                                                           /*sampleCount=*/3, adpcmData);
+    auto soundInfo =
+        swf_fixtures::buildSoundInfoBytes(false, false, std::nullopt, std::nullopt, std::nullopt);
+    auto startSoundBody = swf_fixtures::buildStartSoundBytes(61, soundInfo);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSound), soundBody},
+        {static_cast<uint16_t>(TagCode::StartSound), startSoundBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = swf_fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    SpyAudioBackend spy;
+    env.setAudioBackend(&spy);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(spy.loadCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.loadCalls[0].soundId, static_cast<uint16_t>(61));
+    CHECK_EQ(spy.loadCalls[0].channels, 1);
+    CHECK_EQ(spy.loadCalls[0].samples.size(), static_cast<size_t>(3));
+    CHECK_EQ(spy.loadCalls[0].samples[0], static_cast<int16_t>(1000));
+    CHECK_EQ(spy.loadCalls[0].samples[1], static_cast<int16_t>(1004));
+    CHECK_EQ(spy.loadCalls[0].samples[2], static_cast<int16_t>(1003));
+
+    CHECK_EQ(spy.playCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.playCalls[0].soundId, static_cast<uint16_t>(61));
+}
+
 TEST_CASE(MovieClipInstance_StartSoundTag_DispatchesToAudioBackend) {
     auto soundBody =
         swf_fixtures::buildDefineSoundBytes(/*soundId=*/8, 0, 0, false, false, /*sampleCount=*/100);

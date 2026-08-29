@@ -4,6 +4,7 @@
 #include <cmath>
 #include <variant>
 
+#include "audio/PcmSoundDecoder.h"
 #include "avm1/GlobalObject.h"
 #include "avm1/HostBindings.h"
 #include "avm1/Interpreter.h"
@@ -705,10 +706,20 @@ const std::optional<audio::DecodedAudio>& ScriptEnvironment::ensureSoundDecoded(
     if (!soundDef) {
         return it->second;  // not a DefineSound character at all
     }
-    if (soundDef->format != swf::SoundFormat::kMp3) {
-        // ADPCM/Nellymoser/Speex/uncompressed decode isn't implemented yet
-        // — see docs/known-limitations.md L1. Logged once (here, at first
-        // reference), not once per playSoundById() call.
+    // 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence #6):
+    // uncompressed (formats 0/3) and ADPCM (format 1) decode added
+    // alongside the existing MP3 path — see PcmSoundDecoder.h for the
+    // full design/scope notes, including why Nellymoser (4/5/6) and Speex
+    // (11) are explicitly still NOT handled here (an explicit user scope
+    // decision, not an oversight).
+    const bool isUncompressed = soundDef->format == swf::SoundFormat::kUncompressedNative ||
+                                 soundDef->format == swf::SoundFormat::kUncompressedLittleEndian;
+    const bool isAdpcm = soundDef->format == swf::SoundFormat::kAdpcm;
+    if (soundDef->format != swf::SoundFormat::kMp3 && !isUncompressed && !isAdpcm) {
+        // Nellymoser/Speex decode isn't implemented — see
+        // docs/known-limitations.md L1 and PcmSoundDecoder.h's own scope
+        // note for why. Logged once (here, at first reference), not once
+        // per playSoundById() call.
         LOG_DEBUG("AUDIO",
                   "ScriptEnvironment: soundId=%u uses an unsupported codec (format=%d) -- no "
                   "decode, playSound() will still fire",
@@ -722,9 +733,20 @@ const std::optional<audio::DecodedAudio>& ScriptEnvironment::ensureSoundDecoded(
     }
 
     const uint8_t* raw = movie_->data.data() + soundDef->dataOffset;
-    it->second = audio::decodeSwfMp3Sound(raw, soundDef->dataLength);
+    const double rateHz = swf::soundRateHz(soundDef->rate);
+    if (soundDef->format == swf::SoundFormat::kMp3) {
+        it->second = audio::decodeSwfMp3Sound(raw, soundDef->dataLength);
+    } else if (isUncompressed) {
+        it->second = audio::decodeSwfUncompressedSound(raw, soundDef->dataLength, rateHz,
+                                                          soundDef->is16Bit, soundDef->stereo,
+                                                          soundDef->sampleCount);
+    } else {  // isAdpcm
+        it->second = audio::decodeSwfAdpcmSound(raw, soundDef->dataLength, rateHz,
+                                                  soundDef->stereo, soundDef->sampleCount);
+    }
     if (!it->second) {
-        LOG_WARN("AUDIO", "ScriptEnvironment: soundId=%u MP3 decode failed", soundId);
+        LOG_WARN("AUDIO", "ScriptEnvironment: soundId=%u decode failed (format=%d)", soundId,
+                  static_cast<int>(soundDef->format));
     }
     return it->second;
 }

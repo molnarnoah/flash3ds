@@ -29,6 +29,7 @@ add_executable(flash3ds_tests
     test_button_instance.cpp
     test_event_dispatch.cpp
     test_mp3_decoder.cpp
+    test_pcm_sound_decoder.cpp
     test_local_file_loader.cpp
     test_memory_diagnostics.cpp
     test_vc_ini.cpp

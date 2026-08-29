@@ -83,6 +83,7 @@ add_library(flash3ds_core
     src/renderer/SceneRenderer.cpp
     src/audio/NullAudioBackend.cpp
     src/audio/Mp3Decoder.cpp
+    src/audio/PcmSoundDecoder.cpp
     src/avm1/Value.cpp
     src/avm1/ActionCode.cpp
     src/avm1/Scope.cpp
