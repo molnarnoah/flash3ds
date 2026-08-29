@@ -148,9 +148,45 @@ constexpr RgbaColor kOutline{140, 140, 160, 255};
 constexpr RgbaColor kCirclePadDot{80, 200, 255, 255};
 constexpr RgbaColor kTouchDot{255, 200, 60, 255};
 
+// Draws ndspInit()'s real outcome on the bottom screen every frame -- see
+// Nintendo3DSAudioBackend::isInitialized()/initResult()'s doc comment for
+// why this exists (confirming/denying the dspfirm.cdc-placeholder fix on
+// real hardware/an emulator, log-free). Green = ndsp initialized OK. Red +
+// squares = failed: the failing Result's module field (bits 10-20) drawn as
+// a tens-then-units pair of half-size squares, plus one more square if the
+// description field (bits 0-9) matches RD_NOT_FOUND (1018) -- the specific
+// pattern this project's own confirmed finding predicts (module=41/RM_DSP,
+// so 4 squares then 1, plus the RD_NOT_FOUND marker square).
+void drawAudioStatusIndicator(IRenderer& renderer, bool audioInitialized, Result audioInitResult) {
+    constexpr int kX = 200, kY = 140, kSize = 16, kGap = 4;
+    constexpr RgbaColor kGreen{80, 230, 120, 255};
+    constexpr RgbaColor kRed{230, 70, 70, 255};
+    constexpr RgbaColor kMarker{255, 255, 255, 255};
+    drawFilledRect(renderer, kX, kY, kSize, kSize, audioInitialized ? kGreen : kRed);
+    if (audioInitialized) return;
+
+    const int module = static_cast<int>((audioInitResult >> 10) & 0x7FF);
+    const int description = static_cast<int>(audioInitResult & 0x3FF);
+    const int tens = module / 10;
+    const int units = module % 10;
+    int rowY = kY + kSize + kGap;
+    for (int i = 0; i < tens; ++i) {
+        drawFilledRect(renderer, kX + i * (kSize / 2 + 2), rowY, kSize / 2, kSize / 2, kMarker);
+    }
+    rowY += kSize / 2 + kGap;
+    for (int i = 0; i < units; ++i) {
+        drawFilledRect(renderer, kX + i * (kSize / 2 + 2), rowY, kSize / 2, kSize / 2, kMarker);
+    }
+    if (description == 1018) {  // RD_NOT_FOUND, per <3ds/result.h>
+        rowY += kSize / 2 + kGap;
+        drawFilledRect(renderer, kX, rowY, kSize / 2, kSize / 2, kMarker);
+    }
+}
+
 // Draws the full button/circle-pad/touch test picture for this frame onto
 // `renderer`. `held` is this frame's hidKeysHeld() snapshot.
-void drawButtonTestScreen(IRenderer& renderer, u32 held) {
+void drawButtonTestScreen(IRenderer& renderer, u32 held, bool audioInitialized,
+                            Result audioInitResult) {
     renderer.beginFrame(kBgColor);
 
     for (const ButtonBox& box : kButtonBoxes) {
@@ -186,6 +222,8 @@ void drawButtonTestScreen(IRenderer& renderer, u32 held) {
         drawFilledRect(renderer, static_cast<int>(touch.px) - 5, static_cast<int>(touch.py) - 5,
                         10, 10, kTouchDot);
     }
+
+    drawAudioStatusIndicator(renderer, audioInitialized, audioInitResult);
 
     renderer.endFrame();
 }
@@ -271,7 +309,6 @@ void logToDebugSvc(flash3ds::LogLevel level, const char* category, const char* m
 }  // namespace
 
 int main(int argc, char** argv) {
-
     flash3ds::Log::setDebugCallback(logToDebugSvc);
 
     // NOTE: no consoleInit()/consoleDebugInit() call here -- libctru's
@@ -327,24 +364,13 @@ int main(int argc, char** argv) {
     // clear owner per resource" choice, not a strict lifetime requirement).
     Nintendo3DSRomfs romfs;
     Nintendo3DSRomfs::OpenFailure romfsFailure = Nintendo3DSRomfs::OpenFailure::kNone;
-    // Bug found 2026-08-28 via a real user crash report (Azahar's own
-    // "unmapped Read32 @ 0x00000000" log line, resolved with addr2line to
-    // this exact call site): Nintendo3DSRomfs::open() already handles
-    // argv0 == nullptr gracefully (OpenFailure::kNullArgv0), but that
-    // check can only run once open() is actually CALLED with a real
-    // (possibly-null) char* -- it can't protect against `argv` itself
-    // (the array, not argv[0]'s contents) being nullptr, which crashes
-    // evaluating `argv[0]` right here, before open() is ever entered.
-    // Confirmed via the crash address (disassembles to `ldr r1, [r5]`,
-    // i.e. reading argv[0] out of the argv array itself) that this is
-    // exactly what happened on a real run: Azahar's direct "Load File"
-    // 3dsx launch path apparently doesn't populate `argv` the way a
-    // homebrew-launcher (HBL/Rosalina forwarder) does, unlike whatever
-    // launch method was used for the last two builds the user tested
-    // successfully. `argc <= 0` is the same "no real argv" condition
-    // <3ds.h>'s own homebrew ABI would report if argv were legitimately
-    // absent, so treat it identically to a null argv0 here rather than
-    // reading past the end of a possibly-absent array.
+    // Real crash found via a real Azahar crash report (2026-08-29): this
+    // used to read argv[0] unconditionally. Nintendo3DSRomfs::open() already
+    // handled a null argv0 VALUE gracefully (OpenFailure::kNullArgv0), but
+    // Azahar's direct "Load File" launch apparently doesn't populate `argv`
+    // itself the way a homebrew-launcher forwarder does -- so `argv` (the
+    // array pointer) was null, and evaluating argv[0] crashed before
+    // open()'s own null check ever ran. Guard both.
     const char* argv0 = (argc > 0 && argv != nullptr) ? argv[0] : nullptr;
     if (!romfs.open(argv0, &romfsFailure)) {
         LOG_ERROR("3DS", "Failed to open this app's own embedded RomFS section (see the "
@@ -374,30 +400,10 @@ int main(int argc, char** argv) {
     if (!movie || !movie->valid) {
         LOG_ERROR("3DS", "Could not load '%s': %s", package.config.swfFilename.c_str(),
                    movie ? movie->errorMessage.c_str() : "(no Movie produced)");
-        // Bug found 2026-08-29: a real user run on Azahar reached exactly
-        // this path (kInvalidMovie, 2 top-screen squares) with the
-        // embedded hobo.swf independently verified byte-perfect (md5
-        // match) and confirmed to parse cleanly through this same
-        // SwfLoader on desktop -- so the failure is 3DS-runtime-specific,
-        // not a bad/corrupt file. The user's Azahar Log Viewer never
-        // showed this app's own [VC]/[3DS] LOG_* lines even though the
-        // app demonstrably ran past Nintendo3DSRomfs::open() (reaching
-        // this code at all requires that call to have already returned
-        // true) -- svcOutputDebugString output apparently isn't visible
-        // under Azahar's default Log Viewer filter, so relying on logs
-        // for this diagnosis was a dead end. This subCode reuses
-        // showFatalErrorScreen's existing bottom-screen square-count
-        // mechanism (no log access needed) to narrow it down instead:
-        // package.swfResourceFound (see GamePackage.h) says whether
-        // buildGamePackage()'s fetch() callback for the configured SWF
-        // filename returned true (bytes WERE fetched, and SwfLoader
-        // itself rejected them -- subCode 2) or false (the fetch itself
-        // failed -- subCode 1 -- which for Nintendo3DSRomfs::readFile
-        // covers both "no such RomFS entry" and "entry found but its
-        // readAt() call failed", e.g. a large single FSFILE_Read not
-        // completing; ~4.97 MB in one call, as a real Hobo1 package
-        // needs, has never been exercised on real hardware/emulator
-        // before this).
+        // subCode distinguishes "fetch(swfFilename) itself failed" (1) from
+        // "fetched but SwfLoader rejected the bytes" (2) -- see
+        // GamePackage::swfResourceFound's doc comment. Log-free, same
+        // reasoning as showFatalErrorScreen()'s own header comment.
         const int subCode = package.swfResourceFound ? 2 : 1;
         showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kInvalidMovie, subCode);
         gfxExit();
@@ -494,7 +500,8 @@ int main(int argc, char** argv) {
             loggedFirstRender = true;
             flash3ds::platform::checkpoint("after first render (SceneRenderer::render)");
         }
-        drawButtonTestScreen(bottomRenderer, kHeld);
+        drawButtonTestScreen(bottomRenderer, kHeld, audioBackend.isInitialized(),
+                              audioBackend.initResult());
         // Present BOTH screens together -- see Nintendo3DSRenderer::
         // presentFrame()'s comment for why this must be called exactly
         // once per real frame rather than once per renderer.

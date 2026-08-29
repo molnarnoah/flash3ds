@@ -21,6 +21,7 @@ constexpr int kTestToneSampleRate = 22050;
 
 Nintendo3DSAudioBackend::Nintendo3DSAudioBackend() {
     Result rc = ndspInit();
+    initResult_ = rc;  // see initResult()'s doc comment (Nintendo3DSAudioBackend.h)
     if (R_FAILED(rc)) {
         LOG_ERROR("AUDIO", "Nintendo3DSAudioBackend: ndspInit() failed (0x%08lX); audio disabled",
                    static_cast<unsigned long>(rc));

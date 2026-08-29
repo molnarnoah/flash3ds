@@ -68,6 +68,30 @@ public:
     Nintendo3DSAudioBackend(const Nintendo3DSAudioBackend&) = delete;
     Nintendo3DSAudioBackend& operator=(const Nintendo3DSAudioBackend&) = delete;
 
+    // Added 2026-08-29 while investigating a real "no sound at all" report
+    // (docs/audio.md's "no sound at all investigation" section): a real
+    // on-device test (the on-screen indicator these accessors feed, in
+    // nintendo3ds_main.cpp) CONFIRMED ndspInit() fails on Azahar's direct
+    // "Load File" launch path with Result module=41 (RM_DSP), description
+    // =1018 (RD_NOT_FOUND) -- exactly libctru's own
+    // ndspFindAndLoadComponent() (source/ndsp/ndsp.c) failure for "no DSP
+    // firmware component found". Per devkitPro's own 3ds-examples audio
+    // README: real hardware needs a genuine dspfirm.cdc dump at
+    // sdmc:/3ds/dspfirm.cdc, but Citra-family emulators (Azahar included --
+    // same lineage) only check that a file exists at that path; a 0-byte
+    // placeholder is sufficient because the emulator's own DSP HLE ignores
+    // the actual content. This is a one-time SD-card/emulator-userdata
+    // setup step on the USER's side, not a code bug -- there is nothing
+    // this backend can do differently to make ndspInit() succeed without
+    // that file (and this project will never bundle a real dspfirm.cdc
+    // dump -- see CLAUDE.md's "public sources only" rule). These accessors
+    // exist purely so a caller can show ndspInit()'s real outcome on
+    // screen (no log access needed, matching this project's established
+    // diagnostic convention) to confirm the placeholder file actually
+    // fixes it once created.
+    bool isInitialized() const { return initialized_; }
+    Result initResult() const { return initResult_; }
+
     // Copies `samples` into a freshly linearAlloc'd buffer (ndsp sample
     // buffers must live in the 3DS's DMA-accessible "linear" heap, same
     // constraint as playTestTone()'s buffer below — a caller-owned
@@ -121,6 +145,7 @@ private:
     void freeLoadedSound(LoadedSound& sound);
 
     bool initialized_ = false;
+    Result initResult_ = 0;  // see initResult()'s doc comment above
     std::unordered_map<uint16_t, int> soundIdToChannel_;
     std::array<bool, kNumChannels> channelInUse_{};
     std::unordered_map<uint16_t, LoadedSound> loadedSounds_;

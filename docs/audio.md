@@ -117,3 +117,92 @@ could and couldn't confirm about its own sound-tag handling, and
 `docs/avm1-support.md`'s carry-over list for `Sound.attachSound(name:
 String)` (the linkage-name form, still unimplemented — only numeric
 `attachSound(id)` resolves).
+
+## "No sound at all" investigation, and its resolution (2026-08-29)
+
+A real user report ("no sound at all" on real hardware/Azahar, v10-v12
+builds) triggered a structured 6-point audit of the whole pipeline (NDSP
+init, channel setup, buffer submission/queue, mixing/volume chain,
+emulator discrepancy, logging). All four native/engine layers (1-4) were
+confirmed correct by direct testing: `/tmp/audio_probe.cpp` (ticked a real
+`hobo.swf`'s root clip for 300 ticks holding gameplay keys, zero `[AUDIO]`
+log lines fired — `StartSound` dispatch was simply never reached on
+currently-reachable content), `/tmp/audio_probe2.cpp`/`audio_probe3.cpp`
+(direct `playSoundById()`/`CharacterDictionary::find()` calls on 8 real
+`DefineSound` character IDs — all resolved and decoded correctly as real
+MP3 PCM with real sample counts/rates). Root cause, first pass: reachability
+(`StartSound` tags aren't on frame 1, and frame 1 is where root currently
+stays) plus a separate, independently-real gap (`SoundStreamHead`/
+`SoundStreamBlock` streaming audio is entirely unimplemented).
+
+**This was shown to be incomplete.** The user tested `playTestTone()` — a
+synthesized sine wave wired to A/B/X/Y, fully independent of SWF content,
+reachability, or streaming — and it was ALSO silent. This ruled out
+"reachability" as the sole cause and pointed at the `ndsp` pipeline itself
+or its behavior under Azahar.
+
+**Binary-level verification.** Ghidra was not usable for this — the
+`ghidra__*` MCP tools in this environment are bound to the Shift-DX
+reverse-engineering project's binary (a separate, unrelated project — see
+the top-level `/home/claude/CLAUDE.md`), not this project's own compiled
+ELF/3dsx. Since flash3ds-runtime has full source, `arm-none-eabi-nm`/
+`objdump`/`addr2line` against the real, unstripped `build_3ds/
+flash3ds_3ds` ELF gave the same ground truth Ghidra would, more directly
+(source is available to cross-check against). Findings: every requested
+ndsp symbol (`ndspInit`, `ndspChnWaveBufAdd`, `ndspChnSetPaused`,
+`ndspChnSetMix`, `ndspSetOutputMode`, plus `ndspChnSetFormat`/
+`ndspChnSetRate`/`ndspExit`/`DSP_FlushDataCache`) is real, defined, and
+non-stripped; every call site matches source exactly (`ndspInit`/
+`ndspSetOutputMode` called once each in the constructor, `ndspChnSetPaused`'s
+only caller is `playSound()`) — no dead code, no stub, no duplicate/
+competing init path. A suspected missing `ndspChnSetPaused` call in
+`playTestTone()` was investigated and ruled out by reading libctru's own
+built-from-source `ndspChnReset()` (which `playTestTone()` does call),
+which already unconditionally clears the paused flag.
+
+**Root cause, confirmed on real hardware.** Reading libctru's own
+`ndspInit()`/`ndspFindAndLoadComponent()` source
+(`source/ndsp/ndsp.c`) found that `ndspInit()` needs a DSP firmware
+"component" — normally a real `dspfirm.cdc` dump at `sdmc:/3ds/
+dspfirm.cdc`, or (on real hardware only) an `hb:ndsp` handle from a
+homebrew launcher. `isInitialized()`/`initResult()` accessors were added
+to `Nintendo3DSAudioBackend` (capturing `ndspInit()`'s real `Result`) and
+a `drawAudioStatusIndicator()` was added to the bottom-screen test picture
+(green = initialized OK; red + a module/description square-count encoding
+of the failing `Result` otherwise) so this could be confirmed on-device
+without any log access. **The v13 test build's on-screen indicator showed
+red, with a module count of 41 and a description count of 1018** — decoded
+from the on-screen squares (4-square row, then 1-square row, then 1 more
+marker square) exactly as `module = (Result >> 10) & 0x7FF`,
+`description = Result & 0x3FF` predicts for **`RM_DSP` (41) /
+`RD_NOT_FOUND` (1018)** — i.e. `ndspInit()` fails with exactly "no DSP
+firmware component found," confirmed on real hardware/Azahar, not just
+predicted from source.
+
+**Why, and the actual fix — confirmed via devkitPro's own documentation**
+(`devkitPro/3ds-examples`'s `audio/README.md`, fetched 2026-08-29): "Homebrew
+requires a copy of the DSP firmware to be present at `sdmc:/3ds/
+dspfirm.cdc`" on real hardware — but "a 0 byte file is sufficient for
+homebrew audio to work since Citra uses HLE [high-level emulation]."
+Azahar is a Citra fork (same DSP HLE lineage), so the same almost
+certainly holds there: the emulator's HLE DSP doesn't need or read the
+file's actual contents, it only needs `ndspFindAndLoadComponent()`'s file-
+open call to succeed. **The fix is a one-time step on the user's own SD
+card / Azahar virtual SD root, not a code change**: create an empty (or
+any placeholder) file at `3ds/dspfirm.cdc` relative to Azahar's configured
+SD root. This project will never bundle a real `dspfirm.cdc` dump itself
+(Nintendo's proprietary firmware — see this repo's own "public sources
+only" rule), and there is nothing `Nintendo3DSAudioBackend` can do in code
+to make `ndspInit()` succeed without that file existing — this is
+correctly-behaving code hitting a missing-prerequisite launch-environment
+gap, the same class of issue as the already-fixed `argv[0]`/`envIsHomebrew()`
+launcher-inconsistency bug (Azahar's direct "Load File" launch path
+doesn't set up everything a homebrew-launcher forwarder normally would).
+
+Sources consulted: [devkitPro/3ds-examples audio/README.md](https://github.com/devkitPro/3ds-examples/blob/master/audio/README.md) (dspfirm.cdc / Citra HLE 0-byte-file finding), [Citra/Azahar FAQ](https://citra.azahar-emu.org/wiki/faq/) (general system-file guidance, does not itself mention DSP firmware).
+
+**Status: root cause confirmed, fix identified, NOT YET re-tested** — v14
+(`flash3ds_hobo1_v14_dspfirm_diag.3dsx`) carries this same diagnostic
+forward; the next step is the user placing the placeholder file and
+re-testing, to confirm the on-screen indicator turns green and the test
+tone becomes audible.

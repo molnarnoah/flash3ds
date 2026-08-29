@@ -509,184 +509,25 @@ steps (in particular: `docs/current-state-audit*.md` and
 `docs/implementation-roadmap*.md` were NOT updated to reflect this layer
 existing — read this document, not those, for VC-specific status).
 
-## 13. Environment reset (2026-08-29), `argv[0]`-null crash fix, and a log-free `kInvalidMovie` diagnostic
+## Environment resets — read this if anything documented here seems to be missing from `git log`
 
-**Provenance note first:** partway through the session that produced this
-entry, this sandbox's git history was silently reset backward again (the
-8th such reset this project has hit — see `git log`'s
-`8dce581 "Restore full tree after 7th environment reset..."` commit,
-itself evidence of the 7th). Real work done earlier in that same session —
-a real linear-gradient fill-rendering implementation, and a first pass at
-the `argv[0]` fix below — was committed at the time but is **no longer
-in this repository's git history or working tree**; only this section's
-own work (built fresh, from scratch, after noticing the reset) is real
-and verified here. If a later session finds gradient rendering still
-missing (`ShapeTessellator`'s `PaintKind`/`GradientPaint`,
-`IRenderer::fillPolygonGradient`, etc. — grep for `fillPolygonGradient`
-to check), that work needs to be redone, not assumed lost-but-recoverable
-from this repo. Always `git log`/`grep` to verify a prior session's
-specific claimed commit is actually present before relying on it — do not
-trust a summary of earlier turns in the same session over the repo's own
-current state, precisely because this has now happened multiple times.
+This sandbox has silently reset its git history to an old commit multiple
+times over this project's life (at least 9 occurrences now, most recently
+2026-08-29, reverting to `8dce581`). Each time, every commit made SINCE
+the revert point is gone from `git log` — but any `Edit`-tool changes or
+new files written earlier in the SAME turn as the reset sometimes survive
+on disk uncommitted (this has now been observed to include untracked new
+files, e.g. `tools/real_game_harness/hobo_frame_progression_probe.cpp`
+survived one such reset even though it had never been committed).
 
-**Bug 1 — `argv[0]`-null crash on Azahar's "Load File" launch path,**
-found from a real user crash report (a solid-red screen, no on-screen
-square markers at all — i.e. not even this app's own graceful error
-path) plus the exact Azahar Log Viewer output they captured, showing
-`HW.Memory <Error> ... unmapped Read32 @ 0x00000000 at PC 0x001239A0`.
-Resolved via `arm-none-eabi-addr2line`/`objdump` against the unstripped
-`build_3ds/flash3ds_3ds` ELF to `nintendo3ds_main.cpp`'s
-`romfs.open(argv[0], &romfsFailure)` call, faulting instruction
-`ldr r1, [r5]` — confirming `argv` itself (the array pointer, not just
-`argv[0]`'s string contents) was NULL. `Nintendo3DSRomfs::open()` already
-handles a null `argv0` *value* gracefully (`OpenFailure::kNullArgv0`),
-but that check only runs once `open()` is entered — it can't protect
-against `argv` itself being null, which faults evaluating `argv[0]` at
-the call site, before `open()` is ever called. Apparently Azahar's direct
-"Load File" `.3dsx` launch path doesn't populate `argv` the way a
-homebrew-launcher (HBL/Rosalina forwarder) does. **Fix:** guard with both
-`argc` and `argv` before indexing:
-
-```cpp
-const char* argv0 = (argc > 0 && argv != nullptr) ? argv[0] : nullptr;
-if (!romfs.open(argv0, &romfsFailure)) {
-```
-
-`Nintendo3DSRomfs::open()`'s existing `kNullArgv0` handling then takes
-over exactly as designed.
-
-**Bug 1 confirmed genuinely fixed on real hardware/Azahar:** after this
-fix, the user's next test showed a DIFFERENT result (2 white squares on
-the top screen, solid red, no crash at all — a real screen capture,
-frame-extracted and pixel-inspected to count the squares precisely) —
-this is `FatalError::kInvalidMovie`, this app's own graceful "the
-configured SWF failed to load" diagnostic, reached only once
-`Nintendo3DSRomfs::open()` has already returned true. So the crash really
-is gone; what's left is a second, different, real problem.
-
-**Finding 2 — `kInvalidMovie` on a real Hobo1 RomFS package, cause not
-yet resolved.** The exact `.3dsx` the user tested had its embedded RomFS
-`game.swf` independently extracted (a small standalone Python 3DSX/RomFS
-parser, parsing the `ThreeDsxHeader` + `<3ds/romfs.h>` `romfs_header`/
-`romfs_dir`/`romfs_file` layouts directly from the built file — not
-assumed) and confirmed byte-for-byte identical to the real `hobo.swf`
-(md5 `d59ed276a15e17fe6e08254ad0e51738`) — and that exact extracted copy
-parses cleanly through this project's own `SwfLoader` on desktop
-(`flash_runtime --quiet`: `Status: OK`, SWF6, 13 frames, 3745 tags, zero
-errors). So the embedded file is NOT corrupt and NOT unparseable in
-general — the failure is specific to the 3DS runtime path, most likely
-something about a single ~4.97 MB `FSFILE_Read` (`Nintendo3DSRomfs::
-readAt`) that has never actually been exercised on real hardware/emulator
-before (only much smaller files, and this sandbox's own non-3DS render
-harness, had loaded `hobo.swf`-sized content until now).
-
-**Also discovered while investigating:** this app's own `[VC]`/`[3DS]`
-`LOG_*` output (routed through `svcOutputDebugString`, see `Log.h`'s
-`setDebugCallback`) did **not** appear anywhere in the user's Azahar Log
-Viewer capture, even for a run that demonstrably executed
-`Nintendo3DSRomfs::open()` successfully (reaching `kInvalidMovie` at all
-requires that call to have already returned `true`, and `open()`'s very
-first line unconditionally logs at entry). Azahar's default Log Viewer
-filter apparently excludes this app's debug-level output, making log
-capture an unreliable diagnostic channel for this class of question going
-forward — **don't rely on asking for another log capture as the next
-step for a similar failure; prefer the on-screen square-count mechanism
-below, or a build-time diagnostic tool, when logs have already proven
-silent for this app once.**
-
-**Fix (partial — a diagnostic, not yet a root-cause fix): a `kInvalidMovie`
-sub-code, reusing `showFatalErrorScreen`'s existing bottom-screen
-square-count mechanism** (see that function's own doc comment — "no font
-rendering... or log access at all" was already its explicit design goal;
-this reuses it rather than reinventing a font-free diagnostic). `vc::
-GamePackage` gained a new `bool swfResourceFound` field (`src/vc/
-GamePackage.h`), set from `buildGamePackage()`'s own `fetch()` return
-value (`src/vc/GamePackage.cpp`) — `true` means the configured SWF's bytes
-WERE fetched and `SwfLoader` itself rejected them (a parse-level
-failure); `false` means `fetch()` itself failed (for `Nintendo3DSRomfs::
-readFile` specifically, this covers both "no such RomFS entry" and "entry
-found but its `readAt()` call failed", e.g. exactly the large-single-read
-scenario above). `nintendo3ds_main.cpp`'s `kInvalidMovie` call site now
-passes `subCode = package.swfResourceFound ? 2 : 1`, drawn on the BOTTOM
-screen. Two existing `tests/test_vc_game_package.cpp` cases
-(`GamePackage_MissingSwf_ProducesInvalidMovieWithClearError` /
-`GamePackage_MalformedSwf_ProducesInvalidMovie`) gained a
-`CHECK(package.swfResourceFound)` assertion each, pinning the field to
-exactly the case it's meant to distinguish. 382/382 desktop tests
-passing, zero new warnings.
-
-**Still open — the actual root cause of Bug 2.** Once the next test
-build's bottom-screen square count comes back (1 or 2), that narrows
-which of the two `haveSwf` branches in `buildGamePackage()` is failing;
-if it's `subCode=1` (fetch failure), the next step is almost certainly
-adding chunked reads to `Nintendo3DSRomfs::readAt()`/`readFile()` (looping
-`FSFILE_Read` in smaller pieces, e.g. 64 KiB, and accumulating) rather
-than assuming a single ~5 MB `FSFILE_Read` call always succeeds on real
-hardware/every emulator — this project's own custom RomFS reader has
-never had that assumption exercised at this size before. Do not implement
-that chunking fix speculatively before the subCode confirms which branch
-is actually failing — this project's evidence-first methodology applies
-here same as everywhere else.
-
-**Resolved (2026-08-29, without ever needing the subCode above): the very
-next real-device test, on the v11 diagnostic build, loaded successfully**
-— no `kInvalidMovie` screen at all. So Bug 2's actual failure mode must
-have been transient/build-specific rather than a deterministic large-read
-limitation (the subCode instrumentation stays in place regardless — it's
-cheap and still useful if this class of failure recurs). **This is the
-first real hardware/emulator-confirmed successful load of the real
-`hobo.swf` (Hobo1) this project has ever had** — the top screen rendered
-recognizable real content (the character portrait, "HOBO" wordmark, and
-button row matching the Armor Games-hosted title/menu art), confirming
-`SceneRenderer`/`ShapeTessellator`/`CharacterDictionary` are all working
-correctly against the real ~5 MB file on-device, not just in this
-sandbox's own non-3DS render harness.
-
-Two follow-on observations from that same test, neither a regression from
-this session's fixes:
-
-1. **Input mapping was wrong in v10/v11.** Both were built by swapping
-   `romfs/game.swf` for real `hobo.swf` but leaving `romfs/config.ini` at
-   its clean-room-demo defaults (`X=SPACE`/`Y=SHIFT`/`SELECT=ESCAPE`),
-   not the Hobo1-specific mapping `tests/test_vc_config.cpp`'s
-   `GameConfig_Hobo1ExampleMapping_ParsesToExpectedKeyCodes` already
-   pins (`X=A`/`Y=S`/`SELECT=END` — confirmed by static AVM1 disassembly,
-   see `docs/hobo-title-progression.md`, to be the keys this specific
-   file's frame-1 buttons actually poll). v12 fixes this — see that
-   test case, or `romfs/config.ini`'s own comments during a Hobo1 swap,
-   for the exact mapping to use on any future swap. Per
-   `docs/hobo-title-progression.md`'s own already-established finding,
-   correcting this does NOT make a "loading screen" get dismissed —
-   there is no root-timeline gate to dismiss in this file at all (a
-   single-frame/`onEnterFrame`-driven game); `SELECT`/`END` instead
-   drives the one real dispatched action (a pause/quit-to-portal menu).
-   Don't re-investigate "why doesn't any key advance past the title
-   screen" as if it were a bug — it isn't, by design, in this specific
-   SWF.
-
-2. **A real, unaddressed FPS finding, likely the SAME `25/30fps` lock
-   already on this project's queue** (see `CLAUDE.md`'s deferred-work
-   list) — now visible for the first time on the real Hobo1 content,
-   where it was previously invisible only because Hobo1 could never
-   successfully load on real hardware before v11. Azahar's own overlay
-   reported `App: 10 FPS`, `Képkocka: 4.36 ms` — the huge gap between a
-   4.36 ms measured render time and a 10 FPS actual rate rules out the
-   GPU blit itself as the bottleneck and points at CPU-side work outside
-   what that counter measures. Traced (not yet fixed) to
-   `nintendo3ds_main.cpp`'s main loop (~line 458): the frame-rate-pacing
-   comment there already explains that `root->advanceFrame()` is
-   correctly throttled to the SWF's own declared rate (`vblanksPerSwfFrame`,
-   2 for Hobo1's 25 fps against a 60 Hz vblank) — but `scene.render(...)`
-   is called EVERY vblank regardless, unconditionally re-tessellating
-   every on-screen shape from scratch each time
-   (`SceneRenderer.cpp`'s `renderShapeCharacter`/`renderMorphShapeCharacter`
-   both call `tessellateShape()` fresh, with no cache at all, every
-   single call). For Hobo1's real content (2,990 shapes + 19 morph
-   shapes) that's real, non-trivial CPU work happening roughly twice as
-   often as necessary at minimum (once per vblank instead of once per
-   actual movie-frame change), and with zero caching between calls even
-   when the movie frame hasn't changed at all. This is a strong,
-   evidence-backed hypothesis, not yet a confirmed-and-fixed root cause —
-   no profiling has actually isolated tessellation cost specifically yet,
-   and per this project's own rules, a fix shouldn't be written
-   speculatively before that measurement happens.
+**If you're picking this project up and something this doc or `CLAUDE.md`
+describes as done doesn't show up in `git log` or in the actual source:**
+don't assume the doc is wrong or stale. Check `git log` and the actual
+file contents FIRST, re-apply anything genuinely missing from scratch
+(the argv[0] fix, the `kInvalidMovie` subCode, the Hobo1 input-mapping
+config.ini, and the `Nintendo3DSAudioBackend::isInitialized()`/
+`initResult()` + on-screen audio-status-indicator diagnostic have each
+had to be re-applied at least once after a reset), rebuild, re-run
+`ctest`, and re-commit before trusting anything else. This is tedious but
+mechanical — every fix described in this doc and `docs/audio.md` is
+straightforward to reproduce from their own descriptions.

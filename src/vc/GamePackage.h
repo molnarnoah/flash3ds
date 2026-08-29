@@ -49,26 +49,17 @@ struct GamePackage {
     // corrupt -- see docs/virtual-console.md's error-handling table.
     std::unique_ptr<runtime::Movie> movie;
 
-    // Added 2026-08-29 specifically so a caller with NO log access (e.g.
-    // nintendo3ds_main.cpp's showFatalErrorScreen, which can only show a
-    // small on-screen square count -- no font rendering exists, see
-    // docs/architecture.md) can still distinguish, on-screen, WHICH of
-    // movie->errorMessage's two distinct failure shapes actually
-    // happened, without needing to parse/display that string at all:
-    // true  == the fetch() callback for config.swfFilename returned
-    //          true (the resource WAS found -- whatever bytes came back
-    //          were handed to SwfLoader, which then rejected them; a
-    //          parse-level failure).
-    // false == fetch() returned false (the resource genuinely wasn't
-    //          found BY THE FETCHER -- which, for
-    //          Nintendo3DSRomfs::readFile specifically, covers both "no
-    //          RomFS entry with this name" AND "entry exists but the
-    //          underlying readAt() call failed", e.g. a large single
-    //          FSFILE_Read not completing -- see that function's own
-    //          comment).
-    // Only meaningful when movie->valid is false; left at its default
-    // (true) on a successful load, where nothing downstream should ever
-    // consult it.
+    // Added while diagnosing a real "same red screen persists" report
+    // (docs/virtual-console.md's environment-reset-recovery section): lets
+    // a caller distinguish "fetch(swfFilename) itself returned false" (the
+    // resource genuinely wasn't found -- swfResourceFound=false) from
+    // "fetch succeeded but SwfLoader rejected the bytes it got"
+    // (swfResourceFound=true, movie->valid=false) WITHOUT needing log
+    // access -- this project's platform (3DS) has no on-screen console, so
+    // an on-screen kInvalidMovie diagnostic (see nintendo3ds_main.cpp's
+    // showFatalErrorScreen() subCode) needs some log-free way to tell these
+    // two apart. movie->errorMessage already distinguishes them in text,
+    // but text needs a log viewer to read; this field doesn't.
     bool swfResourceFound = true;
 };
 

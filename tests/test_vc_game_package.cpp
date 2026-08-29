@@ -87,13 +87,6 @@ TEST_CASE(GamePackage_MissingSwf_ProducesInvalidMovieWithClearError) {
     CHECK(!package.movie->valid);
     CHECK(package.movie->errorMessage.find("nonexistent.swf") != std::string::npos);
     CHECK(package.movie->errorMessage.find("not found") != std::string::npos);
-    // swfResourceFound distinguishes this case (fetch() itself failed)
-    // from GamePackage_MalformedSwf_ProducesInvalidMovie below (fetch()
-    // succeeded, SwfLoader rejected the bytes) -- see GamePackage.h's doc
-    // comment. This is what nintendo3ds_main.cpp's kInvalidMovie subCode
-    // is built from, so a real device/emulator run can distinguish these
-    // two cases from the on-screen square count alone, with no log
-    // access needed.
     CHECK(!package.swfResourceFound);
 }
 
@@ -108,8 +101,6 @@ TEST_CASE(GamePackage_MalformedSwf_ProducesInvalidMovie) {
     CHECK(package.movie != nullptr);
     CHECK(!package.movie->valid);
     CHECK(!package.movie->errorMessage.empty());
-    // The resource WAS found (fetch() succeeded) -- SwfLoader rejected
-    // the bytes themselves. See swfResourceFound's doc comment.
     CHECK(package.swfResourceFound);
 }
 
