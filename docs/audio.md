@@ -201,8 +201,63 @@ doesn't set up everything a homebrew-launcher forwarder normally would).
 
 Sources consulted: [devkitPro/3ds-examples audio/README.md](https://github.com/devkitPro/3ds-examples/blob/master/audio/README.md) (dspfirm.cdc / Citra HLE 0-byte-file finding), [Citra/Azahar FAQ](https://citra.azahar-emu.org/wiki/faq/) (general system-file guidance, does not itself mention DSP firmware).
 
-**Status: root cause confirmed, fix identified, NOT YET re-tested** — v14
-(`flash3ds_hobo1_v14_dspfirm_diag.3dsx`) carries this same diagnostic
-forward; the next step is the user placing the placeholder file and
-re-testing, to confirm the on-screen indicator turns green and the test
-tone becomes audible.
+**Status: CONFIRMED FIXED (2026-08-29).** The user placed the `dspfirm.cdc`
+placeholder and re-tested: the A/B/X/Y test tones are now audible in
+Azahar. This closes the "no sound at all" investigation's ndsp/pipeline
+half completely — every layer (init, channel setup, buffer submission,
+mixing, emulator playback) is now confirmed working end-to-end on real
+hardware/Azahar, not just toolchain-verified.
+
+## Follow-up (2026-08-29): "the buttons make sound but the game doesn't, even though Flash Player has sound"
+
+With the pipeline itself now proven, the user reports real SWF game audio
+is still silent, unlike in a real Flash Player. Three possible
+explanations for THIS specific screen (root is still stuck on frame 1 —
+see `docs/hobo-playability-verification.md`) were checked with real
+evidence, not assumption, using a new throwaway tool
+(`/tmp/sound_tag_scan.cpp`, not committed — recursively walks the
+top-level tag stream and every `DefineSprite`'s own nested tag stream,
+tallying `DefineSound`/`StartSound`/`SoundStreamHead2`/`SoundStreamBlock`
+occurrences per sprite):
+
+1. **Streaming audio (`SoundStreamHead`/`SoundStreamBlock`) — ruled out.**
+   529 `SoundStreamHead2` tags exist across the file (one on root itself,
+   one in each of the 528 `DefineSprite`s) — but **zero**
+   `SoundStreamBlock` tags exist ANYWHERE in the whole 4.97 MB file. A
+   `SoundStreamHead2` with no `SoundStreamBlock`s following it is a
+   header-only stub (a common Flash-IDE-publish artifact when a timeline's
+   "sync to frames" is enabled but nothing was ever assigned) — there is
+   no actual streaming audio DATA anywhere in `hobo.swf` for this
+   (still-unimplemented) mechanism to be missing.
+2. **`Sound.attachSound(name: String)` linkage-name form — ruled out for
+   this screen.** This gap IS real and still unwired (see `CLAUDE.md`'s
+   carry-over list) — `attachSound()`'s native impl logs a `LOG_WARN` any
+   time it's called with a non-numeric argument. A fresh 100-tick probe
+   (`/tmp/attachsound_probe.cpp`) at `LogLevel::kWarn` produced **zero**
+   `attachSound`/`Sound.start` warnings of any kind while root sits on
+   frame 1 — no code path on this screen calls either method at all
+   (`docs/hobo-playability-verification.md`'s Finding 3 already noted "31
+   `new Sound()` calls, 30 `setVolume(100)` calls" every tick; these
+   `Sound` objects are apparently constructed and volume-configured but
+   never actually attached/started on this screen).
+3. **`StartSound` reachability — confirmed, again, as the real cause.**
+   The tag scan shows root's three actual named frame-1 children —
+   `preloader` (characterId=33), `shade` (38), `mutebutton` (91) — each
+   carry only an empty `SoundStreamHead2` stub and **zero** `StartSound`
+   tags of their own. All 266 real `StartSound` tags in the file (across
+   35 unique `DefineSound` assets) live inside OTHER sprites, entirely
+   outside root's currently-reachable frame-1 content.
+
+**Conclusion:** frame 1 — the ONLY screen this engine can currently
+reach — is genuinely, verifiably silent in the source file itself, by
+every mechanism this engine does or doesn't implement. This isn't an
+audio bug at all; it's the same reachability gap
+`docs/hobo-playability-verification.md` already documents (no known input
+sequence advances root past frame 1). The sound the user hears in a real
+Flash Player is almost certainly real GAMEPLAY audio, from content this
+engine cannot currently reach — meaning "the game has no sound" and "input
+can't get past the loading screen" are very likely **the same open
+problem observed two different ways**, not two separate ones. Fixing the
+title-screen-advance question (see that doc's own "not yet investigated"
+list) would very plausibly fix this too, with no further audio-side work
+needed.
