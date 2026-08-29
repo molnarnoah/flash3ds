@@ -37,6 +37,11 @@ namespace flash3ds::audio {
 
 class IAudioBackend {
 public:
+    // Sentinel for playSound()'s `endFrame` parameter meaning "play to the
+    // natural end of the loaded PCM" — i.e. no SOUNDINFO OutPoint was set.
+    // See playSound()'s own doc comment.
+    static constexpr uint32_t kPlayToEnd = 0xFFFFFFFFu;
+
     virtual ~IAudioBackend() = default;
 
     // Registers (or replaces, if already registered) `soundId`'s decoded
@@ -71,9 +76,35 @@ public:
     // docs/known-limitations.md L1), this is still called, matching
     // Phase 6's original "at least log/track that this was triggered"
     // behavior.
-    virtual void playSound(uint16_t soundId, int loopCount) {
+    // `startFrame`/`endFrame` (added 2026-08-29, docs/flash-fidelity-
+    // audit.md TASK 1, divergence #7) are SOUNDINFO InPoint/OutPoint —
+    // real corpus evidence (see docs/audio.md) found InPoint set on ~35%
+    // of all real StartSound triggers across the corpus, FAR from the
+    // audit's original "rare in practice" guess, which is why this was
+    // implemented rather than deferred like envelope automation was (see
+    // that doc's own note on why the two were split). Both are in the
+    // SAME unit convention as loadSound()'s sampleCount/frameCount
+    // relationship: PER-CHANNEL frame positions into the loaded PCM
+    // (i.e. what loadSound() calls `frameCount`), NOT raw interleaved
+    // sample offsets. `startFrame=0, endFrame=kPlayToEnd` (the defaults)
+    // means "play the whole thing", exactly matching every existing call
+    // site's behavior before this parameter pair existed.
+    //
+    // IMPORTANT — these are ORDINARY (non-virtual) default arguments: a
+    // call made through a base IAudioBackend*/& (which is how every real
+    // call site in this codebase reaches this method) resolves defaults
+    // against THIS declaration, not whatever override actually runs, per
+    // normal C++ rules. That's harmless here because the one real call
+    // site (runtime::ScriptEnvironment::playSoundById()) always passes
+    // all four arguments explicitly — but don't rely on these defaults
+    // firing through a base-class call elsewhere without checking that
+    // still holds.
+    virtual void playSound(uint16_t soundId, int loopCount, uint32_t startFrame = 0,
+                            uint32_t endFrame = kPlayToEnd) {
         (void)soundId;
         (void)loopCount;
+        (void)startFrame;
+        (void)endFrame;
     }
 
     // Stops one specific sound (AS2 Sound.stop() when a sound is
@@ -83,6 +114,41 @@ public:
     // Stops everything currently playing (AS2 Sound.stop() with no sound
     // attached / the legacy ActionStopSounds action).
     virtual void stopAllSounds() {}
+
+    // Sets soundId's playback volume, normalized to [0.0, 1.0] (0 = silent,
+    // 1.0 = full volume — the SAME unit convention loadSound()'s PCM and
+    // playSound()'s trigger already use, i.e. platform-agnostic, NOT AS2
+    // Sound.setVolume()'s raw 0-100 percentage scale; the AS2 native impl
+    // in runtime::ScriptEnvironment is what converts vol/100.0 before
+    // calling here — see MovieClipInstance.cpp's "Sound" section).
+    // Applies to whatever's currently playing for soundId, if anything, as
+    // well as any future playSound(soundId, ...) call — a backend that
+    // tracks per-soundId volume (see Nintendo3DSAudioBackend) should honor
+    // this even if called before soundId has ever been loaded/played.
+    // Default no-op, same reasoning as every other method here: added
+    // 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence item #1
+    // — Sound.setVolume() previously had zero audible effect anywhere),
+    // and a backend that doesn't override this needs no changes to keep
+    // compiling/working.
+    virtual void setVolume(uint16_t soundId, float volume) {
+        (void)soundId;
+        (void)volume;
+    }
+
+    // Added 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence
+    // #4): reports whether soundId is CURRENTLY still playing (has an
+    // active, not-yet-finished channel/voice) — needed so a caller can
+    // honor a StartSound tag's SOUNDINFO SyncNoMultiple flag ("don't
+    // restart this sound if it's already playing"), which
+    // runtime::MovieClipInstance::runCurrentFrameSounds() consults before
+    // calling ScriptEnvironment::playSoundById() again for the same
+    // soundId (see that method). Default `false` — matches every no-op
+    // backend's reality (NullAudioBackend never actually plays anything,
+    // so nothing is ever "playing" from its point of view either).
+    virtual bool isPlaying(uint16_t soundId) {
+        (void)soundId;
+        return false;
+    }
 };
 
 }  // namespace flash3ds::audio

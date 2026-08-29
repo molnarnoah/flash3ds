@@ -276,6 +276,14 @@ public:
     struct PlayCall {
         uint16_t soundId;
         int loopCount;
+        // 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence
+        // #7): SOUNDINFO InPoint/OutPoint, forwarded through
+        // playSoundById() -- see IAudioBackend::playSound()'s doc
+        // comment for the unit contract (per-channel frame positions;
+        // startFrame=0/endFrame=kPlayToEnd means "whole sound", matching
+        // every pre-existing test's expectations unchanged).
+        uint32_t startFrame;
+        uint32_t endFrame;
     };
     // Roadmap Phase 3 (2026-08-21, MP3 decode) addition: records
     // loadSound() calls too, so a test can verify real decoded PCM reached
@@ -291,9 +299,28 @@ public:
         int sampleRate;
         int channels;
     };
+    // 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence #1):
+    // records setVolume() calls the same way playSound() already does, so
+    // a test can verify AS2 Sound.setVolume() actually reaches the backend
+    // seam (with the right soundId and correctly-normalized [0,1] value),
+    // not just that it stores the AS2-side _volume property.
+    struct VolumeCall {
+        uint16_t soundId;
+        float volume;
+    };
+    // 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence #4):
+    // lets a test control what isPlaying(soundId) reports, so
+    // SyncNoMultiple handling can be exercised without a real backend —
+    // e.g. simulating "this soundId's previous StartSound is still
+    // playing" by setting playingState[soundId] = true BEFORE the frame
+    // that re-triggers it runs. Absent == false, matching
+    // IAudioBackend::isPlaying()'s own default.
+    std::unordered_map<uint16_t, bool> playingState;
+
     std::vector<LoadCall> loadCalls;
     std::vector<PlayCall> playCalls;
     std::vector<uint16_t> stopCalls;
+    std::vector<VolumeCall> volumeCalls;
     int stopAllCalls = 0;
 
     void loadSound(uint16_t soundId, const int16_t* samples, size_t sampleCount, int sampleRate,
@@ -301,11 +328,19 @@ public:
         loadCalls.push_back({soundId, std::vector<int16_t>(samples, samples + sampleCount),
                               sampleRate, channels});
     }
-    void playSound(uint16_t soundId, int loopCount) override {
-        playCalls.push_back({soundId, loopCount});
+    void playSound(uint16_t soundId, int loopCount, uint32_t startFrame = 0,
+                    uint32_t endFrame = flash3ds::audio::IAudioBackend::kPlayToEnd) override {
+        playCalls.push_back({soundId, loopCount, startFrame, endFrame});
     }
     void stopSound(uint16_t soundId) override { stopCalls.push_back(soundId); }
     void stopAllSounds() override { ++stopAllCalls; }
+    void setVolume(uint16_t soundId, float volume) override {
+        volumeCalls.push_back({soundId, volume});
+    }
+    bool isPlaying(uint16_t soundId) override {
+        auto it = playingState.find(soundId);
+        return it != playingState.end() && it->second;
+    }
 };
 
 }  // namespace
@@ -1506,6 +1541,141 @@ TEST_CASE(MovieClipInstance_StartSoundTag_SyncStop_DispatchesStop) {
     CHECK_EQ(spy.stopCalls[0], static_cast<uint16_t>(9));
 }
 
+// 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence #4):
+// SyncNoMultiple was parsed into SoundInfo but never consulted — a
+// StartSound flagged this way would still re-trigger every time its frame
+// ran, even while the same soundId was already playing. This is the
+// regression guard: pre-seed the spy backend to report soundId 10 as
+// ALREADY playing, then run a frame whose StartSound (soundId=10,
+// syncNoMultiple=true) would otherwise trigger it again — playSoundById()
+// must NOT be called.
+TEST_CASE(MovieClipInstance_StartSoundTag_SyncNoMultiple_AlreadyPlaying_SkipsRetrigger) {
+    auto soundBody =
+        swf_fixtures::buildDefineSoundBytes(/*soundId=*/10, 0, 0, false, false, /*sampleCount=*/100);
+    auto soundInfo = swf_fixtures::buildSoundInfoBytes(/*syncStop=*/false, /*syncNoMultiple=*/true,
+                                                         std::nullopt, std::nullopt, std::nullopt);
+    auto startSoundBody = swf_fixtures::buildStartSoundBytes(10, soundInfo);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSound), soundBody},
+        {static_cast<uint16_t>(TagCode::StartSound), startSoundBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = swf_fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    SpyAudioBackend spy;
+    spy.playingState[10] = true;  // simulate: soundId 10 is already playing
+    env.setAudioBackend(&spy);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK(spy.playCalls.empty());
+}
+
+// 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence #7):
+// SOUNDINFO InPoint/OutPoint were parsed but never forwarded past
+// runCurrentFrameSounds() — this is the regression guard confirming they
+// now reach the backend's playSound() call with the exact values from the
+// StartSound tag (real corpus evidence found InPoint set on ~35% of all
+// real StartSound triggers, see docs/audio.md — far from a rare case).
+TEST_CASE(MovieClipInstance_StartSoundTag_InOutPoint_ForwardedToAudioBackend) {
+    auto soundBody =
+        swf_fixtures::buildDefineSoundBytes(/*soundId=*/12, 0, 0, false, false, /*sampleCount=*/1000);
+    auto soundInfo = swf_fixtures::buildSoundInfoBytes(
+        /*syncStop=*/false, /*syncNoMultiple=*/false, /*inPointSamples=*/uint32_t{100},
+        /*outPointSamples=*/uint32_t{900}, std::nullopt);
+    auto startSoundBody = swf_fixtures::buildStartSoundBytes(12, soundInfo);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSound), soundBody},
+        {static_cast<uint16_t>(TagCode::StartSound), startSoundBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = swf_fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    SpyAudioBackend spy;
+    env.setAudioBackend(&spy);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(spy.playCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.playCalls[0].soundId, static_cast<uint16_t>(12));
+    CHECK_EQ(spy.playCalls[0].startFrame, static_cast<uint32_t>(100));
+    CHECK_EQ(spy.playCalls[0].endFrame, static_cast<uint32_t>(900));
+}
+
+// No InPoint/OutPoint at all (the overwhelmingly common case, and every
+// pre-existing StartSound test) must still forward the "whole sound"
+// defaults unchanged — 0 and kPlayToEnd — not e.g. 0/0.
+TEST_CASE(MovieClipInstance_StartSoundTag_NoInOutPoint_ForwardsPlayWholeSoundDefaults) {
+    auto soundBody =
+        swf_fixtures::buildDefineSoundBytes(/*soundId=*/13, 0, 0, false, false, /*sampleCount=*/100);
+    auto soundInfo = swf_fixtures::buildSoundInfoBytes(false, false, std::nullopt, std::nullopt,
+                                                         std::nullopt);
+    auto startSoundBody = swf_fixtures::buildStartSoundBytes(13, soundInfo);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSound), soundBody},
+        {static_cast<uint16_t>(TagCode::StartSound), startSoundBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = swf_fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    SpyAudioBackend spy;
+    env.setAudioBackend(&spy);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(spy.playCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.playCalls[0].startFrame, static_cast<uint32_t>(0));
+    CHECK_EQ(spy.playCalls[0].endFrame, flash3ds::audio::IAudioBackend::kPlayToEnd);
+}
+
+// Same fixture, but soundId is NOT reported as playing — SyncNoMultiple
+// must not suppress the FIRST trigger, only a redundant re-trigger.
+TEST_CASE(MovieClipInstance_StartSoundTag_SyncNoMultiple_NotPlaying_StillTriggers) {
+    auto soundBody =
+        swf_fixtures::buildDefineSoundBytes(/*soundId=*/11, 0, 0, false, false, /*sampleCount=*/100);
+    auto soundInfo = swf_fixtures::buildSoundInfoBytes(/*syncStop=*/false, /*syncNoMultiple=*/true,
+                                                         std::nullopt, std::nullopt, std::nullopt);
+    auto startSoundBody = swf_fixtures::buildStartSoundBytes(11, soundInfo);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSound), soundBody},
+        {static_cast<uint16_t>(TagCode::StartSound), startSoundBody},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = swf_fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    SpyAudioBackend spy;  // playingState left empty -- isPlaying(11) == false
+    env.setAudioBackend(&spy);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(spy.playCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.playCalls[0].soundId, static_cast<uint16_t>(11));
+}
+
 TEST_CASE(MovieClipInstance_AVM1SoundObject_AttachNumericIdAndStart_DispatchesToAudioBackend) {
     Asm a;
     // var s = new Sound();
@@ -1554,6 +1724,103 @@ TEST_CASE(MovieClipInstance_AVM1SoundObject_AttachNumericIdAndStart_DispatchesTo
     CHECK_EQ(spy.playCalls.size(), static_cast<size_t>(1));
     CHECK_EQ(spy.playCalls[0].soundId, static_cast<uint16_t>(5));
     CHECK_EQ(spy.playCalls[0].loopCount, 2);
+}
+
+// 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence #1):
+// AS2 Sound.setVolume() used to ONLY store the AS2-side _volume property
+// (so getVolume() round-tripped it) and never reach IAudioBackend at all —
+// this test is the regression guard for that fix. Verifies BOTH halves:
+// the backend actually receives setVolume(), AND the value is correctly
+// converted from AS2's 0-100 percentage scale to the backend's normalized
+// [0,1] scale (setVolume(50) -> 0.5f, not 50.0f).
+TEST_CASE(MovieClipInstance_AVM1SoundObject_SetVolumeAfterAttach_DispatchesNormalizedToAudioBackend) {
+    Asm a;
+    // var s = new Sound();
+    a.pushString("s");
+    a.pushInt(0);
+    a.pushString("Sound");
+    a.op(0x40);  // ActionNewObject
+    a.op(0x1D);
+    // s.attachSound(5);
+    a.pushInt(5);
+    a.pushInt(1);
+    a.pushString("s");
+    a.op(0x1C);
+    a.pushString("attachSound");
+    a.op(0x52);  // ActionCallMethod
+    a.op(0x17);  // ActionPop — discard the (unused) return value
+    // s.setVolume(50);
+    a.pushInt(50);
+    a.pushInt(1);
+    a.pushString("s");
+    a.op(0x1C);
+    a.pushString("setVolume");
+    a.op(0x52);
+    a.op(0x17);
+
+    auto soundBody =
+        swf_fixtures::buildDefineSoundBytes(/*soundId=*/5, 0, 0, false, false, /*sampleCount=*/100);
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineSound), soundBody},
+        {static_cast<uint16_t>(TagCode::DoAction), a.build()},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = swf_fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    SpyAudioBackend spy;
+    env.setAudioBackend(&spy);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(spy.volumeCalls.size(), static_cast<size_t>(1));
+    CHECK_EQ(spy.volumeCalls[0].soundId, static_cast<uint16_t>(5));
+    CHECK(std::abs(spy.volumeCalls[0].volume - 0.5f) < 0.001f);
+}
+
+// setVolume() called on a Sound object with NO attached sound (no
+// attachSound()/numeric-construction call yet, so _soundId is unresolved)
+// must NOT reach the backend at all — there's no soundId to associate the
+// call with. Guards against a regression where the AS2 impl forwards a
+// garbage/zero-initialized id instead of skipping the call.
+TEST_CASE(MovieClipInstance_AVM1SoundObject_SetVolumeWithoutAttach_DoesNotReachAudioBackend) {
+    Asm a;
+    // var s = new Sound();
+    a.pushString("s");
+    a.pushInt(0);
+    a.pushString("Sound");
+    a.op(0x40);  // ActionNewObject
+    a.op(0x1D);
+    // s.setVolume(50);  -- no attachSound() first
+    a.pushInt(50);
+    a.pushInt(1);
+    a.pushString("s");
+    a.op(0x1C);
+    a.pushString("setVolume");
+    a.op(0x52);
+    a.op(0x17);
+
+    std::vector<swf_fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DoAction), a.build()},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = swf_fixtures::buildMovieBody(100 * 20, 100 * 20, 12.0, 1, tags);
+    auto bytes = swf_fixtures::wrapFws(6, body);
+
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    SpyAudioBackend spy;
+    env.setAudioBackend(&spy);
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    CHECK_EQ(spy.volumeCalls.size(), static_cast<size_t>(0));
 }
 
 // --- Phase 7: ExternalInterface -----------------------------------------

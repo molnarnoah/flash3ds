@@ -56,7 +56,24 @@ void Nintendo3DSAudioBackend::freeLoadedSound(LoadedSound& sound) {
     }
 }
 
+void Nintendo3DSAudioBackend::reclaimFinishedChannels() {
+    for (auto it = soundIdToChannel_.begin(); it != soundIdToChannel_.end();) {
+        const int channel = it->second;
+        if (!ndspChnIsPlaying(channel)) {
+            LOG_DEBUG("AUDIO",
+                      "Nintendo3DSAudioBackend: reclaiming ndsp channel %d (soundId=%u finished, "
+                      "no explicit stopSound() call)",
+                      channel, it->first);
+            channelInUse_[channel] = false;
+            it = soundIdToChannel_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 int Nintendo3DSAudioBackend::channelFor(uint16_t soundId) {
+    reclaimFinishedChannels();
     auto it = soundIdToChannel_.find(soundId);
     if (it != soundIdToChannel_.end()) {
         return it->second;
@@ -107,7 +124,8 @@ void Nintendo3DSAudioBackend::loadSound(uint16_t soundId, const int16_t* samples
               soundId, sound.frameCount, sampleRate, channels);
 }
 
-void Nintendo3DSAudioBackend::playSound(uint16_t soundId, int loopCount) {
+void Nintendo3DSAudioBackend::playSound(uint16_t soundId, int loopCount, uint32_t startFrame,
+                                          uint32_t endFrame) {
     if (!initialized_) {
         return;
     }
@@ -140,40 +158,97 @@ void Nintendo3DSAudioBackend::playSound(uint16_t soundId, int loopCount) {
     ndspChnSetFormat(channel, sound.channels == 2 ? NDSP_FORMAT_STEREO_PCM16
                                                     : NDSP_FORMAT_MONO_PCM16);
     ndspChnSetRate(channel, static_cast<float>(sound.sampleRate));
+    // Volume is per-soundId, set via setVolume() (default 1.0f/full volume
+    // for any soundId that's never had setVolume() called — see
+    // soundVolumes_'s own doc comment) — previously this was unconditionally
+    // 1.0f regardless of any AS2 Sound.setVolume() call (docs/flash-
+    // fidelity-audit.md TASK 1, divergence #1).
+    auto volIt = soundVolumes_.find(soundId);
+    const float volume = (volIt != soundVolumes_.end()) ? volIt->second : 1.0f;
     float mix[12] = {0.0f};
-    mix[0] = mix[1] = 1.0f;  // full volume to both front-left/front-right mix slots
+    mix[0] = mix[1] = volume;  // same normalized volume to both front-left/front-right mix slots
     ndspChnSetMix(channel, mix);
 
-    // KNOWN GAP (see this file's header comment): a real SWF StartSound
-    // loopCount > 1 means "repeat this sound N times", but that is NOT
-    // implemented as a true repeat here -- a single ndspWaveBuf's
-    // `looping` flag means "loop forever" (not a counted repeat), and
-    // building a real counted repeat means queuing N separate wavebufs
-    // (all pointing at the same underlying PCM, per common ndsp usage),
-    // which needs on-device verification this environment cannot do (see
-    // docs/3ds-toolchain.md). Rather than guess at that without being
-    // able to test it, loopCount is honored only as "play once" here --
-    // logged, not silently dropped.
-    if (loopCount > 1) {
+    // Counted StartSound loop repeat (docs/flash-fidelity-audit.md TASK 1,
+    // divergence #3, fixed 2026-08-29): a real SWF StartSound loopCount > 1
+    // means "repeat this sound N times" -- a single ndspWaveBuf's
+    // `looping` flag can't express that (it means "loop forever"), so this
+    // queues `repeats` separate ndspWaveBuf structs, all pointing at the
+    // SAME underlying PCM buffer (see LoadedSound::repeatWaveBufs's own
+    // doc comment in the header for why this is confirmed correct against
+    // libctru's own ndsp-channel.c, not just assumed).
+    const int repeats = std::clamp(loopCount, 1, kMaxQueuedRepeats);
+    if (loopCount > repeats) {
         LOG_DEBUG("AUDIO",
-                  "Nintendo3DSAudioBackend: soundId=%u requested loopCount=%d -- playing once "
-                  "(counted-repeat queuing not implemented, see header comment)",
-                  soundId, loopCount);
+                  "Nintendo3DSAudioBackend: soundId=%u requested loopCount=%d -- capped to %d "
+                  "queued repeats (kMaxQueuedRepeats)",
+                  soundId, loopCount, repeats);
     }
 
-    std::memset(&sound.waveBuf, 0, sizeof(sound.waveBuf));
-    sound.waveBuf.data_pcm16 = sound.buffer;
-    sound.waveBuf.nsamples = static_cast<u32>(sound.frameCount);
-    sound.waveBuf.looping = false;
-    sound.waveBuf.status = NDSP_WBUF_FREE;
+    // SOUNDINFO InPoint/OutPoint trim (docs/flash-fidelity-audit.md TASK 1,
+    // divergence #7, fixed 2026-08-29): `startFrame`/`endFrame` are
+    // per-channel frame positions into `sound.buffer` (see
+    // IAudioBackend::playSound()'s doc comment for the unit contract).
+    // Clamped defensively against the actual loaded length -- a
+    // malformed/out-of-range SOUNDINFO trim degrades to "play nothing"
+    // (nsamples=0, which ndspChnWaveBufAdd() itself already no-ops on --
+    // see ndsp-channel.c) rather than reading out of bounds.
+    const uint32_t totalFrames = static_cast<uint32_t>(sound.frameCount);
+    const uint32_t trimStart = std::min(startFrame, totalFrames);
+    uint32_t trimEnd = (endFrame == kPlayToEnd) ? totalFrames : std::min(endFrame, totalFrames);
+    // Explicit unsigned-int casts on every %u argument below: uint32_t is
+    // NOT the same type as `unsigned int` on this ARM target (it's `long
+    // unsigned int` here, unlike x86_64 desktop where they coincide) --
+    // same portability quirk CLAUDE.md's Phase 10 section already
+    // documents for std::clamp/min/max; printf-style varargs need the
+    // same explicit-type discipline or -Wformat correctly flags a
+    // mismatch on this cross-compile (even though it's silent on desktop).
+    if (trimEnd < trimStart) {
+        LOG_WARN("AUDIO",
+                  "Nintendo3DSAudioBackend: soundId=%u has out-of-order SOUNDINFO trim "
+                  "(startFrame=%u > endFrame=%u after clamping to %u total frames) -- playing "
+                  "nothing",
+                  soundId, static_cast<unsigned int>(trimStart),
+                  static_cast<unsigned int>(trimEnd), static_cast<unsigned int>(totalFrames));
+        trimEnd = trimStart;
+    }
+    const uint32_t trimmedFrames = trimEnd - trimStart;
+    int16_t* trimmedData = sound.buffer + static_cast<size_t>(trimStart) *
+                                               static_cast<size_t>(sound.channels);
+    if (startFrame != 0 || endFrame != kPlayToEnd) {
+        LOG_DEBUG("AUDIO",
+                  "Nintendo3DSAudioBackend: soundId=%u trimmed to frames [%u, %u) of %u total",
+                  soundId, static_cast<unsigned int>(trimStart),
+                  static_cast<unsigned int>(trimEnd), static_cast<unsigned int>(totalFrames));
+    }
 
-    ndspChnWaveBufAdd(channel, &sound.waveBuf);
+    // Reassigning (not just resizing) this vector is only safe because
+    // ndspChnWaveBufClear(channel) above already dropped ndsp's references
+    // to whatever repeatWaveBufs held from a PRIOR playSound() call on
+    // this same soundId -- see the header's doc comment on this field.
+    sound.repeatWaveBufs.assign(static_cast<size_t>(repeats), ndspWaveBuf{});
+    for (ndspWaveBuf& buf : sound.repeatWaveBufs) {
+        buf.data_pcm16 = trimmedData;
+        buf.nsamples = static_cast<u32>(trimmedFrames);
+        buf.looping = false;
+        buf.status = NDSP_WBUF_FREE;
+    }
+    // Queued in a SEPARATE loop from the one above: ndspChnWaveBufAdd()
+    // reads chn->waveBuf's existing tail to append to (see ndsp-channel.c),
+    // so each call must see the previous one's `next` linkage already
+    // committed -- interleaving the two loops would still work here (each
+    // buf's own fields are fully set before its own Add call either way),
+    // but keeping them separate matches the "set up the whole queue, then
+    // submit it" structure real ndsp usage examples use, and reads clearer.
+    for (ndspWaveBuf& buf : sound.repeatWaveBufs) {
+        ndspChnWaveBufAdd(channel, &buf);
+    }
     ndspChnSetPaused(channel, false);
 
     LOG_DEBUG("AUDIO",
-              "Nintendo3DSAudioBackend: play soundId=%u frames=%zu on ndsp channel %d "
+              "Nintendo3DSAudioBackend: play soundId=%u frames=%u repeats=%d on ndsp channel %d "
               "(real decoded PCM queued)",
-              soundId, sound.frameCount, channel);
+              soundId, static_cast<unsigned int>(trimmedFrames), repeats, channel);
 }
 
 void Nintendo3DSAudioBackend::stopSound(uint16_t soundId) {
@@ -191,6 +266,48 @@ void Nintendo3DSAudioBackend::stopSound(uint16_t soundId) {
     soundIdToChannel_.erase(it);
     LOG_DEBUG("AUDIO", "Nintendo3DSAudioBackend: stop soundId=%u (freed ndsp channel %d)",
               soundId, channel);
+}
+
+void Nintendo3DSAudioBackend::setVolume(uint16_t soundId, float volume) {
+    // Clamp defensively -- the AS2-side caller (MovieClipInstance.cpp)
+    // already clamps vol/100.0 to [0,1] before calling here, but this is a
+    // public seam any future caller could reach directly, and an
+    // out-of-range mix value would otherwise silently clip/distort rather
+    // than erroring.
+    volume = std::clamp(volume, 0.0f, 1.0f);
+    soundVolumes_[soundId] = volume;
+
+    if (!initialized_) {
+        return;
+    }
+    auto it = soundIdToChannel_.find(soundId);
+    if (it == soundIdToChannel_.end()) {
+        // Nothing currently playing for this soundId -- the stored value
+        // above is still picked up by the NEXT playSound(soundId, ...)
+        // call (see playSound()'s own soundVolumes_ lookup).
+        return;
+    }
+    // Live update: apply immediately to the already-playing channel, not
+    // just at the next playSound() call -- see this method's header
+    // comment for why that distinction matters for hobo.swf's own mute
+    // button specifically.
+    const int channel = it->second;
+    float mix[12] = {0.0f};
+    mix[0] = mix[1] = volume;
+    ndspChnSetMix(channel, mix);
+    LOG_DEBUG("AUDIO", "Nintendo3DSAudioBackend: setVolume soundId=%u volume=%.3f (live update on channel %d)",
+              soundId, static_cast<double>(volume), channel);
+}
+
+bool Nintendo3DSAudioBackend::isPlaying(uint16_t soundId) {
+    if (!initialized_) {
+        return false;
+    }
+    auto it = soundIdToChannel_.find(soundId);
+    if (it == soundIdToChannel_.end()) {
+        return false;
+    }
+    return ndspChnIsPlaying(it->second);
 }
 
 void Nintendo3DSAudioBackend::stopAllSounds() {

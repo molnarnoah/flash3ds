@@ -306,11 +306,28 @@ ScriptEnvironment::ScriptEnvironment() : global_(avm1::GlobalObject::create()) {
     soundProto->setOwnProperty(
         "setVolume",
         avm1::Value::object(avm1::makeNativeFunction(
-            "setVolume", [](avm1::ExecutionContext&, const avm1::Value& thisVal,
-                             const std::vector<avm1::Value>& args) {
+            "setVolume", [this](avm1::ExecutionContext&, const avm1::Value& thisVal,
+                                  const std::vector<avm1::Value>& args) {
                 if (thisVal.isObject() && thisVal.asObject()) {
                     double vol = args.empty() ? 100.0 : args[0].toNumber();
                     thisVal.asObject()->setOwnProperty("_volume", avm1::Value::number(vol));
+                    // 2026-08-29 (docs/flash-fidelity-audit.md TASK 1,
+                    // divergence #1): previously this ONLY stored the AS2-
+                    // side _volume property (so getVolume() round-tripped
+                    // it) and never reached the actual audio backend at
+                    // all -- setVolume() had zero audible effect. Now also
+                    // forwards to IAudioBackend::setVolume() when a sound
+                    // is resolvably attached (_soundId set, via
+                    // attachSound() or numeric-id construction), converting
+                    // AS2's 0-100 percentage scale to the backend's
+                    // normalized [0,1] scale.
+                    avm1::Value idVal = thisVal.asObject()->getOwnProperty("_soundId");
+                    if (idVal.isNumber() && audioBackend_) {
+                        float normalized = static_cast<float>(
+                            std::clamp(vol, 0.0, 100.0) / 100.0);
+                        audioBackend_->setVolume(static_cast<uint16_t>(idVal.toNumber()),
+                                                  normalized);
+                    }
                 }
                 return avm1::Value::undefined();
             })));
@@ -712,7 +729,8 @@ const std::optional<audio::DecodedAudio>& ScriptEnvironment::ensureSoundDecoded(
     return it->second;
 }
 
-void ScriptEnvironment::playSoundById(uint16_t soundId, int loopCount) {
+void ScriptEnvironment::playSoundById(uint16_t soundId, int loopCount, uint32_t startFrame,
+                                        uint32_t endFrame) {
     // Checked BEFORE ensureSoundDecoded() (which populates the cache as a
     // side effect) so this reliably distinguishes "this is the first-ever
     // reference to soundId" from "already decoded (or already known
@@ -728,7 +746,7 @@ void ScriptEnvironment::playSoundById(uint16_t soundId, int loopCount) {
         audioBackend_->loadSound(soundId, decoded->samples.data(), decoded->samples.size(),
                                   decoded->sampleRate, decoded->channels);
     }
-    audioBackend_->playSound(soundId, loopCount);
+    audioBackend_->playSound(soundId, loopCount, startFrame, endFrame);
 }
 
 std::pair<const Movie*, const CharacterDictionary*> ScriptEnvironment::ownLoadedMovie(
@@ -1395,10 +1413,35 @@ void MovieClipInstance::runCurrentFrameSounds() {
             env_->audioBackend().stopSound(event.soundId);
             continue;
         }
+        // 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence #4):
+        // SyncNoMultiple ("don't restart this sound if it's already
+        // playing") was parsed into SoundInfo but never consulted — a
+        // StartSound flagged this way would still re-trigger every time
+        // its frame was re-entered (e.g. a looping timeline re-visiting a
+        // frame with a background-loop StartSound on it), causing
+        // overlapping/duplicate playback real Flash Player would have
+        // suppressed. IAudioBackend::isPlaying() (default false, so a
+        // backend that never tracks playback state — NullAudioBackend,
+        // any test double that doesn't override it — just always lets the
+        // event through unchanged, same as before this fix) is the query
+        // that makes this checkable at all.
+        if (event.info.syncNoMultiple && env_->audioBackend().isPlaying(event.soundId)) {
+            continue;
+        }
         int loopCount = event.info.hasLoops && event.info.loopCount
                              ? std::max<int>(1, *event.info.loopCount)
                              : 1;
-        env_->playSoundById(event.soundId, loopCount);
+        // 2026-08-29 (docs/flash-fidelity-audit.md TASK 1, divergence #7):
+        // forward SOUNDINFO InPoint/OutPoint through — real corpus
+        // evidence found InPoint set on ~35% of all StartSound triggers
+        // (see docs/audio.md), so this is NOT a rare edge case.
+        uint32_t startFrame = event.info.hasInPoint && event.info.inPointSamples
+                                    ? *event.info.inPointSamples
+                                    : 0;
+        uint32_t endFrame = event.info.hasOutPoint && event.info.outPointSamples
+                                  ? *event.info.outPointSamples
+                                  : audio::IAudioBackend::kPlayToEnd;
+        env_->playSoundById(event.soundId, loopCount, startFrame, endFrame);
     }
 }
 

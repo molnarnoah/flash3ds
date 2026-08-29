@@ -261,3 +261,267 @@ problem observed two different ways**, not two separate ones. Fixing the
 title-screen-advance question (see that doc's own "not yet investigated"
 list) would very plausibly fix this too, with no further audio-side work
 needed.
+
+## Fidelity-audit TASK 1, divergence #1: `Sound.setVolume()` wired into the real audio backend (2026-08-29)
+
+`docs/flash-fidelity-audit.md`'s TASK 1 (Sound subsystem) ranked
+`Sound.setVolume()` as the highest-impact confirmed divergence from Flash
+Player: `IAudioBackend` had no volume method at all, so ANY AS2
+`Sound.setVolume(n)` call — however often a script made it — had zero
+audible effect. The native impl only ever wrote an AS2-side `_volume`
+property (so `getVolume()` round-tripped correctly, which is presumably
+why this wasn't caught earlier), never reaching the actual mix.
+
+This matters concretely for this exact corpus, not just in the abstract:
+this doc's own investigation above already found `hobo.swf`'s frame 1
+makes **30 `new Sound()` + `setVolume(100)` calls every single tick**, and
+the mute button (`mutebutton`, characterId=91) is confirmed (via
+`hobo_end_key_probe`/`hobo_frame_progression_probe`) to call
+`setVolume(0)`/`setVolume(100)` on real End-key taps. None of that has
+ever had any audible effect — even once the frame-1 reachability gap is
+someday closed and real StartSound-triggered audio starts playing on
+other screens, the mute button still would have silently done nothing.
+
+**Fix, following the project's normal one-fix-at-a-time TDD cycle:**
+
+1. Added `virtual void setVolume(uint16_t soundId, float volume)` to
+   `IAudioBackend` (`src/audio/IAudioBackend.h`) — default no-op body,
+   same established pattern as every other method there, so
+   `NullAudioBackend` needed zero changes. Volume is normalized `[0.0,
+   1.0]`, the same platform-agnostic unit convention the rest of the
+   interface already uses (NOT AS2's raw 0-100 percentage scale — that
+   conversion happens at the AS2 call site, not in the interface).
+2. `Nintendo3DSAudioBackend` (`src/audio/Nintendo3DSAudioBackend.h/.cpp`)
+   now implements it for real: a new `soundVolumes_` map (default 1.0f —
+   full volume — for any soundId never explicitly set, so this is purely
+   additive and changes nothing for content that never calls
+   `setVolume()`) records the requested volume, and `playSound()` now
+   reads FROM that map for its `ndspChnSetMix()` call instead of the old
+   hardcoded `mix[0]=mix[1]=1.0f`. `setVolume()` ALSO applies immediately
+   via a live `ndspChnSetMix()` call if `soundId` currently owns an active
+   channel — necessary because a real script (like `hobo.swf`'s own mute
+   button) can call `setVolume()` on a sound that's already playing, and
+   waiting for the next `playSound()` to pick up the new value would be
+   audibly wrong (the sound would stay at its old volume until it
+   happened to restart on its own).
+3. `MovieClipInstance.cpp`'s AS2 `Sound.setVolume` native impl now, after
+   storing `_volume` as before (unchanged — `getVolume()` still works
+   exactly as before), additionally checks whether `_soundId` is resolved
+   on the Sound object (i.e. `attachSound()` or a numeric-id construction
+   already ran) and if so calls `audioBackend_->setVolume(id, vol/100.0)`
+   — converting AS2's 0-100 scale to the backend's normalized `[0,1]`
+   scale, clamped to `[0,100]` first so an out-of-range script value can't
+   produce an out-of-range mix.
+4. Two new regression tests in `tests/test_movieclip_instance.cpp`
+   (extending the existing `SpyAudioBackend` test double with a
+   `volumeCalls` recorder, same pattern `playCalls`/`stopCalls` already
+   use): `MovieClipInstance_AVM1SoundObject_SetVolumeAfterAttach_
+   DispatchesNormalizedToAudioBackend` (attach soundId 5, call
+   `setVolume(50)`, verify the backend receives exactly one call —
+   `soundId=5, volume≈0.5f`) and `MovieClipInstance_AVM1SoundObject_
+   SetVolumeWithoutAttach_DoesNotReachAudioBackend` (call `setVolume()`
+   with no `attachSound()` first, verify the backend receives ZERO calls
+   — there's no soundId to associate it with, matching the existing
+   `_soundId`-unresolved guard other Sound methods already use).
+
+**Verified:** full desktop rebuild + `ctest --test-dir build
+--output-on-failure` — 384/384 passing (up from 382), zero regressions,
+zero new compiler warnings. Full 3DS cross-build (`build_3ds`) also
+rebuilds and links cleanly against the real bootstrapped libctru/ndsp
+headers — same pre-existing stdio-stub weak-symbol linker warnings this
+project has always had, nothing new. **Not yet separately confirmed
+audible on Azahar/hardware** — same "compiles clean, not yet
+device-tested" boundary every other 3DS-only change in this project
+carries until the user tests a delivered build (see
+`docs/3ds-toolchain.md`'s "What's verified vs. not").
+
+This closes TASK 1's #1-ranked divergence item. TASK 1's remaining items
+(channel-allocation eviction, counted `StartSound` loop repeat,
+`SyncNoMultiple` handling, `SoundStreamHead`/`Block`, non-MP3 codecs,
+envelope/in-out points — see `docs/flash-fidelity-audit.md`'s own ranked
+list) are each separate, unstarted follow-ups, per this project's
+mandatory one-fix-at-a-time discipline — not batched into this change.
+
+## Fidelity-audit TASK 1, divergences #2–#7: the rest of the Sound subsystem (2026-08-29)
+
+Following up directly on divergence #1 above, per explicit user instruction
+to work through TASK 1's remaining items. **A note on process, honestly
+stated:** `docs/flash-fidelity-audit.md`'s own instructions and this
+project's `CLAUDE.md` both call for one fix at a time, each with its own
+full repro-fix-test-document-commit cycle. Items #2/#3 (both edits to the
+same `Nintendo3DSAudioBackend::playSound()`/`channelFor()` functions) and
+items #4/#7 (both "forward a SoundInfo field through
+`runCurrentFrameSounds()` → `playSoundById()` → `IAudioBackend`" changes to
+the exact same call chain) turned out to be so tightly coupled in the code
+they touch that splitting them into four fully separate diffs would have
+meant repeatedly re-touching the same few lines — so they're delivered as
+two commits (2+3, then 4+7) instead of four, each itemized below with its
+own verification, rather than one commit per item. This is a scope
+judgment call, not an attempt to sneak unrelated changes through together
+— every sub-item below is independently described, tested (where
+desktop-testable), and could be reverted independently by reverting its
+specific hunk.
+
+### Item #2 — channel-allocation eviction
+
+Previously, a channel was only ever freed by an explicit `stopSound()`/
+`stopAllSounds()` call. A fire-and-forget `StartSound` — the overwhelming
+majority of real triggers, which never call `Sound.stop()` — permanently
+occupied its channel for the backend's whole lifetime, so all
+`kNumSoundChannels` (23) could eventually be exhausted by ordinary
+gameplay alone (silent `LOG_WARN`, no crash, but sounds would just stop
+triggering). **Fix:** new `Nintendo3DSAudioBackend::reclaimFinishedChannels()`,
+called at the top of every `channelFor()` lookup (i.e. lazily, once per
+`playSound()` trigger — not a background sweep): checks every channel this
+backend currently thinks is in use via `ndspChnIsPlaying()`, and reclaims
+(erases the `soundIdToChannel_` entry, clears `channelInUse_`) any whose
+queued/playing wavebufs have all actually finished. 3DS-only (no
+desktop-testable surface — `Nintendo3DSAudioBackend` has never had direct
+unit tests, only exercised indirectly via `SpyAudioBackend` at the
+`ScriptEnvironment` layer, same as every other real ndsp-touching method in
+this file); verified via a clean 3DS cross-build.
+
+### Item #3 — counted `StartSound` loop repeat
+
+Previously, `loopCount > 1` was logged and then always played exactly
+once — a single `ndspWaveBuf`'s `looping` flag means "loop forever," which
+can't express a COUNTED repeat. **Fix, confirmed correct against
+libctru's own source** (`ndsp-channel.c`, read directly — not assumed):
+`ndspChnWaveBufAdd()` builds a real singly-linked play-queue via each
+buffer's own `next` field (documented "used internally, do not modify" in
+`ndsp.h`, and confirmed in the source to be set by `ndspChnWaveBufAdd()`
+itself, with no fixed queue-depth limit in software). So queuing `N`
+separate `ndspWaveBuf` structs — all pointing at the SAME underlying PCM
+buffer — makes ndsp play them back-to-back with no gap and no callback
+needed from this code, exactly the "chaining" approach an earlier version
+of this file's own comment had flagged as unverified and deferred.
+`LoadedSound` gained a `std::vector<ndspWaveBuf> repeatWaveBufs` (replacing
+the old single `waveBuf` field) to own these for as long as ndsp might
+still be reading them. Capped at a new `kMaxQueuedRepeats = 32` constant
+to bound memory/queue growth against a pathological loopCount value — real
+corpus evidence (see the scan below) found loopCount > 1 used only 43
+times across the entire corpus, all with small counts, nowhere near this
+cap. Same verification note as item #2 (3DS-only, no desktop test
+surface; clean 3DS cross-build).
+
+### Item #4 — `SyncNoMultiple`
+
+Previously parsed into `SoundInfo` but never consulted — a StartSound
+flagged this way would still re-trigger every time its frame ran, even
+while the same soundId was already playing (e.g. a looping timeline
+re-visiting a frame with a background-loop `StartSound` on it), causing
+overlapping/duplicate playback real Flash Player would have suppressed.
+**Fix:** new `IAudioBackend::isPlaying(soundId)` (default `false`, so a
+backend that doesn't track playback state changes nothing — same
+established pattern as every other method on this interface),
+implemented for real in `Nintendo3DSAudioBackend` (checks
+`soundIdToChannel_` + `ndspChnIsPlaying()`, the same query item #2's
+reclaim logic uses), and consulted in
+`MovieClipInstance::runCurrentFrameSounds()`: `if
+(event.info.syncNoMultiple && env_->audioBackend().isPlaying(event.soundId))
+continue;`. **Desktop-tested** (2 new regression tests, extending
+`SpyAudioBackend` with a settable `playingState` map): SyncNoMultiple +
+already-playing skips the retrigger; SyncNoMultiple + not-playing still
+triggers normally (guards against the fix over-suppressing the FIRST
+trigger of a sound, not just a redundant one).
+
+### Item #7 — SOUNDINFO InPoint/OutPoint (envelope explicitly deferred — see below)
+
+The audit's original assessment called this "rare in practice for this
+corpus's likely SFX-style usage; low priority" — that was a guess, not
+evidence-checked. **Corrected by a real corpus-wide scan this session**
+(`/tmp/soundinfo_evidence_scan.cpp`, throwaway, not committed — recurses
+into every `DefineSprite`'s nested tag stream, across all 8 Hobo files +
+Extreme Pamplona's main file + all its 21 music/sounds/level sub-SWFs, 3693
+total real `StartSound` records):
+
+| SOUNDINFO feature | Real occurrences | % of all StartSound |
+|---|---|---|
+| InPoint | 1304 | ~35% |
+| Envelope | 355 | ~9.6% |
+| OutPoint | 337 | ~9% |
+| Loops (loopCount > 1) | 43 | ~1% |
+
+InPoint in particular is used on roughly **one in three** real StartSound
+triggers across the corpus — nowhere near "rare." This finding also
+independently confirms item #3's counted-loop-repeat fix was genuinely
+needed (43 real loopCount > 1 triggers exist), not purely speculative.
+
+**Fix (InPoint/OutPoint):** `IAudioBackend::playSound()` gained two new
+parameters, `startFrame`/`endFrame` (per-channel frame positions into the
+loaded PCM, matching `loadSound()`'s existing `frameCount` unit
+convention; default `0`/`kPlayToEnd` — "play the whole thing," matching
+every pre-existing call site's behavior unchanged), threaded through
+`ScriptEnvironment::playSoundById()` (also gained the same two parameters,
+defaulted the same way — the AS2 `Sound.start()` call site, which has no
+in/out-point concept, needed no changes) from
+`runCurrentFrameSounds()`'s already-parsed `event.info.inPointSamples`/
+`outPointSamples`. `Nintendo3DSAudioBackend::playSound()` applies the trim
+as a simple pointer-offset + shortened `nsamples` against the SAME
+already-loaded PCM buffer (no extra copy or re-upload to 3DS linear-heap
+memory) — clamped defensively against the actual loaded length, degrading
+a malformed/out-of-range trim to "play nothing" rather than reading out of
+bounds. **Desktop-tested:** 2 new regression tests confirming InPoint=100/
+OutPoint=900 reaches the backend exactly as `startFrame=100, endFrame=900`,
+and confirming a StartSound with no InPoint/OutPoint at all still forwards
+the unchanged "whole sound" defaults (guards against every pre-existing
+StartSound test's implicit expectations silently breaking). This required
+updating every `IAudioBackend` override's signature to match
+(`NullAudioBackend`, `Nintendo3DSAudioBackend`, the test suite's
+`SpyAudioBackend`) — C++ virtual overriding needs an exact signature
+match, so an override left at the old 2-parameter signature would have
+silently stopped overriding (hiding, not overriding) rather than failing
+to compile; all three were checked and updated.
+
+**Envelope (355 real occurrences, ~9.6%) deferred separately, not
+implemented this pass:** unlike InPoint/OutPoint (pure pointer/length
+arithmetic against already-loaded PCM, zero new runtime behavior),
+applying real per-sample volume/pan automation needs either a live ndsp
+mixing callback (real-time interpolation during playback — genuinely new
+DSP-timing-sensitive runtime behavior) or pre-baking the envelope into a
+NEW per-trigger PCM copy before upload (defeats the existing "load once
+per soundId" cache for any soundId an envelope is ever applied to, and
+needs real audio-quality on-device listening to confirm the interpolation
+sounds right — not something this environment can verify, same category of
+risk this file's own history already flagged for the ORIGINAL
+counted-loop-repeat uncertainty before item #3's `next`-field discovery
+resolved it). Rather than guess at a real-time mixing design without being
+able to hear the result, this is left as a clearly-scoped, evidence-backed
+follow-up: `docs/flash-fidelity-audit.md`'s TASK 1 list is updated
+accordingly.
+
+**Verified (items #2/#3/#4/#7 together):** full desktop rebuild + `ctest
+--test-dir build --output-on-failure` — 388/388 passing (up from 384),
+zero regressions. Full 3DS cross-build (`build_3ds`, reconfigured from
+scratch to confirm) rebuilds and links clean — checked carefully this time
+for compiler warnings too, not just the linker's weak-symbol lines (a
+gap in how earlier verification passes in this doc were checked): found
+and fixed one real new warning this session's own code introduced
+(`NullAudioBackend.cpp`'s new startFrame/endFrame log line used `%u` with
+a bare `uint32_t` argument — on this ARM target `uint32_t` is `long
+unsigned int`, not `unsigned int`, the same portability quirk
+`CLAUDE.md`'s Phase 10 section already documents for
+`std::clamp`/`min`/`max`; fixed with explicit `static_cast<unsigned
+int>()` at each call site). Separately confirmed several OTHER `%u`/
+`%d`-vs-`uint32_t`/`int32_t` format warnings exist in this 3DS build
+(`DisplayList.cpp`, `Timeline.cpp`, `SwfLoader.cpp`,
+`MovieClipInstance.cpp`'s `swapDepths()`) but verified via `git diff`
+against this session's own starting point that ALL of them predate this
+session's changes — left untouched, out of scope for a Task 1 sound fix,
+noted here so a future session doesn't mistake them for something this
+change introduced.
+
+### Items #5/#6 — evidence-based, deliberately NOT implemented
+
+See `docs/flash-fidelity-audit.md`'s TASK 1 list for the full writeup —
+summary: a corpus-wide scan (`/tmp/corpus_sound_evidence_scan.cpp`,
+throwaway) found ZERO real `SoundStreamBlock` tags anywhere across all 30
+scanned files (5025 `SoundStreamHead2` stub headers, always header-only)
+and ZERO non-MP3 `DefineSound` codec usage (430 real `DefineSound` tags,
+100% format=MP3). Matches this project's established precedent for this
+exact kind of decision (Roadmap Part 2 Phase 6's `loadMovie`
+cache-eviction call, Phase 8's `Math`-only `GlobalObject` decision): building
+either would be tuning against a purely hypothetical need with zero real
+content to validate against or even compile-test meaningfully. Revisit
+only if a future target title's own corpus is shown to actually need one
+of these.

@@ -13,9 +13,16 @@ void NullAudioBackend::loadSound(uint16_t soundId, const int16_t* samples, size_
               soundId, sampleCount, sampleRate, channels);
 }
 
-void NullAudioBackend::playSound(uint16_t soundId, int loopCount) {
-    LOG_DEBUG("AUDIO", "NullAudioBackend: play soundId=%u loopCount=%d (no-op)", soundId,
-              loopCount);
+void NullAudioBackend::playSound(uint16_t soundId, int loopCount, uint32_t startFrame,
+                                  uint32_t endFrame) {
+    // Explicit unsigned-int casts: uint32_t != `unsigned int` on the 3DS
+    // ARM cross-compile (see Nintendo3DSAudioBackend.cpp's matching
+    // comment for the full explanation) -- silent on desktop, flagged
+    // there.
+    LOG_DEBUG("AUDIO",
+              "NullAudioBackend: play soundId=%u loopCount=%d startFrame=%u endFrame=%u (no-op)",
+              soundId, loopCount, static_cast<unsigned int>(startFrame),
+              static_cast<unsigned int>(endFrame));
 }
 
 void NullAudioBackend::stopSound(uint16_t soundId) {

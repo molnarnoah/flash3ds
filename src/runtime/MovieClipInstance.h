@@ -219,7 +219,15 @@ public:
     // failure) this still calls playSound() — matching Phase 6's original
     // "the backend at least gets told this was triggered" behavior, now
     // just without any PCM behind it.
-    void playSoundById(uint16_t soundId, int loopCount);
+    //
+    // `startFrame`/`endFrame` (added 2026-08-29, docs/flash-fidelity-
+    // audit.md TASK 1, divergence #7): SOUNDINFO InPoint/OutPoint,
+    // forwarded straight through to IAudioBackend::playSound() (see its
+    // own doc comment for the unit contract) — defaulted so the AS2
+    // Sound.start() call site (which has no in/out-point concept at all)
+    // doesn't need to change.
+    void playSoundById(uint16_t soundId, int loopCount, uint32_t startFrame = 0,
+                        uint32_t endFrame = audio::IAudioBackend::kPlayToEnd);
 
     // ActionStartDrag/ActionEndDrag's real (Phase 6) implementation: tracks
     // at most one dragged clip at a time (matches real Flash — starting a
