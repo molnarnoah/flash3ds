@@ -530,3 +530,111 @@ TEST_CASE(SceneRenderer_TessellationCache_RepeatedRenderStaysCorrectAndDistingui
     scene.render(*root, renderer, width, height);
     checkBothShapes();
 }
+
+// --- Graphics/gradients task (2026-08-28): end-to-end integration test for
+// the affine matrix inversion in SceneRenderer.cpp's resolveGradientFill()
+// -- the actual bug fix behind this task (see IRenderer.h's
+// DeviceGradientFill doc comment). Every other gradient test in this
+// codebase (ShapeTessellator/SoftwareRenderer level) exercises one half of
+// the pipeline in isolation with hand-picked coefficients; this is the only
+// test that goes through the REAL byte-level DefineShape parse ->
+// CharacterDictionary -> SceneRenderer's own matrix composition/inversion
+// -> SoftwareRenderer's rasterizer, so a wiring bug in any of those seams
+// (e.g. a transposed matrix term, a sign error in the inversion, an
+// unapplied ColorTransform) would show up here even if each unit's own
+// tests still passed individually. -----------------------------------
+
+namespace {
+
+// A 1638.4px (32768-twip) wide, 100px tall stage-filling rectangle (id=50)
+// whose FillStyle is a linear gradient (red at ratio 0, blue at ratio 255)
+// with a translate-only (scale=1) gradientMatrix offset by exactly
+// +16384 twips in X. Per the SWF gradient-square convention (spans
+// -16384..16384 twips in its own space), that offset lines up the
+// gradient's t=0 point with this shape's local x=0 and t=1 with local
+// x=32768 -- i.e. the gradient sweeps red-to-blue across EXACTLY this
+// rectangle's width, nothing more/less, making the expected rendered
+// output independently hand-verifiable (see the comment above
+// buildDefineShapeWithLinearGradientBytes for why a translate-only matrix
+// is sufficient/deliberate for this test rather than needing a scaling one
+// too).
+std::vector<uint8_t> buildGradientRectMovie() {
+    auto gradientMatrix = fixtures::buildMatrixBytes(/*translateXTwips=*/16384,
+                                                       /*translateYTwips=*/0);
+    std::vector<fixtures::GradientStopFixture> stops = {
+        {0, 255, 0, 0, 255},    // ratio 0 -> opaque red
+        {255, 0, 0, 255, 255},  // ratio 255 -> opaque blue
+    };
+    auto shapeBody = fixtures::buildDefineShapeWithLinearGradientBytes(
+        /*shapeVersion=*/3, /*characterId=*/50, /*widthTwips=*/32768, /*heightTwips=*/2000,
+        gradientMatrix, stops);
+
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineShape3), shapeBody},
+        // Placed at the origin (no matrix -> identity), so world space ==
+        // shape-local space and the hand-verified math above applies
+        // directly to device pixels (after the stage's pixelsPerTwip scale,
+        // which this test picks to be an easy 1/20 -- see stage size below).
+        {26 /* PlaceObject2 */, fixtures::buildPlaceObject2Bytes(1, false, 50, std::nullopt)},
+        {1 /* ShowFrame */, {}},
+    };
+    // Stage sized so pixelsPerTwipX/Y == 1/20 exactly (outputWidthPixels ==
+    // stageWidthTwips/20), matching the twips-per-pixel convention used
+    // throughout this codebase -- keeps the expected device-pixel gradient
+    // boundaries (x=0 and x=1638) exact round numbers, not rounding-
+    // dependent ones.
+    auto body = fixtures::buildMovieBody(/*stageWidthTwips=*/40000, /*stageHeightTwips=*/4000,
+                                          12.0, 1, tags);
+    return fixtures::wrapFws(6, body);
+}
+
+}  // namespace
+
+TEST_CASE(SceneRenderer_LinearGradientFill_SweepsRedToBlueAcrossDeviceXAxis) {
+    auto bytes = buildGradientRectMovie();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    int width = static_cast<int>(movie->frameSize.widthPixels());
+    int height = static_cast<int>(movie->frameSize.heightPixels());
+    CHECK_EQ(width, 2000);
+    CHECK_EQ(height, 200);
+
+    SoftwareRenderer renderer(width, height);
+    SceneRenderer scene(*movie, characters);
+    scene.render(*root, renderer, width, height);
+
+    // The rectangle spans device x in [0, 1638) (32768 twips / 20) and
+    // device y in [0, 100) (2000 twips / 20) -- sample at y=50, safely
+    // inside that row range (NOT y=100: this scanline rasterizer's
+    // half-open [yLo, yHi) active-edge convention, shared with the
+    // existing flat-fill fillPolygon(), deliberately excludes the exact
+    // bottom-boundary row — see SoftwareRenderer.cpp's fillPolygon()/
+    // fillPolygonGradient() active-edge-table loop). Near the rectangle's
+    // left edge should be near-pure red, near its right edge near-pure
+    // blue, and the middle neither -- a real per-pixel gradient sweep
+    // driven entirely by the real parse->tessellate->matrix-invert->
+    // rasterize pipeline, not a flat average (which toFlatColor() would
+    // have produced as a uniform mid-purple everywhere before this task).
+    auto nearLeft = renderer.pixelAt(20, 50);
+    CHECK(nearLeft.r > 200);
+    CHECK(nearLeft.b < 50);
+
+    auto nearRight = renderer.pixelAt(1600, 50);
+    CHECK(nearRight.b > 200);
+    CHECK(nearRight.r < 50);
+
+    auto middle = renderer.pixelAt(819, 50);
+    CHECK(middle.r > 50 && middle.r < 200);
+    CHECK(middle.b > 50 && middle.b < 200);
+
+    // Outside the rectangle entirely: untouched background.
+    auto outside = renderer.pixelAt(1900, 50);
+    CHECK_EQ(outside.r, 255);
+    CHECK_EQ(outside.g, 255);
+    CHECK_EQ(outside.b, 255);
+}

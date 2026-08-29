@@ -428,6 +428,48 @@ std::vector<uint8_t> buildDefineShapeBytes(int shapeVersion, uint16_t characterI
     return out;
 }
 
+std::vector<uint8_t> buildLinearGradientFillStyleArrayBytes(
+    const std::vector<uint8_t>& gradientMatrixBytes, const std::vector<GradientStopFixture>& stops,
+    int shapeVersion) {
+    std::vector<uint8_t> out;
+    writeU8(out, 1);     // count = 1
+    writeU8(out, 0x10);  // FillStyleType::kLinearGradient
+    out.insert(out.end(), gradientMatrixBytes.begin(), gradientMatrixBytes.end());
+
+    // GRADIENT record: one flags byte (SpreadMode=00/kPad in bits 7-6,
+    // InterpolationMode=00/kNormal in bits 5-4, NumGradients in bits 3-0),
+    // then each stop's Ratio(UI8)+Color. Byte-aligned already (matrix bytes
+    // above end byte-aligned — buildMatrixBytes()/readMatrix() both
+    // byteAlign()), matching readGradient()'s plain readU8() reads.
+    writeU8(out, static_cast<uint8_t>(stops.size() & 0xF));
+    for (const auto& s : stops) {
+        writeU8(out, s.ratio);
+        writeU8(out, s.r);
+        writeU8(out, s.g);
+        writeU8(out, s.b);
+        if (shapeVersion >= 3) {
+            writeU8(out, s.a);
+        }
+    }
+    return out;
+}
+
+std::vector<uint8_t> buildDefineShapeWithLinearGradientBytes(
+    int shapeVersion, uint16_t characterId, int32_t widthTwips, int32_t heightTwips,
+    const std::vector<uint8_t>& gradientMatrixBytes, const std::vector<GradientStopFixture>& stops) {
+    std::vector<uint8_t> out;
+    writeU16(out, characterId);
+    writeRect(out, 0, widthTwips, 0, heightTwips);
+
+    auto fillStyles = buildLinearGradientFillStyleArrayBytes(gradientMatrixBytes, stops, shapeVersion);
+    out.insert(out.end(), fillStyles.begin(), fillStyles.end());
+    auto lineStyles = buildEmptyLineStyleArrayBytes();
+    out.insert(out.end(), lineStyles.begin(), lineStyles.end());
+    auto records = buildRectShapeRecordsBytes(widthTwips, heightTwips, false);
+    out.insert(out.end(), records.begin(), records.end());
+    return out;
+}
+
 std::vector<uint8_t> buildDefineSpriteBytes(uint16_t characterId, uint16_t frameCount,
                                              const std::vector<FixtureTag>& nestedTags) {
     std::vector<uint8_t> out;

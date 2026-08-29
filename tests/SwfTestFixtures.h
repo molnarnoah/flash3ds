@@ -131,6 +131,34 @@ std::vector<uint8_t> buildDefineShapeBytes(int shapeVersion, uint16_t characterI
                                             int32_t widthTwips, int32_t heightTwips, uint8_t r,
                                             uint8_t g, uint8_t b, uint8_t a);
 
+// Graphics/gradients task (2026-08-28): one GRADIENTRECORD (ratio + color)
+// for buildLinearGradientFillStyleArrayBytes below.
+struct GradientStopFixture {
+    uint8_t ratio = 0;
+    uint8_t r = 0, g = 0, b = 0, a = 255;
+};
+
+// A FILLSTYLEARRAY with exactly one linear-gradient fill style (count=1,
+// type 0x10, `gradientMatrixBytes` — a byte-aligned MATRIX, e.g. from
+// buildMatrixBytes — verbatim, then a GRADIENT record: SpreadMode=kPad/
+// InterpolationMode=kNormal always, `stops.size()` GradientRecords in the
+// order given). Mirrors ShapeRecords.cpp's readFillStyleArray/readGradient
+// read order exactly.
+std::vector<uint8_t> buildLinearGradientFillStyleArrayBytes(
+    const std::vector<uint8_t>& gradientMatrixBytes, const std::vector<GradientStopFixture>& stops,
+    int shapeVersion);
+
+// A full DefineShape/DefineShape2/DefineShape3 tag body for a rectangle
+// filled with a linear gradient instead of a solid color: CharacterId,
+// Bounds (RECT), then a ShapeWithStyle built from
+// buildLinearGradientFillStyleArrayBytes + an empty LineStyleArray +
+// buildRectShapeRecordsBytes (same rectangle-outline records a solid-fill
+// DefineShape uses — the fill style TYPE is what differs, not the shape's
+// geometry).
+std::vector<uint8_t> buildDefineShapeWithLinearGradientBytes(
+    int shapeVersion, uint16_t characterId, int32_t widthTwips, int32_t heightTwips,
+    const std::vector<uint8_t>& gradientMatrixBytes, const std::vector<GradientStopFixture>& stops);
+
 // A DefineSprite (tag 39) body: CharacterId, FrameCount, then each of
 // `nestedTags` written as TagRecords (an End tag is appended automatically
 // if the last entry isn't already code 0) — exactly the nested-tag-stream

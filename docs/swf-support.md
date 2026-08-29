@@ -104,7 +104,8 @@ for the renderer architecture and known limitations.
 | Feature | Status |
 |---|---|
 | `FILLSTYLEARRAY` — solid fills | ✅ |
-| `FILLSTYLEARRAY` — linear/radial/focal-radial gradient fills | ✅ parsed (matrix + gradient stops); rendered as a single averaged flat color (no real gradient rendering yet) |
+| `FILLSTYLEARRAY` — linear gradient fills | ✅ parsed AND rendered as a real per-pixel 256-stop gradient (2026-08-28 graphics/gradients task — see `docs/renderer.md`'s "Gradient rendering" section) |
+| `FILLSTYLEARRAY` — radial/focal-radial gradient fills | ✅ parsed (matrix + gradient stops); still rendered as a single averaged flat color — real corpus evidence (`/tmp/gradient_scan.cpp`, hobo.swf) found zero radial/focal-radial fills, so real rendering is deliberately not implemented against no evidence (same discipline as `docs/renderer.md`'s other evidence-scoped decisions) |
 | `FILLSTYLEARRAY` — bitmap fills (repeating/clipped, smoothed/non-smoothed) | ✅ parsed (character ID + matrix); rendered as a flat gray placeholder (bitmap decoding not implemented) |
 | `LINESTYLEARRAY` (LineStyle1) | ✅ |
 | `LineStyle2` (DefineShape4) | ❌ not implemented |
@@ -222,7 +223,7 @@ always render their "Up" state, since there's no mouse hit-testing yet).
 
 ### Not yet implemented (by design — later phases)
 
-- Bitmap rendering, `LineStyle2`/`DefineShape4`, real gradient rendering, `ColorTransform` application (later phase, or earlier if a target title needs it)
+- Bitmap rendering, `LineStyle2`/`DefineShape4`, real radial/focal-radial gradient rendering (linear gradient rendering is done — see the `FILLSTYLEARRAY` row above and `docs/renderer.md`) (later phase, or earlier if a target title needs it)
 - `_width`/`_height`, all mouse/keyboard-related `onClipEvent`s and button `on()` handlers (blocked on hit-testing/bounds — see the AVM1/MovieClip API table above)
 - Audio codec decode, streaming sound, `ExportAssets`-based `Sound.attachSound(name)`, `DefineButtonSound` (see the Sound table above)
 - `DefineFont3`, `DefineFontInfo`/`2`, EditText variable binding/word-wrap/scrolling (see the Phase 8 tables above)

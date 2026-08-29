@@ -37,6 +37,80 @@ std::vector<PointTwips> toDevicePolyline(const std::vector<PointTwips>& localTwi
     return out;
 }
 
+// Resolves a TessellatedPolygon's GradientPaint (still in the shape's own
+// local twips space) into a device-pixel-ready DeviceGradientFill (see
+// IRenderer.h's doc comment on that struct) — the affine-matrix-inversion
+// half of the graphics/gradients task (2026-08-28).
+//
+// The forward chain from the SWF gradient square's own -16384..16384 space
+// to a device pixel is: gradientMatrix (gradient square -> shape-local
+// twips) -> worldMatrix (shape-local twips -> world twips) ->
+// pixelsPerTwipX/Y (world twips -> device pixels). concatMatrix(parent,
+// child) composes "child first, then parent" (see swf/SwfRecords.h), so
+// combinedLocal = concatMatrix(worldMatrix, poly.gradient.matrix) is
+// exactly "apply gradientMatrix, then worldMatrix" — gradient square ->
+// world twips in one Matrix. Folding in the final twips->pixels scale
+// gives the full forward affine transform's six coefficients (A, B, C, D,
+// TX, TY below); this function inverts that 2x2 (see the worked-out algebra
+// in this project's session notes) to get the device-pixel -> gradient-
+// space transform DeviceGradientFill actually needs. Returns false (leaving
+// `out` unmodified) for a degenerate (near-singular, |det| ~ 0) transform —
+// callers fall back to the polygon's flat toFlatColor() color instead,
+// exactly like a real player would for a gradient that's been scaled to
+// nothing.
+bool resolveGradientFill(const GradientPaint& paint, const swf::Matrix& worldMatrix,
+                          const swf::ColorTransform& worldColorTransform, double pixelsPerTwipX,
+                          double pixelsPerTwipY, DeviceGradientFill& out) {
+    swf::Matrix combinedLocal = swf::concatMatrix(worldMatrix, paint.matrix);
+
+    double A = pixelsPerTwipX * combinedLocal.scaleX;
+    double C = pixelsPerTwipX * combinedLocal.rotateSkew1;
+    double TX = pixelsPerTwipX * combinedLocal.translateXTwips;
+    double B = pixelsPerTwipY * combinedLocal.rotateSkew0;
+    double D = pixelsPerTwipY * combinedLocal.scaleY;
+    double TY = pixelsPerTwipY * combinedLocal.translateYTwips;
+
+    double det = A * D - B * C;
+    if (std::fabs(det) < 1e-9) return false;
+
+    double invA = D / det;
+    double invC = -C / det;
+    double invB = -B / det;
+    double invD = A / det;
+
+    out.a = invA;
+    out.c = invC;
+    out.tx = -invA * TX - invC * TY;
+    out.b = invB;
+    out.d = invD;
+    out.ty = -invB * TX - invD * TY;
+    out.spreadMode = paint.spreadMode;
+    for (size_t i = 0; i < paint.ramp.size(); ++i) {
+        out.ramp[i] = swf::applyColorTransform(paint.ramp[i], worldColorTransform);
+    }
+    return true;
+}
+
+// Shared by renderShapeCharacter()/renderMorphShapeCharacter(): fills one
+// already-tessellated polygon, taking the gradient branch when the polygon
+// resolved to one and the device-space matrix inversion above didn't hit
+// the degenerate case, falling back to the existing flat-fill call
+// otherwise (identical to this function's pre-gradient-task behavior).
+void fillTessellatedPolygon(const TessellatedPolygon& poly, const swf::Matrix& worldMatrix,
+                             const swf::ColorTransform& worldColorTransform, IRenderer& target,
+                             double pixelsPerTwipX, double pixelsPerTwipY) {
+    auto devicePoints = toDevicePolyline(poly.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
+    if (poly.paintKind == PaintKind::kLinearGradient) {
+        DeviceGradientFill fill;
+        if (resolveGradientFill(poly.gradient, worldMatrix, worldColorTransform, pixelsPerTwipX,
+                                 pixelsPerTwipY, fill)) {
+            target.fillPolygonGradient(devicePoints, fill);
+            return;
+        }
+    }
+    target.fillPolygon(devicePoints, swf::applyColorTransform(poly.color, worldColorTransform));
+}
+
 }  // namespace
 
 SceneRenderer::SceneRenderer(const runtime::Movie& movie,
@@ -173,9 +247,8 @@ void SceneRenderer::renderShapeCharacter(const swf::ShapeDef& shapeDef,
     const TessellatedShape& tess = it->second;
 
     for (const auto& poly : tess.polygons) {
-        auto devicePoints =
-            toDevicePolyline(poly.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
-        target.fillPolygon(devicePoints, swf::applyColorTransform(poly.color, worldColorTransform));
+        fillTessellatedPolygon(poly, worldMatrix, worldColorTransform, target, pixelsPerTwipX,
+                                pixelsPerTwipY);
     }
     for (const auto& stroke : tess.strokes) {
         auto devicePoints =
@@ -232,9 +305,8 @@ void SceneRenderer::renderMorphShapeCharacter(const swf::MorphShapeDef& morphDef
     TessellatedShape tess = tessellateShape(shape);
 
     for (const auto& poly : tess.polygons) {
-        auto devicePoints =
-            toDevicePolyline(poly.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
-        target.fillPolygon(devicePoints, swf::applyColorTransform(poly.color, worldColorTransform));
+        fillTessellatedPolygon(poly, worldMatrix, worldColorTransform, target, pixelsPerTwipX,
+                                pixelsPerTwipY);
     }
     for (const auto& stroke : tess.strokes) {
         auto devicePoints =

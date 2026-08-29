@@ -77,6 +77,8 @@ public:
     void endFrame() override;
 
     void fillPolygon(const std::vector<PointTwips>& devicePoints, swf::RgbaColor color) override;
+    void fillPolygonGradient(const std::vector<PointTwips>& devicePoints,
+                              const DeviceGradientFill& fill) override;
     void strokePolyline(const std::vector<PointTwips>& devicePoints, swf::RgbaColor color,
                          int widthPixels) override;
 

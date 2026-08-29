@@ -1,5 +1,6 @@
 #include "renderer/ShapeTessellator.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
@@ -61,6 +62,68 @@ swf::RgbaColor toFlatColor(const swf::FillStyle& fill) {
     return swf::RgbaColor{160, 160, 160, 255};
 }
 
+namespace {
+
+uint8_t lerpChannel(uint8_t a, uint8_t b, double t) {
+    return static_cast<uint8_t>(std::lround(a + (static_cast<double>(b) - a) * t));
+}
+
+swf::RgbaColor lerpColor(const swf::RgbaColor& a, const swf::RgbaColor& b, double t) {
+    return swf::RgbaColor{lerpChannel(a.r, b.r, t), lerpChannel(a.g, b.g, t),
+                           lerpChannel(a.b, b.b, t), lerpChannel(a.a, b.a, t)};
+}
+
+}  // namespace
+
+std::array<swf::RgbaColor, 256> buildGradientRamp(const swf::Gradient& gradient) {
+    std::array<swf::RgbaColor, 256> ramp{};
+    if (gradient.records.empty()) {
+        ramp.fill(swf::RgbaColor{128, 128, 128, 255});
+        return ramp;
+    }
+    if (gradient.records.size() == 1) {
+        ramp.fill(gradient.records[0].color);
+        return ramp;
+    }
+    // GradientRecords are required by spec to be stored in non-decreasing
+    // ratio order, but real-world encoders aren't always trustworthy — sort
+    // a local copy defensively rather than assume it (cheap: at most a
+    // handful of stops).
+    std::vector<swf::GradientRecord> stops = gradient.records;
+    std::sort(stops.begin(), stops.end(),
+              [](const swf::GradientRecord& l, const swf::GradientRecord& r) {
+                  return l.ratio < r.ratio;
+              });
+
+    for (int i = 0; i < 256; ++i) {
+        uint8_t ratio = static_cast<uint8_t>(i);
+        if (ratio <= stops.front().ratio) {
+            ramp[i] = stops.front().color;
+            continue;
+        }
+        if (ratio >= stops.back().ratio) {
+            ramp[i] = stops.back().color;
+            continue;
+        }
+        // Find the bracketing pair (stops.size() >= 2 here, and ratio is
+        // strictly between the first and last stop's ratio from the checks
+        // above, so this loop always finds a bracketing pair and never
+        // falls through unset).
+        for (size_t s = 0; s + 1 < stops.size(); ++s) {
+            const swf::GradientRecord& lo = stops[s];
+            const swf::GradientRecord& hi = stops[s + 1];
+            if (ratio >= lo.ratio && ratio <= hi.ratio) {
+                double t = hi.ratio == lo.ratio
+                               ? 0.0
+                               : static_cast<double>(ratio - lo.ratio) / (hi.ratio - lo.ratio);
+                ramp[i] = lerpColor(lo.color, hi.color, t);
+                break;
+            }
+        }
+    }
+    return ramp;
+}
+
 TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions) {
     TessellatedShape result;
 
@@ -94,6 +157,16 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
                 TessellatedPolygon poly;
                 poly.color = toFlatColor(*fill);
                 poly.points = subpath;
+                // Real gradient rendering, scoped to kLinearGradient only —
+                // see this file's header comment and IRenderer.h's
+                // DeviceGradientFill doc comment for why radial/focal-radial
+                // stay on the toFlatColor() fallback above.
+                if (fill->type == swf::FillStyleType::kLinearGradient) {
+                    poly.paintKind = PaintKind::kLinearGradient;
+                    poly.gradient.matrix = fill->gradientMatrix;
+                    poly.gradient.spreadMode = fill->gradient.spreadMode;
+                    poly.gradient.ramp = buildGradientRamp(fill->gradient);
+                }
                 result.polygons.push_back(std::move(poly));
             }
         }

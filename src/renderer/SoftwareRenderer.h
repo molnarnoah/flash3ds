@@ -25,6 +25,17 @@ public:
     void endFrame() override;
 
     void fillPolygon(const std::vector<PointTwips>& devicePoints, swf::RgbaColor color) override;
+
+    // Graphics/gradients task (2026-08-28) — see IRenderer.h's
+    // DeviceGradientFill doc comment. Deliberately a full, independent
+    // copy of fillPolygon()'s active-edge-table scanline loop (see
+    // fillPolygonGradient()'s own comment in the .cpp for why), not a
+    // shared-code refactor — the flat-fill path below is this project's
+    // measured, tuned hot path (see its own performance-fix comments) and
+    // this addition must not risk it.
+    void fillPolygonGradient(const std::vector<PointTwips>& devicePoints,
+                              const DeviceGradientFill& fill) override;
+
     void strokePolyline(const std::vector<PointTwips>& devicePoints, swf::RgbaColor color,
                          int widthPixels) override;
 
@@ -107,6 +118,14 @@ private:
     // stamped-square points aren't pre-clamped the same way -- it keeps
     // calling blendPixel() per point, unchanged.
     void fillSpan(int y, int xStart, int xEnd, swf::RgbaColor color);
+
+    // Gradient counterpart to fillSpan() — same pre-clamped-bounds contract
+    // (caller guarantees xStart/xEnd in [0, width_-1], y in [0, height_-1]),
+    // but samples a per-pixel color from `fill`'s ramp instead of writing
+    // one flat color, so there's no bulk std::fill() fast path available.
+    // See fillPolygonGradient()'s .cpp comment for the incremental
+    // gradient-space stepping this uses.
+    void fillSpanGradient(int y, int xStart, int xEnd, const DeviceGradientFill& fill);
 
     int width_ = 0;
     int height_ = 0;

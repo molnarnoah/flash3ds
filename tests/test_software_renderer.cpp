@@ -1,10 +1,13 @@
+#include <array>
 #include <cstdio>
 
 #include "TestFramework.h"
 #include "renderer/SoftwareRenderer.h"
 
+using flash3ds::renderer::DeviceGradientFill;
 using flash3ds::renderer::PointTwips;
 using flash3ds::renderer::SoftwareRenderer;
+using flash3ds::swf::GradientSpreadMode;
 using flash3ds::swf::RgbaColor;
 
 TEST_CASE(SoftwareRenderer_BeginFrame_ClearsToBackgroundColor) {
@@ -166,6 +169,118 @@ TEST_CASE(SoftwareRenderer_StrokePolyline_PlotsPointsAlongLine) {
 
     auto offLine = renderer.pixelAt(10, 0);
     CHECK_EQ(offLine.r, 255);  // untouched background
+}
+
+// Graphics/gradients task (2026-08-28) — see IRenderer.h's
+// DeviceGradientFill doc comment for the field meanings/coordinate-space
+// contract these tests exercise.
+
+namespace {
+
+// A red-at-index-0 -> blue-at-index-255 ramp, matching what
+// ShapeTessellator::buildGradientRamp() would produce for a simple 2-stop
+// gradient — built here directly (not via that function) since these are
+// SoftwareRenderer-level tests, deliberately independent of the
+// tessellator.
+std::array<RgbaColor, 256> makeRedToBlueRamp() {
+    std::array<RgbaColor, 256> ramp{};
+    for (int i = 0; i < 256; ++i) {
+        double t = i / 255.0;
+        ramp[static_cast<size_t>(i)] = RgbaColor{
+            static_cast<uint8_t>((1.0 - t) * 255.0 + 0.5), 0,
+            static_cast<uint8_t>(t * 255.0 + 0.5), 255};
+    }
+    return ramp;
+}
+
+}  // namespace
+
+TEST_CASE(SoftwareRenderer_FillPolygonGradient_VariesAcrossXAxisPerAffineMapping) {
+    SoftwareRenderer renderer(100, 20);
+    renderer.beginFrame(RgbaColor{255, 255, 255, 255});
+
+    // gx = a*px + tx, tuned so gx=-16384 at px=0 and gx=+16384 at px=100
+    // (a = 32768/100, tx = -16384) -- i.e. the full gradient sweeps evenly
+    // left-to-right across this renderer's whole width, same shape of
+    // mapping SceneRenderer's real affine-inversion produces for an
+    // unrotated, unscaled placement.
+    DeviceGradientFill fill;
+    fill.ramp = makeRedToBlueRamp();
+    fill.spreadMode = GradientSpreadMode::kPad;
+    fill.a = 32768.0 / 100.0;
+    fill.c = 0.0;
+    fill.tx = -16384.0;
+    fill.b = 0.0;
+    fill.d = 0.0;
+    fill.ty = 0.0;
+
+    std::vector<PointTwips> rect = {{0, 0}, {100, 0}, {100, 20}, {0, 20}};
+    renderer.fillPolygonGradient(rect, fill);
+
+    auto leftEdge = renderer.pixelAt(1, 10);
+    auto rightEdge = renderer.pixelAt(98, 10);
+    auto middle = renderer.pixelAt(50, 10);
+
+    // Left edge should be near-pure red, right edge near-pure blue, and the
+    // middle should be neither -- a real gradient sweep, not a flat color.
+    CHECK(leftEdge.r > 200);
+    CHECK(leftEdge.b < 50);
+    CHECK(rightEdge.b > 200);
+    CHECK(rightEdge.r < 50);
+    CHECK(middle.r > 50 && middle.r < 200);
+    CHECK(middle.b > 50 && middle.b < 200);
+}
+
+TEST_CASE(SoftwareRenderer_FillPolygonGradient_PadSpreadClampsOutsideGradientSquare) {
+    SoftwareRenderer renderer(100, 20);
+    renderer.beginFrame(RgbaColor{255, 255, 255, 255});
+
+    // Gradient square only covers device x in [40, 60); outside that range
+    // (in either direction), kPad should clamp to the nearest endpoint
+    // color rather than wrapping or extrapolating past the ramp.
+    DeviceGradientFill fill;
+    fill.ramp = makeRedToBlueRamp();
+    fill.spreadMode = GradientSpreadMode::kPad;
+    fill.a = 32768.0 / 20.0;
+    fill.tx = -16384.0 - fill.a * 40.0;
+    fill.b = 0.0;
+    fill.d = 0.0;
+    fill.ty = 0.0;
+
+    std::vector<PointTwips> rect = {{0, 0}, {100, 0}, {100, 20}, {0, 20}};
+    renderer.fillPolygonGradient(rect, fill);
+
+    auto farLeft = renderer.pixelAt(2, 10);   // well before the gradient square
+    auto farRight = renderer.pixelAt(97, 10);  // well past it
+    CHECK(farLeft.r > 200);
+    CHECK(farLeft.b < 50);
+    CHECK(farRight.b > 200);
+    CHECK(farRight.r < 50);
+}
+
+TEST_CASE(SoftwareRenderer_FillPolygonGradient_RepeatSpreadSawtoothsAcrossMultiplePeriods) {
+    SoftwareRenderer renderer(100, 20);
+    renderer.beginFrame(RgbaColor{255, 255, 255, 255});
+
+    // Squeeze 4 full gradient periods across the width (kRepeat): each
+    // period should independently sweep red->blue, so pixel 24 (just
+    // before the end of period 1) should be much bluer than pixel 26 (just
+    // after period 2 restarts at red).
+    DeviceGradientFill fill;
+    fill.ramp = makeRedToBlueRamp();
+    fill.spreadMode = GradientSpreadMode::kRepeat;
+    fill.a = 32768.0 / 25.0;  // one full gradient period every 25px -> 4 periods over 100px
+    fill.tx = -16384.0;
+    fill.b = 0.0;
+    fill.d = 0.0;
+    fill.ty = 0.0;
+
+    std::vector<PointTwips> rect = {{0, 0}, {100, 0}, {100, 20}, {0, 20}};
+    renderer.fillPolygonGradient(rect, fill);
+
+    auto justBeforeWrap = renderer.pixelAt(24, 10);
+    auto justAfterWrap = renderer.pixelAt(26, 10);
+    CHECK(justBeforeWrap.b > justAfterWrap.b);
 }
 
 TEST_CASE(SoftwareRenderer_WritePpm_ProducesValidP6Header) {

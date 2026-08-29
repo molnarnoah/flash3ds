@@ -127,6 +127,68 @@ void SoftwareRenderer::fillSpan(int y, int xStart, int xEnd, swf::RgbaColor colo
     blendedPixelWrites_ += count;
 }
 
+namespace {
+
+// Maps a gradient-space t (from DeviceGradientFill's linear formula,
+// t = (gx + 16384) / 32768, computed by the caller below) into [0, 1] per
+// GradientSpreadMode — kPad clamps, kReflect triangle-waves, kRepeat
+// sawtooths. Matches the public SWF spec's three spread modes.
+double applySpreadMode(double t, swf::GradientSpreadMode mode) {
+    switch (mode) {
+        case swf::GradientSpreadMode::kPad:
+            return std::min(1.0, std::max(0.0, t));
+        case swf::GradientSpreadMode::kRepeat: {
+            double m = std::fmod(t, 1.0);
+            if (m < 0.0) m += 1.0;
+            return m;
+        }
+        case swf::GradientSpreadMode::kReflect: {
+            double m = std::fmod(t, 2.0);
+            if (m < 0.0) m += 2.0;
+            return m > 1.0 ? 2.0 - m : m;
+        }
+    }
+    return std::min(1.0, std::max(0.0, t));
+}
+
+}  // namespace
+
+void SoftwareRenderer::fillSpanGradient(int y, int xStart, int xEnd, const DeviceGradientFill& fill) {
+    if (xStart > xEnd) return;  // empty span, same convention as fillSpan()
+    const size_t rowOffset = static_cast<size_t>(y) * static_cast<size_t>(width_);
+
+    // gx = a*px + c*py + tx, evaluated at pixel centers (px = x+0.5,
+    // py = y+0.5, matching fillPolygon()'s own scanY = y+0.5 sampling
+    // convention) — y is fixed for this whole span, so only the x term
+    // varies; step gx by `a` (and, unused for linear gradients but kept
+    // for a future radial implementation, gy by `b`) each pixel instead of
+    // recomputing the full affine expression from scratch every iteration.
+    double py = y + 0.5;
+    double gx = fill.a * (xStart + 0.5) + fill.c * py + fill.tx;
+
+    for (int x = xStart; x <= xEnd; ++x, gx += fill.a) {
+        double t = (gx + 16384.0) / 32768.0;
+        t = applySpreadMode(t, fill.spreadMode);
+        int index = static_cast<int>(t * 255.0 + 0.5);
+        index = std::min(255, std::max(0, index));
+        const swf::RgbaColor& color = fill.ramp[static_cast<size_t>(index)];
+
+        if (color.a == 0) continue;  // no-op, same as blendPixel()/fillSpan()
+        size_t idx = rowOffset + static_cast<size_t>(x);
+        if (color.a == 255) {
+            pixels_[idx] = color;
+            ++opaquePixelWrites_;
+            continue;
+        }
+        swf::RgbaColor& dst = pixels_[idx];
+        dst.r = blendChannel(dst.r, color.r, color.a);
+        dst.g = blendChannel(dst.g, color.g, color.a);
+        dst.b = blendChannel(dst.b, color.b, color.a);
+        dst.a = static_cast<uint8_t>(std::min(255, static_cast<int>(dst.a) + color.a));
+        ++blendedPixelWrites_;
+    }
+}
+
 void SoftwareRenderer::fillPolygon(const std::vector<PointTwips>& devicePoints,
                                     swf::RgbaColor color) {
     if (devicePoints.size() < 3) return;
@@ -234,6 +296,87 @@ void SoftwareRenderer::fillPolygon(const std::vector<PointTwips>& devicePoints,
             xStart = std::max(xStart, 0);
             xEnd = std::min(xEnd, width_ - 1);
             fillSpan(y, xStart, xEnd, color);
+        }
+    }
+}
+
+// Graphics/gradients task (2026-08-28) — see IRenderer.h's
+// DeviceGradientFill doc comment and this class's header comment for why
+// this is a full, independent copy of fillPolygon()'s active-edge-table
+// scanline loop rather than a shared refactor: fillPolygon() above is this
+// project's measured, tuned hot path (the roundToInt()/active-edge-table/
+// fillSpan() fixes documented in this file's own history), and gradient
+// fills are rare in real content (161 of ~13,415 total fills across all of
+// hobo.swf's shapes, /tmp/gradient_scan.cpp) — not worth risking that path
+// for. The only difference from fillPolygon() below is the final call
+// (fillSpanGradient() instead of fillSpan()); the edge-building/active-list/
+// intersection math is intentionally identical so this produces the same
+// polygon coverage a flat fill of the same shape would.
+void SoftwareRenderer::fillPolygonGradient(const std::vector<PointTwips>& devicePoints,
+                                            const DeviceGradientFill& fill) {
+    if (devicePoints.size() < 3) return;
+
+    int minY = static_cast<int>(devicePoints[0].y);
+    int maxY = static_cast<int>(devicePoints[0].y);
+    for (const auto& p : devicePoints) {
+        minY = std::min(minY, static_cast<int>(p.y));
+        maxY = std::max(maxY, static_cast<int>(p.y));
+    }
+    minY = std::max(minY, 0);
+    maxY = std::min(maxY, height_ - 1);
+
+    size_t n = devicePoints.size();
+
+    struct Edge {
+        double ax, ay, bx, by;
+        double yLo, yHi;
+    };
+    std::vector<Edge> edges;
+    edges.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        const PointTwips& a = devicePoints[i];
+        const PointTwips& b = devicePoints[(i + 1) % n];
+        double ay = a.y, by = b.y;
+        if (ay == by) continue;
+        edges.push_back(Edge{static_cast<double>(a.x), ay, static_cast<double>(b.x), by,
+                              std::min(ay, by), std::max(ay, by)});
+    }
+    std::sort(edges.begin(), edges.end(),
+              [](const Edge& l, const Edge& r) { return l.yLo < r.yLo; });
+
+    std::vector<double> intersections;
+    std::vector<const Edge*> active;
+    size_t nextEdge = 0;
+
+    for (int y = minY; y <= maxY; ++y) {
+        double scanY = y + 0.5;
+
+        while (nextEdge < edges.size() && edges[nextEdge].yLo <= scanY) {
+            active.push_back(&edges[nextEdge]);
+            ++nextEdge;
+        }
+        active.erase(std::remove_if(active.begin(), active.end(),
+                                     [scanY](const Edge* e) { return e->yHi <= scanY; }),
+                     active.end());
+
+        intersections.clear();
+        for (const Edge* e : active) {
+            if ((scanY >= e->ay && scanY < e->by) || (scanY >= e->by && scanY < e->ay)) {
+                double t = (scanY - e->ay) / (e->by - e->ay);
+                double x = e->ax + t * (e->bx - e->ax);
+                intersections.push_back(x);
+            }
+        }
+
+        if (intersections.empty()) continue;
+        std::sort(intersections.begin(), intersections.end());
+
+        for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
+            int xStart = roundToInt(intersections[i]);
+            int xEnd = roundToInt(intersections[i + 1]);
+            xStart = std::max(xStart, 0);
+            xEnd = std::min(xEnd, width_ - 1);
+            fillSpanGradient(y, xStart, xEnd, fill);
         }
     }
 }

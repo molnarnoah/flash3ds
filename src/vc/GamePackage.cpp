@@ -20,6 +20,7 @@ GamePackage buildGamePackage(const ResourceFetcher& fetch) {
 
     std::vector<uint8_t> swfBytes;
     bool haveSwf = fetch(package.config.swfFilename, swfBytes);
+    package.swfResourceFound = haveSwf;
     if (haveSwf) {
         // Reuses the EXISTING SwfLoader unchanged -- this is the
         // "existing SWF loader" node in docs/virtual-console.md's

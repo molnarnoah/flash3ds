@@ -197,7 +197,8 @@ tracing this phase confirms it is real and fully wired.
 | Visibility (`_visible`) | WORKING | `renderClip` checks `clip.visible()`, `SceneRenderer.cpp:77` |
 | Clipping (`HasClipDepth` / clip layers / masks) | **NOT IMPLEMENTED** | `clipDepth` is parsed and stored but read nowhere else in the codebase — confirmed by grep |
 | Solid fills | WORKING | |
-| Gradient fills (linear/radial/focal) | **BROKEN/simplified** | rendered as a flat *average* of all gradient stop colors — no gradient shape, matrix, or interpolation at all (`ShapeTessellator.cpp:40-58`) |
+| Gradient fills — linear | **FIXED 2026-08-28 (was BROKEN/simplified)** | real per-pixel 256-stop gradient, gradientMatrix + world-transform-aware (see `docs/renderer.md`'s "Gradient rendering" section); real-corpus scope evidence in `docs/known-limitations.md`/`ShapeTessellator.h`'s header comment |
+| Gradient fills — radial/focal-radial | **BROKEN/simplified (deliberately, by evidence)** | still rendered as a flat *average* of all gradient stop colors (`ShapeTessellator.cpp`'s `toFlatColor()`) — real hobo.swf corpus scan found zero radial/focal-radial fills, so real rendering isn't implemented against no evidence (same discipline as this project's other evidence-scoped decisions) |
 | Bitmap fills | **NOT IMPLEMENTED** | flat gray (160,160,160,255) placeholder — no bitmap character even resolves (see §2), so this path is effectively unreachable for now anyway |
 | Shape tessellation topology correctness | **BROKEN for some real content** | "one closed polygon per MoveTo run, no edge-boundary merging" — shapes with holes (e.g. letter "O") or one fill region authored across multiple `StyleChangeRecord` runs render wrong (overlapping opaque polygons instead of a merged/subtracted region); confirmed by reading the actual tessellation algorithm, not assumed |
 | Stroke rendering | WORKING (crude) | naive Bresenham + square-stamp thickness, no joins/caps/anti-aliasing |

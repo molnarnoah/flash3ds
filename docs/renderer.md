@@ -84,9 +84,10 @@ Movie::frameSize (stage)   ─┘                          │
 ```
 
 - **`IRenderer`** (`src/renderer/IRenderer.h`) — the abstract pixel-output
-  interface: `beginFrame`/`endFrame`, `fillPolygon`, `strokePolyline`. Not
-  coupled to OpenGL, OpenGL ES, or citro3d — the same `SceneRenderer` walk
-  drives any implementation.
+  interface: `beginFrame`/`endFrame`, `fillPolygon`, `strokePolyline`, and
+  (added 2026-08-28, see "Gradient rendering" below) `fillPolygonGradient`.
+  Not coupled to OpenGL, OpenGL ES, or citro3d — the same `SceneRenderer`
+  walk drives any implementation.
 - **`SoftwareRenderer`** (`src/renderer/SoftwareRenderer.h/.cpp`) — the
   desktop/testing implementation: an RGBA8 framebuffer, even-odd scanline
   polygon fill with alpha blending, a naive Bresenham stroke rasterizer, and
@@ -100,10 +101,65 @@ Movie::frameSize (stage)   ─┘                          │
   single-contour shapes (rectangles, stars, most simple vector art)
   correctly, but does **not** correctly render shapes with holes (e.g. the
   letter "O") or shapes built from multiple StyleChangeRecords sharing one
-  fill region. Gradient fills are reduced to the average of their stop
-  colors; bitmap fills are reduced to a flat gray placeholder (bitmap
-  decoding is unimplemented). Revisit with real edge-merging if/when target
-  content (see `docs/compatibility.md`) needs it.
+  fill region. Linear gradient fills render as real per-pixel gradients
+  (see "Gradient rendering" below); radial/focal-radial gradient fills are
+  still reduced to the average of their stop colors, and bitmap fills are
+  still reduced to a flat gray placeholder (bitmap decoding is
+  unimplemented). Revisit with real edge-merging if/when target content
+  (see `docs/compatibility.md`) needs it.
+
+### Gradient rendering (2026-08-28)
+
+Real per-pixel linear gradient rendering, replacing the flat-averaged-color
+approximation for `FillStyleType::kLinearGradient` fills — the fix behind
+Hobo1's title screen "HOBO"/"CONTROLS"/"PLAY!" text now showing a real
+color ramp instead of a single muddy flat color. Scoped to linear gradients
+only, by real-corpus evidence (`/tmp/gradient_scan.cpp`, a throwaway
+diagnostic that scanned every `DefineShape`/`2`/`3` fill style — including
+inside nested `DefineSprite` tag streams — across real `hobo.swf`): 2990
+shapes, 13,254 solid fills, 161 linear gradient fills, and **zero**
+radial/focal-radial/bitmap fills. Following this project's established
+evidence-driven-scope discipline (see the top-level `CLAUDE.md`'s Roadmap
+Phase 8/9 entries — `Math`-only, `DefineMorphShape`-v1-only — for the same
+pattern applied elsewhere), radial/focal-radial gradients and bitmap fills
+deliberately stay on the pre-existing flat-color-average path rather than
+being implemented against no corpus evidence.
+
+The pipeline, end to end:
+
+1. **`ShapeTessellator`** (`buildGradientRamp()`) resolves a `Gradient`'s
+   `GradientRecord` stops into a 256-entry color ramp (linear interpolation
+   between bracketing stops, matching the SWF spec's 0-255 ratio space) at
+   tessellation time, stored in a `TessellatedPolygon`'s new
+   `PaintKind::kLinearGradient`/`GradientPaint` fields alongside the
+   existing flat `color` (which stays populated as a degenerate-matrix
+   fallback — see step 2). `GradientPaint::matrix` is the FillStyle's own
+   `gradientMatrix`, unchanged, still in the shape's own local twips space.
+2. **`SceneRenderer`** (`resolveGradientFill()`, file-local in
+   `SceneRenderer.cpp`) composes `gradientMatrix` with the shape's world
+   matrix and the stage's twips-per-pixel scale into one forward affine
+   transform (SWF gradient-square space -> device pixels), then inverts it
+   (device pixels -> gradient-square space) so `IRenderer::
+   fillPolygonGradient()` can map each pixel it visits directly back to a
+   ramp index with no further matrix work. A near-singular (degenerate)
+   transform falls back to the polygon's flat `color` via the ordinary
+   `fillPolygon()` call, same as a gradient scaled to nothing would look in
+   a real player. The 256-entry ramp is also `ColorTransform`-applied here
+   (256 `applyColorTransform()` calls per gradient-filled polygon — a cold
+   path, not the tuned raster hot path, so this cost is deliberately not
+   optimized).
+3. **`SoftwareRenderer`/`Nintendo3DSRenderer`** (`fillPolygonGradient()`/
+   `fillSpanGradient()`) rasterize the polygon with the SAME active-edge-
+   table scanline algorithm `fillPolygon()`/`fillSpan()` already use for
+   flat fills — deliberately a full, independent copy rather than a shared
+   refactor, so this addition can never risk the flat-fill path's own
+   measured, tuned performance (see this file's "Performance"/pacing
+   history in `SoftwareRenderer.cpp`). `GradientSpreadMode` (`kPad`/
+   `kReflect`/`kRepeat`) is applied per-pixel before the ramp lookup.
+
+See `IRenderer.h`'s `DeviceGradientFill` doc comment for the full
+coordinate-space contract, and `docs/swf-support.md`'s `FILLSTYLEARRAY` row
+for the current support-matrix status.
 - **`SceneRenderer`** (`src/renderer/SceneRenderer.h/.cpp`) — takes a
   `runtime::MovieClipInstance&` root (Phase 5) and walks its `Timeline`'s
   current `DisplayList` in depth order (back-to-front, per the SWF display

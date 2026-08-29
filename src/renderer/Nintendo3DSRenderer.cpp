@@ -33,6 +33,19 @@ void Nintendo3DSRenderer::fillPolygon(const std::vector<PointTwips>& devicePoint
     rasterMs_ += osTickCounterRead(&t);
 }
 
+void Nintendo3DSRenderer::fillPolygonGradient(const std::vector<PointTwips>& devicePoints,
+                                               const DeviceGradientFill& fill) {
+    // Same TickCounter/rasterMs_ accumulation pattern as fillPolygon() above
+    // — a gradient fill is still raster work for pacing-measurement
+    // purposes, and this project's PhaseTimingWindow HUD bars (see
+    // docs/performance-pacing.md) shouldn't silently miss it.
+    TickCounter t;
+    osTickCounterStart(&t);
+    software_.fillPolygonGradient(devicePoints, fill);
+    osTickCounterUpdate(&t);
+    rasterMs_ += osTickCounterRead(&t);
+}
+
 void Nintendo3DSRenderer::strokePolyline(const std::vector<PointTwips>& devicePoints,
                                           swf::RgbaColor color, int widthPixels) {
     TickCounter t;

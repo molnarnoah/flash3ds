@@ -148,118 +148,9 @@ constexpr RgbaColor kOutline{140, 140, 160, 255};
 constexpr RgbaColor kCirclePadDot{80, 200, 255, 255};
 constexpr RgbaColor kTouchDot{255, 200, 60, 255};
 
-// Per-phase frame-timing diagnostic (2026-08-28, "resolve the 7-12 FPS
-// pacing" task -- see docs/performance-pacing.md for the full writeup).
-// Averaged over a window of real loop iterations, drawn as horizontal bars
-// in the bottom screen's unused middle column (x=106..214 -- none of
-// kButtonBoxes/the circle pad/the touch dot touch that region) rather than
-// printed as numbers, same "no font rendering available in this project"
-// constraint showFatalErrorScreen()'s counted-squares technique above
-// already works around. The same numbers also go to LOG_INFO once per
-// window for anyone who *can* see a debug log viewer.
-//
-// Bars are drawn as a PROPORTION of the real measured period (not an
-// absolute ms scale) -- a first version used an absolute px/ms scale
-// capped at 20ms, which on the very first real recording immediately
-// saturated BOTH the period bar (expected -- 7-12fps is 83-142ms, way
-// past any fixed low cap) AND the renderTop bar at the same time, so it
-// was impossible to tell whether renderTop was 20ms or 120ms -- i.e.
-// whether it explained ALL of the missing time or just some of it. A
-// period-relative bar has no such cap: each phase bar's length is
-// literally "what fraction of one real frame this phase consumed," so a
-// bar reaching the same length as the (always-full-width) period
-// reference means that phase alone accounts for essentially the entire
-// frame.
-struct PhaseTimingWindow {
-    double inputMs = 0.0;
-    double advanceMs = 0.0;
-    double renderTopMs = 0.0;
-    // Sub-split of renderTopMs (2026-08-28, see Nintendo3DSRenderer::
-    // lastRasterMs()/lastBlitMs()'s doc comment for exactly what each
-    // covers): renderTopRasterMs is SoftwareRenderer's CPU scanline-fill
-    // work (every fillPolygon()/strokePolyline() call during the tree
-    // walk), renderTopBlitMs is Nintendo3DSRenderer::endFrame()'s
-    // per-pixel copy into the real LCD framebuffer. Whatever's left of
-    // renderTopMs after subtracting both is the tree-walk/character-
-    // resolution/tessellation-lookup cost itself.
-    double renderTopRasterMs = 0.0;
-    double renderTopBlitMs = 0.0;
-    double renderBottomMs = 0.0;
-    double presentMs = 0.0;
-    double vblankWaitMs = 0.0;
-    double periodMs = 0.0;  // real wall-clock time between successive loop tops
-    int samples = 0;
-    int advanceSamples = 0;  // advanceFrame() isn't called every iteration
-};
-
-constexpr RgbaColor kBarInput{120, 120, 255, 255};
-constexpr RgbaColor kBarAdvance{255, 120, 120, 255};
-constexpr RgbaColor kBarRenderTop{255, 200, 60, 255};       // tree walk / char resolution (post-raster/blit subtraction)
-constexpr RgbaColor kBarRenderTopRaster{255, 140, 0, 255};  // SoftwareRenderer fill/stroke
-constexpr RgbaColor kBarRenderTopBlit{200, 80, 255, 255};   // endFrame() pixel blit to LCD fb
-constexpr RgbaColor kBarRenderBottom{255, 160, 200, 255};
-constexpr RgbaColor kBarPresent{120, 255, 180, 255};
-constexpr RgbaColor kBarWait{100, 100, 110, 255};
-constexpr RgbaColor kBarPeriodRef{255, 255, 255, 255};
-
-// Draws one averaged timing window as horizontal bars (in the order the
-// phases run in the main loop below -- renderTop is now split into three:
-// tree-walk, raster, blit, per the 2026-08-28 sub-phase instrumentation
-// added after the tessellation-cache fix alone showed no on-device
-// improvement, see docs/performance-pacing.md), each scaled as a FRACTION
-// of the real measured period (kRefPx wide = 100% of one real frame) --
-// plus a final row: the period reference itself, always drawn as a
-// full-width white OUTLINE (not filled -- it's the ruler, not a
-// measurement) so every other bar's length is directly comparable to "the
-// whole frame" at a glance.
-void drawPhaseTimingBars(IRenderer& renderer, const PhaseTimingWindow& w) {
-    if (w.samples == 0 || w.periodMs <= 0.0) return;
-    constexpr int kBarX = 106;
-    constexpr int kBarH = 22;
-    constexpr int kBarGap = 3;
-    constexpr int kRefPx = 100;  // width representing 100% of one real frame
-
-    const double periodMs = w.periodMs / w.samples;
-    const double renderTopRaster = w.renderTopRasterMs / w.samples;
-    const double renderTopBlit = w.renderTopBlitMs / w.samples;
-    double renderTopOther = (w.renderTopMs / w.samples) - renderTopRaster - renderTopBlit;
-    if (renderTopOther < 0.0) renderTopOther = 0.0;  // TickCounter overhead/rounding, not a real negative cost
-
-    struct Row {
-        double ms;
-        RgbaColor color;
-    };
-    const Row rows[] = {
-        {w.inputMs / w.samples, kBarInput},
-        {w.advanceSamples > 0 ? w.advanceMs / w.advanceSamples : 0.0, kBarAdvance},
-        {renderTopOther, kBarRenderTop},
-        {renderTopRaster, kBarRenderTopRaster},
-        {renderTopBlit, kBarRenderTopBlit},
-        {w.renderBottomMs / w.samples, kBarRenderBottom},
-        {w.presentMs / w.samples, kBarPresent},
-        {w.vblankWaitMs / w.samples, kBarWait},
-    };
-
-    int y = 8;
-    for (const Row& row : rows) {
-        int px = static_cast<int>((row.ms / periodMs) * kRefPx);
-        if (px > kRefPx) px = kRefPx;  // a phase can't exceed the period it's part of
-        if (px < 1) px = 1;
-        drawFilledRect(renderer, kBarX, y, px, kBarH, row.color);
-        drawRectOutline(renderer, kBarX, y, kRefPx, kBarH, kOutline);
-        y += kBarH + kBarGap;
-    }
-    // The reference row: always full-width, outline only, brighter white --
-    // "this is what 100% of one real frame looks like."
-    drawRectOutline(renderer, kBarX, y, kRefPx, kBarH, kBarPeriodRef);
-    drawRectOutline(renderer, kBarX + 1, y + 1, kRefPx - 2, kBarH - 2, kBarPeriodRef);
-}
-
 // Draws the full button/circle-pad/touch test picture for this frame onto
-// `renderer`. `held` is this frame's hidKeysHeld() snapshot. `timing` is
-// the most recently completed averaging window (samples==0 until the
-// first window closes, in which case nothing is drawn for it yet).
-void drawButtonTestScreen(IRenderer& renderer, u32 held, const PhaseTimingWindow& timing) {
+// `renderer`. `held` is this frame's hidKeysHeld() snapshot.
+void drawButtonTestScreen(IRenderer& renderer, u32 held) {
     renderer.beginFrame(kBgColor);
 
     for (const ButtonBox& box : kButtonBoxes) {
@@ -295,8 +186,6 @@ void drawButtonTestScreen(IRenderer& renderer, u32 held, const PhaseTimingWindow
         drawFilledRect(renderer, static_cast<int>(touch.px) - 5, static_cast<int>(touch.py) - 5,
                         10, 10, kTouchDot);
     }
-
-    drawPhaseTimingBars(renderer, timing);
 
     renderer.endFrame();
 }
@@ -382,7 +271,6 @@ void logToDebugSvc(flash3ds::LogLevel level, const char* category, const char* m
 }  // namespace
 
 int main(int argc, char** argv) {
-    (void)argc;
 
     flash3ds::Log::setDebugCallback(logToDebugSvc);
 
@@ -439,7 +327,26 @@ int main(int argc, char** argv) {
     // clear owner per resource" choice, not a strict lifetime requirement).
     Nintendo3DSRomfs romfs;
     Nintendo3DSRomfs::OpenFailure romfsFailure = Nintendo3DSRomfs::OpenFailure::kNone;
-    if (!romfs.open(argv[0], &romfsFailure)) {
+    // Bug found 2026-08-28 via a real user crash report (Azahar's own
+    // "unmapped Read32 @ 0x00000000" log line, resolved with addr2line to
+    // this exact call site): Nintendo3DSRomfs::open() already handles
+    // argv0 == nullptr gracefully (OpenFailure::kNullArgv0), but that
+    // check can only run once open() is actually CALLED with a real
+    // (possibly-null) char* -- it can't protect against `argv` itself
+    // (the array, not argv[0]'s contents) being nullptr, which crashes
+    // evaluating `argv[0]` right here, before open() is ever entered.
+    // Confirmed via the crash address (disassembles to `ldr r1, [r5]`,
+    // i.e. reading argv[0] out of the argv array itself) that this is
+    // exactly what happened on a real run: Azahar's direct "Load File"
+    // 3dsx launch path apparently doesn't populate `argv` the way a
+    // homebrew-launcher (HBL/Rosalina forwarder) does, unlike whatever
+    // launch method was used for the last two builds the user tested
+    // successfully. `argc <= 0` is the same "no real argv" condition
+    // <3ds.h>'s own homebrew ABI would report if argv were legitimately
+    // absent, so treat it identically to a null argv0 here rather than
+    // reading past the end of a possibly-absent array.
+    const char* argv0 = (argc > 0 && argv != nullptr) ? argv[0] : nullptr;
+    if (!romfs.open(argv0, &romfsFailure)) {
         LOG_ERROR("3DS", "Failed to open this app's own embedded RomFS section (see the "
                           "Nintendo3DSRomfs::open log line above for the specific reason) -- was "
                           "this .3dsx built with --romfs=... ? (see CMakeLists.txt) -- "
@@ -467,7 +374,32 @@ int main(int argc, char** argv) {
     if (!movie || !movie->valid) {
         LOG_ERROR("3DS", "Could not load '%s': %s", package.config.swfFilename.c_str(),
                    movie ? movie->errorMessage.c_str() : "(no Movie produced)");
-        showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kInvalidMovie);
+        // Bug found 2026-08-29: a real user run on Azahar reached exactly
+        // this path (kInvalidMovie, 2 top-screen squares) with the
+        // embedded hobo.swf independently verified byte-perfect (md5
+        // match) and confirmed to parse cleanly through this same
+        // SwfLoader on desktop -- so the failure is 3DS-runtime-specific,
+        // not a bad/corrupt file. The user's Azahar Log Viewer never
+        // showed this app's own [VC]/[3DS] LOG_* lines even though the
+        // app demonstrably ran past Nintendo3DSRomfs::open() (reaching
+        // this code at all requires that call to have already returned
+        // true) -- svcOutputDebugString output apparently isn't visible
+        // under Azahar's default Log Viewer filter, so relying on logs
+        // for this diagnosis was a dead end. This subCode reuses
+        // showFatalErrorScreen's existing bottom-screen square-count
+        // mechanism (no log access needed) to narrow it down instead:
+        // package.swfResourceFound (see GamePackage.h) says whether
+        // buildGamePackage()'s fetch() callback for the configured SWF
+        // filename returned true (bytes WERE fetched, and SwfLoader
+        // itself rejected them -- subCode 2) or false (the fetch itself
+        // failed -- subCode 1 -- which for Nintendo3DSRomfs::readFile
+        // covers both "no such RomFS entry" and "entry found but its
+        // readAt() call failed", e.g. a large single FSFILE_Read not
+        // completing; ~4.97 MB in one call, as a real Hobo1 package
+        // needs, has never been exercised on real hardware/emulator
+        // before this).
+        const int subCode = package.swfResourceFound ? 2 : 1;
+        showFatalErrorScreen(topRenderer, bottomRenderer, FatalError::kInvalidMovie, subCode);
         gfxExit();
         return 1;
     }
@@ -522,29 +454,10 @@ int main(int argc, char** argv) {
     constexpr double kVBlankHz = 60.0;
     int vblanksPerSwfFrame = std::max(1, static_cast<int>(std::lround(kVBlankHz / swfFrameRate)));
     int vblankCounter = 0;
-    LOG_INFO("PERF", "swfFrameRate=%.2f fps -> vblanksPerSwfFrame=%d (target movie-tick rate %.2f fps)",
-             swfFrameRate, vblanksPerSwfFrame, kVBlankHz / vblanksPerSwfFrame);
-
-    // Per-phase timing (see PhaseTimingWindow's own comment above) --
-    // `loopTimer` measures the REAL wall-clock period between successive
-    // loop tops (ground truth: how long one real frame actually took,
-    // independent of what the individual phases below add up to); `phase`
-    // is reused to time each phase in turn. Averaged over
-    // kTimingWindowSize real iterations, then logged and handed to
-    // drawButtonTestScreen() as bars, then reset.
-    constexpr int kTimingWindowSize = 60;
-    PhaseTimingWindow timingAccum;
-    PhaseTimingWindow timingLatest;  // last CLOSED window -- what gets drawn
-    TickCounter loopTimer;
-    osTickCounterStart(&loopTimer);
 
     while (aptMainLoop()) {
-        TickCounter phase;
-        osTickCounterStart(&phase);
         hidScanInput();
         input.poll(env.inputState());
-        osTickCounterUpdate(&phase);
-        timingAccum.inputMs += osTickCounterRead(&phase);
 
         const u32 kHeld = hidKeysHeld();
         const u32 kDown = hidKeysDown();
@@ -567,73 +480,27 @@ int main(int argc, char** argv) {
         if (kDown & KEY_X) audioBackend.playTestTone(554.0, 0.15);   // C#5
         if (kDown & KEY_Y) audioBackend.playTestTone(659.0, 0.15);   // E5
 
-        osTickCounterStart(&phase);
         if (++vblankCounter >= vblanksPerSwfFrame) {
             vblankCounter = 0;
             root->advanceFrame();
-            osTickCounterUpdate(&phase);
-            timingAccum.advanceMs += osTickCounterRead(&phase);
-            timingAccum.advanceSamples++;
             if (!loggedFirstFrame) {
                 loggedFirstFrame = true;
                 flash3ds::platform::checkpoint("after first frame (advanceFrame)");
             }
         }
 
-        osTickCounterStart(&phase);
         scene.render(*root, topRenderer, kTopWidth, kTopHeight);
-        osTickCounterUpdate(&phase);
-        timingAccum.renderTopMs += osTickCounterRead(&phase);
-        // Sub-phase split (2026-08-28) -- read right after render() since
-        // both reflect only the frame just rendered (see Nintendo3DSRenderer::
-        // lastRasterMs()/lastBlitMs()'s doc comment).
-        timingAccum.renderTopRasterMs += topRenderer.lastRasterMs();
-        timingAccum.renderTopBlitMs += topRenderer.lastBlitMs();
         if (!loggedFirstRender) {
             loggedFirstRender = true;
             flash3ds::platform::checkpoint("after first render (SceneRenderer::render)");
         }
-
-        osTickCounterStart(&phase);
-        drawButtonTestScreen(bottomRenderer, kHeld, timingLatest);
-        osTickCounterUpdate(&phase);
-        timingAccum.renderBottomMs += osTickCounterRead(&phase);
-
+        drawButtonTestScreen(bottomRenderer, kHeld);
         // Present BOTH screens together -- see Nintendo3DSRenderer::
         // presentFrame()'s comment for why this must be called exactly
         // once per real frame rather than once per renderer.
-        osTickCounterStart(&phase);
         Nintendo3DSRenderer::presentFrame();
-        osTickCounterUpdate(&phase);
-        timingAccum.presentMs += osTickCounterRead(&phase);
 
-        osTickCounterStart(&phase);
         gspWaitForVBlank();
-        osTickCounterUpdate(&phase);
-        timingAccum.vblankWaitMs += osTickCounterRead(&phase);
-
-        osTickCounterUpdate(&loopTimer);
-        timingAccum.periodMs += osTickCounterRead(&loopTimer);
-        timingAccum.samples++;
-
-        if (timingAccum.samples >= kTimingWindowSize) {
-            const double n = static_cast<double>(timingAccum.samples);
-            const double avgPeriod = timingAccum.periodMs / n;
-            LOG_INFO("PERF",
-                     "avg ms/frame (n=%d): input=%.2f advance=%.2f(n=%d) renderTop=%.2f "
-                     "(raster=%.2f blit=%.2f other=%.2f) renderBottom=%.2f present=%.2f "
-                     "vblankWait=%.2f | period=%.2f (%.1f fps)",
-                     timingAccum.samples, timingAccum.inputMs / n,
-                     timingAccum.advanceSamples > 0 ? timingAccum.advanceMs / timingAccum.advanceSamples : 0.0,
-                     timingAccum.advanceSamples, timingAccum.renderTopMs / n,
-                     timingAccum.renderTopRasterMs / n, timingAccum.renderTopBlitMs / n,
-                     std::max(0.0, timingAccum.renderTopMs / n - timingAccum.renderTopRasterMs / n -
-                                       timingAccum.renderTopBlitMs / n),
-                     timingAccum.renderBottomMs / n, timingAccum.presentMs / n, timingAccum.vblankWaitMs / n,
-                     avgPeriod, avgPeriod > 0.0 ? 1000.0 / avgPeriod : 0.0);
-            timingLatest = timingAccum;
-            timingAccum = PhaseTimingWindow{};
-        }
     }
 
     flash3ds::platform::checkpoint("shutdown (peak reflects the whole session)");
