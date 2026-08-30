@@ -4,26 +4,76 @@
 // flat, renderable geometry: closed polygons (for fills) and polylines
 // (for strokes), in the shape's own local twip coordinate space.
 //
-// IMPORTANT — this is a deliberately SIMPLIFIED tessellator, not a
-// spec-correct one:
+// IMPORTANT — run-scoped, order-preserving fill reconstruction
+// (2026-08-30), with one still-open limitation:
 //
-//   Real SWF shapes describe fills via pairs of edges with a "left" and
-//   "right" fill style (fillStyle0/fillStyle1), and a proper renderer joins
-//   same-style edges from potentially many StyleChangeRecords into
-//   arbitrary-topology fill regions (including holes — e.g. the letter
-//   "O"). That requires a real polygon-boundary-merging algorithm.
+//   This tessellator splits each pen-drawn run (the edges between one
+//   MoveTo and the next) into one polygon PER FILL STYLE actually used
+//   within that run, in authored edge order, instead of the earlier,
+//   deliberately-simplified "one polygon per pen-drawn subpath" scheme
+//   (Phase 3, 2026-08-21) that used only whichever FillStyle was live when
+//   the subpath STARTED. That older scheme silently dropped every fill
+//   region past the first whenever a style switched mid-run with no
+//   explicit MoveTo — confirmed as the root cause of real hobo.swf
+//   title/menu content rendering only its first fill layer. The fix: a
+//   `fillSubpath`/`fillSubpathStyle` accumulator is flushed into a closed
+//   polygon whenever the resolved style (fillStyle1, falling back to
+//   fillStyle0) changes mid-run, in addition to the existing MoveTo/end-
+//   of-shape flush points — see docs/renderer.md for the full writeup,
+//   including a real before/after render comparison.
 //
-//   This tessellator instead treats each contiguous run of edges starting
-//   at a StyleChangeRecord's MoveTo as ONE closed polygon, filled with
-//   whichever of fillStyle1/fillStyle0 is active (fillStyle1 preferred,
-//   matching the common authoring-tool convention for the "outer" fill
-//   direction). This renders simple, single-contour shapes (rectangles,
-//   circles, stars, most vector-art fills exported by simple tools)
-//   correctly, but will NOT correctly render shapes with holes or shapes
-//   that rely on multiple StyleChangeRecords sharing one fill region —
-//   those render as overlapping solid fills instead. Good enough for a
-//   "basic renderer" (Phase 3); revisit with real edge-merging if/when
-//   target content needs it (see docs/renderer.md).
+//   Two earlier, more "textbook-correct" designs were tried and REJECTED
+//   after real-content regressions, and are recorded here so a future
+//   change doesn't reintroduce either without re-verifying against real
+//   rendered output, not just unit tests, first:
+//
+//   1. Whole-shape edge grouping: record every edge against its resolved
+//      FillStyle (including a second, reversed contribution to the OTHER
+//      side's style, matching the spec's every-edge-borders-two-regions
+//      model), group ALL of a shape's edges by FillStyle identity
+//      regardless of which run they came from, then chain each group into
+//      contours by matching shared endpoints. On paper more spec-correct,
+//      but the endpoint-matching step incorrectly welded together edges
+//      from separate, unrelated MoveTo-bounded contours whenever they
+//      happened to touch the same coordinate — confirmed via hobo.swf's
+//      mute-button icon (characterId=89), whose black speaker-cutout
+//      contour got scrambled into a garbled ~65-point polygon and its
+//      white circle came out solid (losing the cutout) from the spurious
+//      reversed contribution.
+//   2. The same whole-shape chaining, PLUS filtering contours by winding
+//      sign (shoelace-formula sign, keeping only contours matching the
+//      dominant contour's sign) to try to distinguish "real region" from
+//      "hole". This didn't fix the mute icon (the scrambling happens
+//      during chaining, before any sign check ever runs) and introduced a
+//      SECOND regression: hobo.swf's "Armor Games" caption, whose separate
+//      letters share one fill style and are legitimately wound in mixed
+//      directions, got its non-dominant-sign letters discarded, garbling
+//      the text into "Amrae".
+//
+//   The current run-scoped design sidesteps both failure modes at once:
+//   edges within one MoveTo-to-MoveTo run are already in the correct
+//   sequential authored order, so no endpoint search/matching is ever
+//   needed, and grouping never crosses a MoveTo boundary, so unrelated
+//   contours can never be welded together no matter how their coordinates
+//   happen to line up. Re-verified against hobo.swf: characterId=89's mute
+//   icon now tessellates into exactly 6 polygons (matching its 6 MoveTo
+//   subpaths 1:1, one style each) with clean monotonic contours — no
+//   scrambling — and renders correctly (white circle, black speaker
+//   cutout intact); "Armor Games" and the HOBO/CONTROLS title art all
+//   render correctly in the same frame.
+//
+//   Still NOT handled, unchanged from before this fix: when a single
+//   FillStyle's edges form MULTIPLE disjoint contours where one is
+//   genuinely meant to be a hole in another (e.g. the letter "O" — an
+//   outer boundary loop and an inner counter loop, both authored under the
+//   same fill index), each contour still becomes its own independently-
+//   filled solid polygon rather than a true even-odd cutout — so a hole
+//   renders as another solid patch of the same color instead of
+//   transparent. Closing that gap for real needs a multi-contour-aware
+//   (even-odd or nonzero winding) fill rule in SoftwareRenderer, plus a
+//   reliable way to tell "hole" and "separate region" contours apart that
+//   doesn't just use winding sign — see docs/renderer.md's own note on
+//   this narrower remaining case.
 //
 // Gradient and bitmap fills are reduced to a single representative flat
 // color (see FillStyle::toFlatColor below) — proper gradient/bitmap

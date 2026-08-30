@@ -216,6 +216,17 @@ if(FLASH3DS_BUILD_TOOLS)
     add_executable(hobo_frame_progression_probe tools/real_game_harness/hobo_frame_progression_probe.cpp)
     target_link_libraries(hobo_frame_progression_probe PRIVATE flash3ds_core)
 
+    # Phase 3 investigation (2026-08-30, post-SELECT-fix azahar_test_v21.mkv
+    # report): drives the same confirmed input pattern
+    # hobo_frame_progression_probe.cpp used to reach the "CHOOSE DIFFICULTY"
+    # screen, then dumps the full recursive display list (character kind,
+    # visibility, placement) and every audio-backend/Sound-related call --
+    # aimed at Task #55 (missing EASY/NORMAL/HARD text/buttons) and Task #57
+    # (no sound from the main menu). See
+    # tools/real_game_harness/hobo_menu_content_probe.cpp.
+    add_executable(hobo_menu_content_probe tools/real_game_harness/hobo_menu_content_probe.cpp)
+    target_link_libraries(hobo_menu_content_probe PRIVATE flash3ds_core)
+
     # Track B, B1 (2026-08-27): re-verifies Extreme Pamplona's L6 "proven
     # negative" with a REAL simulated mouse click (idle-only traces cannot
     # reach a code path gated behind a Play-button click). See

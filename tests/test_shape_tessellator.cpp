@@ -277,6 +277,92 @@ TEST_CASE(TessellateShape_LinearGradientFill_SetsGradientPaintKindAndRamp) {
     CHECK_EQ(poly.gradient.ramp[255].b, 255);
 }
 
+// Phase 3 investigation (2026-08-30): reproduces the exact real-content
+// pattern that was silently losing fill regions -- two adjacent,
+// differently-colored squares sharing a boundary, authored as ONE
+// continuous edge run with a style-only StyleChangeRecord (no MoveTo)
+// between them, exactly like hobo.swf's title/menu vector artwork (the
+// user-reported "only base colors layer shows not everything" bug). The
+// OLD tessellator (one polygon per pen-drawn subpath, style captured only
+// at the subpath's start) merged both squares into a single 8-point blob
+// colored entirely with the FIRST square's style, silently dropping the
+// second square as its own region. See ShapeTessellator.h/.cpp's
+// 2026-08-30 doc comments for the real edge-merging fix.
+TEST_CASE(TessellateShape_TwoAdjacentSquaresNoMoveToBetween_ProducesTwoSeparatePolygons) {
+    Shape shape;
+    FillStyle fillA;
+    fillA.type = FillStyleType::kSolid;
+    fillA.solidColor = RgbaColor{255, 0, 0, 255};  // red
+    shape.fillStyles.push_back(fillA);
+    FillStyle fillB;
+    fillB.type = FillStyleType::kSolid;
+    fillB.solidColor = RgbaColor{0, 0, 255, 255};  // blue
+    shape.fillStyles.push_back(fillB);
+
+    // MoveTo (0,0), fillStyle1 = A (index 1).
+    ShapeRecord moveTo;
+    moveTo.type = ShapeRecordType::kStyleChange;
+    moveTo.styleChange = std::make_shared<ShapeStyleChange>();
+    moveTo.styleChange->hasMoveTo = true;
+    moveTo.styleChange->moveToXTwips = 0;
+    moveTo.styleChange->moveToYTwips = 0;
+    moveTo.styleChange->fillStyle1 = 1;
+    shape.records.push_back(moveTo);
+
+    // Right square, (0,0) -> (100,0) -> (100,100) -> (0,100), relying on
+    // the same IMPLICIT closing edge back to (0,0) every other fixture in
+    // this file uses (TessellatedPolygon::points is an open polyline —
+    // see its own doc comment) rather than authoring a 4th closing edge:
+    // the pen is left sitting at (0,100), NOT back at the MoveTo point,
+    // which is exactly what lets the very next style-only change below
+    // continue the SAME pen-drawn run without a MoveTo, matching how real
+    // hobo.swf content was found to author adjacent regions.
+    auto addEdge = [&](int32_t dx, int32_t dy) {
+        ShapeRecord edge;
+        edge.type = ShapeRecordType::kStraightEdge;
+        edge.edge.straightEdge.deltaXTwips = dx;
+        edge.edge.straightEdge.deltaYTwips = dy;
+        shape.records.push_back(edge);
+    };
+    addEdge(100, 0);
+    addEdge(0, 100);
+    addEdge(-100, 0);
+
+    // Style-only change, deliberately NO MoveTo -- the pen is still
+    // exactly at (0,100) after the last edge above. Switches to fillStyle
+    // B (index 2) for the next loop.
+    ShapeRecord styleOnly;
+    styleOnly.type = ShapeRecordType::kStyleChange;
+    styleOnly.styleChange = std::make_shared<ShapeStyleChange>();
+    styleOnly.styleChange->fillStyle1 = 2;
+    shape.records.push_back(styleOnly);
+
+    // Left square (to the left of x=0, so it doesn't overlap the first),
+    // continuing from (0,100): -> (-100,100) -> (-100,0) -> (0,0), again
+    // relying on the implicit closing edge back to (0,100).
+    addEdge(-100, 0);
+    addEdge(0, -100);
+    addEdge(100, 0);
+
+    auto tess = tessellateShape(shape);
+
+    CHECK_EQ(tess.polygons.size(), static_cast<size_t>(2));
+    // Both squares' full geometry must survive -- 4 points each, not
+    // merged into one 8-point (or fewer, if some edges were dropped) blob.
+    CHECK_EQ(tess.polygons[0].points.size(), static_cast<size_t>(4));
+    CHECK_EQ(tess.polygons[1].points.size(), static_cast<size_t>(4));
+    // Each polygon keeps its OWN style's color -- this is the actual bug:
+    // the old tessellator colored the whole merged blob with the first
+    // style only.
+    bool sawRed = false, sawBlue = false;
+    for (const auto& poly : tess.polygons) {
+        if (poly.color.r == 255 && poly.color.b == 0) sawRed = true;
+        if (poly.color.r == 0 && poly.color.b == 255) sawBlue = true;
+    }
+    CHECK(sawRed);
+    CHECK(sawBlue);
+}
+
 TEST_CASE(TessellateShape_RadialGradientFill_StaysFlatByEvidenceDrivenScope) {
     // Real hobo.swf content has zero radial/focal-radial gradient fills
     // (/tmp/gradient_scan.cpp, 2026-08-28) — per this project's

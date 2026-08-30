@@ -128,3 +128,59 @@ Full rebuild: zero warnings. `ctest`: 352/352 passing, unchanged from
 before this phase (this phase added no new unit tests — it is a real-
 corpus investigation tool, matching Phase 7's own spec, which calls a
 "targeted `real_game_harness` invocation" itself the test).
+
+## Addendum — 2026-08-30: the "auto-advancing sprite reaches Choose
+Difficulty" theory does not hold up under a real pixel render
+
+An earlier working theory this same session floated (before this
+addendum) was that the visible splash → title → "Choose Difficulty"
+progression a user's own Azahar recording showed is driven entirely by
+one nested sprite (characterId=80, a 375-local-frame timeline placed on
+root) auto-advancing every tick regardless of input, independent of the
+End-key/`_root.gotoAndStop(2)` mechanism this document and
+`docs/hobo-playability-verification.md` already investigated in depth.
+That theory was based on call-trace evidence only (characterId=80's
+`localFrame` counter visibly incrementing every tick) — no pixel render
+had actually been taken of what that sprite's later local frames look
+like.
+
+`hobo_menu_content_probe` (see `docs/renderer.md`'s "Run-scoped fill
+reconstruction" section for the rendering fix this same session made)
+gained a real render-sampling mode (`renderOutDir`, 4th CLI arg) for
+exactly this check. Running it for 1,200 ticks (movement keys held, End
+tapped every other tick — the same pattern this document's own
+`hobo_frame_progression_probe` uses), sampling a real PPM frame every 100
+ticks: characterId=80's `localFrame` does increment every tick as
+expected and loops its full 0-375 range more than three times over the
+run, but **every single sampled frame across the entire 1,200-tick run
+renders pixel-identical to the frame-1 title/PLAY-button card** — HOBO
+wordmark, CONTROLS panel, idle character art, the "PLAY!" prompt fading in
+and staying in, and the mute icon's own two-frame toggle — never a
+"Choose Difficulty" screen, never EASY/NORMAL/HARD buttons. Root's own
+`currentFrame()` also never leaves 1 across the run, consistent with
+`docs/hobo-playability-verification.md`'s 2026-08-29 addendum.
+
+**Correction to the working theory:** characterId=80's 375-frame local
+timeline is best explained as a looping IDLE animation for the title
+card itself (subtle character sway, the PLAY-prompt intro tween, the
+mute-icon toggle) — not a mechanism that ever advances the visible screen
+to gameplay or a difficulty-select menu. This session's earlier framing
+("the progression the user sees is driven by this sprite") should be
+treated as superseded by this finding, not as an established fact for a
+future session to build on.
+
+**Net effect on Task #55/#56 (missing EASY/NORMAL/HARD text, wrong
+title-text color):** this session's `ShapeTessellator` fix (see
+`docs/renderer.md`) is confirmed to fix real multi-region rendering on
+every screen this automation CAN reach — the HOBO wordmark, CONTROLS
+panel, and "Armor Games" caption all now render their full color detail
+correctly. Whether it also fixes the EASY/NORMAL/HARD screen specifically
+could **not** be directly confirmed this session, because no automated
+input sequence tried so far (here or in the prior, more exhaustive
+`hobo-playability-verification.md` investigation — keyboard, all 6
+documented keys individually and combined, a 108-point mouse-click grid)
+reaches that screen at all. Given the fix addresses a general
+tessellation bug rather than anything screen-specific, it is a reasonable
+expectation that it would also fix that screen's rendering once it's
+reachable — but this is an expectation, not a confirmed result, and
+should be stated to the user as such.

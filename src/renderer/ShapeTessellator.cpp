@@ -137,39 +137,15 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
     int32_t currentX = 0;
     int32_t currentY = 0;
 
-    // The subpath currently being built (points only — style is captured
-    // separately so we know what to flush it as).
+    // --- Stroke bookkeeping (unchanged from the original tessellator):
+    // a stroke is the literal pen-drawn path, in authoring order, and a
+    // fill-only style change (no MoveTo) must NOT interrupt it — a line
+    // can legitimately cross from one fill region into another without
+    // lifting the pen. ---
     std::vector<PointTwips> subpath;
-    std::optional<uint32_t> subpathFillStyle0Index;
-    std::optional<uint32_t> subpathFillStyle1Index;
     std::optional<uint32_t> subpathLineStyleIndex;
 
-    auto flushSubpath = [&]() {
-        if (subpath.size() >= 3) {
-            // Prefer fillStyle1 (matches the common authoring-tool
-            // convention for the "outer"/fill-forward edge direction),
-            // falling back to fillStyle0 if only that side is styled.
-            const swf::FillStyle* fill = resolveStyle(*activeFillStyles, subpathFillStyle1Index);
-            if (!fill) {
-                fill = resolveStyle(*activeFillStyles, subpathFillStyle0Index);
-            }
-            if (fill) {
-                TessellatedPolygon poly;
-                poly.color = toFlatColor(*fill);
-                poly.points = subpath;
-                // Real gradient rendering, scoped to kLinearGradient only —
-                // see this file's header comment and IRenderer.h's
-                // DeviceGradientFill doc comment for why radial/focal-radial
-                // stay on the toFlatColor() fallback above.
-                if (fill->type == swf::FillStyleType::kLinearGradient) {
-                    poly.paintKind = PaintKind::kLinearGradient;
-                    poly.gradient.matrix = fill->gradientMatrix;
-                    poly.gradient.spreadMode = fill->gradient.spreadMode;
-                    poly.gradient.ramp = buildGradientRamp(fill->gradient);
-                }
-                result.polygons.push_back(std::move(poly));
-            }
-        }
+    auto flushStroke = [&]() {
         if (subpath.size() >= 2) {
             const swf::LineStyle* line = resolveStyle(*activeLineStyles, subpathLineStyleIndex);
             if (line) {
@@ -183,6 +159,102 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
         subpath.clear();
     };
 
+    // --- Fill reconstruction (2026-08-30, Phase 3 investigation --
+    // real-content evidence: hobo.swf's title/menu vector artwork uses
+    // multiple StyleChangeRecords sharing one continuous pen-drawn run
+    // (everything between one MoveTo and the next MoveTo/hasNewStyles/
+    // end of the shape), WITHOUT a MoveTo between the style switches, to
+    // describe adjacent differently-colored regions -- e.g. multi-color
+    // glyph fills for "break apart" text). The OLD tessellator treated
+    // each such run as ONE polygon using whichever style was active when
+    // the run STARTED, so a style switch with no MoveTo silently kept
+    // using the stale style for the rest of that run's edges -- meaning
+    // any content authored this way lost every fill region after the
+    // first ("only base colors layer shows", per the user's own report).
+    //
+    // The fix keeps a fill sub-chain exactly parallel to `subpath` above,
+    // except it also splits (flushes the accumulated chain as one
+    // polygon, starts a new one) whenever the CURRENTLY RESOLVED style
+    // differs from whatever the chain is already accumulating under --
+    // not just at MoveTo/hasNewStyles boundaries. Since edges are pushed
+    // in the exact order they're drawn, this needs no endpoint-matching
+    // or searching at all: a straight append-or-split walk always
+    // reproduces the shape's own authored point order.
+    //
+    // An earlier version of this fix instead tried real SWF-style edge
+    // GRAPH reconstruction: record every edge with its resolved style,
+    // then afterwards group ALL same-style edges (even from unrelated,
+    // separately-MoveTo'd regions, or from both fillStyle0 and fillStyle1
+    // sides of an edge) and chain them by matching endpoints into closed
+    // loops. That is the textbook-correct SWF model, and it does handle
+    // shapes with genuinely shared boundaries between regions -- but
+    // real corpus content broke under it in two different ways, both
+    // confirmed via direct before/after render diffs during this fix's
+    // own verification pass (see docs/renderer.md for the visual
+    // comparisons, and for why this scoped-down version was chosen
+    // instead): a same-colored multi-letter caption ("Armor Games") and
+    // a compact icon (a mute-button glyph) both have separate, unrelated
+    // regions whose edges happen to touch the same coordinate somewhere
+    // without being logically connected, which greedy endpoint-matching
+    // wove together into garbled polygons; and contributing an edge to
+    // BOTH fillStyle0's and fillStyle1's regions (needed for genuinely
+    // shared boundaries) produced a second, spurious solid-colored loop
+    // for content that, in this corpus, already describes every real
+    // region as its own complete, separately-closed pen path. Since
+    // nothing found in the corpus so far actually NEEDS true cross-region
+    // edge merging, this stays scoped to "split one run by style,
+    // preserving authored order" -- revisit only with real evidence a
+    // corpus title needs the fuller edge-graph model.
+    std::vector<PointTwips> fillSubpath;
+    const swf::FillStyle* fillSubpathStyle = nullptr;
+
+    auto flushFill = [&]() {
+        if (fillSubpath.size() >= 3 && fillSubpathStyle) {
+            TessellatedPolygon poly;
+            poly.color = toFlatColor(*fillSubpathStyle);
+            poly.points = fillSubpath;
+            // Real gradient rendering, scoped to kLinearGradient only —
+            // see this file's header comment and IRenderer.h's
+            // DeviceGradientFill doc comment for why radial/focal-radial
+            // stay on the toFlatColor() fallback above.
+            if (fillSubpathStyle->type == swf::FillStyleType::kLinearGradient) {
+                poly.paintKind = PaintKind::kLinearGradient;
+                poly.gradient.matrix = fillSubpathStyle->gradientMatrix;
+                poly.gradient.spreadMode = fillSubpathStyle->gradient.spreadMode;
+                poly.gradient.ramp = buildGradientRamp(fillSubpathStyle->gradient);
+            }
+            result.polygons.push_back(std::move(poly));
+        }
+        fillSubpath.clear();
+        fillSubpathStyle = nullptr;
+    };
+
+    auto pushFillEdge = [&](PointTwips a, PointTwips b) {
+        const swf::FillStyle* f = resolveStyle(*activeFillStyles, fillStyle1Index);
+        if (!f) f = resolveStyle(*activeFillStyles, fillStyle0Index);
+        if (!f) {
+            // No fill active for this edge (e.g. a stroke-only segment) --
+            // whatever was accumulating is done; don't touch it further.
+            flushFill();
+            return;
+        }
+        if (fillSubpath.empty()) {
+            fillSubpathStyle = f;
+            fillSubpath.push_back(a);
+        } else if (f != fillSubpathStyle) {
+            // Style changed mid-run (with or without an intervening
+            // MoveTo — MoveTo already flushes via flushFill() at its own
+            // call site below, so reaching here specifically means NO
+            // MoveTo occurred): close off the region built so far and
+            // start a new one continuing from the same pen position, per
+            // this fix's own header comment above.
+            flushFill();
+            fillSubpathStyle = f;
+            fillSubpath.push_back(a);
+        }
+        fillSubpath.push_back(b);
+    };
+
     for (const swf::ShapeRecord& record : shape.records) {
         switch (record.type) {
             case swf::ShapeRecordType::kStyleChange: {
@@ -192,9 +264,10 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
                 if (sc.hasNewStyles) {
                     // A new FILLSTYLEARRAY/LINESTYLEARRAY starts a fresh
                     // style scope (used by DefineShape's "one shape, many
-                    // style groups" layering). Flush whatever subpath was
-                    // open under the old styles first.
-                    flushSubpath();
+                    // style groups" layering) -- ends the current run on
+                    // both the stroke and fill sides.
+                    flushStroke();
+                    flushFill();
                     activeFillStyles = &sc.newFillStyles;
                     activeLineStyles = &sc.newLineStyles;
                     fillStyle0Index.reset();
@@ -207,20 +280,17 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
                 if (sc.lineStyleIndex) lineStyleIndex = sc.lineStyleIndex;
 
                 if (sc.hasMoveTo) {
-                    flushSubpath();
+                    flushStroke();
+                    flushFill();
                     currentX = sc.moveToXTwips;
                     currentY = sc.moveToYTwips;
                     subpath.push_back(PointTwips{currentX, currentY});
-                    subpathFillStyle0Index = fillStyle0Index;
-                    subpathFillStyle1Index = fillStyle1Index;
                     subpathLineStyleIndex = lineStyleIndex;
                 } else if (subpath.empty()) {
                     // A style-only change with no MoveTo yet and nothing
                     // open: start an implicit subpath at the current point
                     // so subsequent edges have somewhere to accumulate.
                     subpath.push_back(PointTwips{currentX, currentY});
-                    subpathFillStyle0Index = fillStyle0Index;
-                    subpathFillStyle1Index = fillStyle1Index;
                     subpathLineStyleIndex = lineStyleIndex;
                 }
                 break;
@@ -229,21 +299,20 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
             case swf::ShapeRecordType::kStraightEdge: {
                 if (subpath.empty()) {
                     subpath.push_back(PointTwips{currentX, currentY});
-                    subpathFillStyle0Index = fillStyle0Index;
-                    subpathFillStyle1Index = fillStyle1Index;
                     subpathLineStyleIndex = lineStyleIndex;
                 }
+                PointTwips start{currentX, currentY};
                 currentX += record.edge.straightEdge.deltaXTwips;
                 currentY += record.edge.straightEdge.deltaYTwips;
-                subpath.push_back(PointTwips{currentX, currentY});
+                PointTwips end{currentX, currentY};
+                subpath.push_back(end);
+                pushFillEdge(start, end);
                 break;
             }
 
             case swf::ShapeRecordType::kCurvedEdge: {
                 if (subpath.empty()) {
                     subpath.push_back(PointTwips{currentX, currentY});
-                    subpathFillStyle0Index = fillStyle0Index;
-                    subpathFillStyle1Index = fillStyle1Index;
                     subpathLineStyleIndex = lineStyleIndex;
                 }
                 PointTwips start{currentX, currentY};
@@ -251,7 +320,12 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
                                     currentY + record.edge.curvedEdge.controlDeltaYTwips};
                 PointTwips anchor{control.x + record.edge.curvedEdge.anchorDeltaXTwips,
                                    control.y + record.edge.curvedEdge.anchorDeltaYTwips};
-                flattenQuadraticBezier(subpath, start, control, anchor, curveSubdivisions);
+                std::vector<PointTwips> curvePoints{start};
+                flattenQuadraticBezier(curvePoints, start, control, anchor, curveSubdivisions);
+                for (size_t i = 1; i < curvePoints.size(); ++i) {
+                    subpath.push_back(curvePoints[i]);
+                    pushFillEdge(curvePoints[i - 1], curvePoints[i]);
+                }
                 currentX = anchor.x;
                 currentY = anchor.y;
                 break;
@@ -261,8 +335,9 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
                 break;
         }
     }
+    flushStroke();
+    flushFill();
 
-    flushSubpath();
     return result;
 }
 

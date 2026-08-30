@@ -94,19 +94,103 @@ Movie::frameSize (stage)   ─┘                          │
   a binary PPM (P6) file writer for inspecting output without a display.
 - **`ShapeTessellator`** (`src/renderer/ShapeTessellator.h/.cpp`) —
   converts a parsed `swf::Shape` (fill/line styles + SHAPERECORD stream)
-  into flat polygons/polylines in local twip space. **Deliberately
-  simplified**: treats each contiguous run of edges starting at a
-  StyleChangeRecord's MoveTo as one closed polygon (fillStyle1-preferred),
-  rather than doing full edge-pair boundary merging — this renders simple
-  single-contour shapes (rectangles, stars, most simple vector art)
-  correctly, but does **not** correctly render shapes with holes (e.g. the
-  letter "O") or shapes built from multiple StyleChangeRecords sharing one
-  fill region. Linear gradient fills render as real per-pixel gradients
-  (see "Gradient rendering" below); radial/focal-radial gradient fills are
-  still reduced to the average of their stop colors, and bitmap fills are
-  still reduced to a flat gray placeholder (bitmap decoding is
-  unimplemented). Revisit with real edge-merging if/when target content
-  (see `docs/compatibility.md`) needs it.
+  into flat polygons/polylines in local twip space. As of the
+  run-scoped fill fix (2026-08-30, see below), it splits each pen-drawn
+  run (the edges between one MoveTo and the next) into one polygon PER
+  FILL STYLE actually used within that run, in authored edge order — so a
+  style-only change with no MoveTo now correctly starts a new polygon
+  instead of silently continuing under the stale style. This renders
+  simple single-contour shapes AND multi-region shapes authored as one
+  continuous pen run correctly, but still does **not** correctly render
+  shapes with holes (e.g. the letter "O": an outer boundary and an inner
+  counter loop authored as two separate MoveTo'd contours under the same
+  fill style still render as two solid same-color patches instead of an
+  even-odd cutout — see "Run-scoped fill reconstruction" below for why
+  this is a deliberately separate, still-open problem). Linear gradient
+  fills render as real per-pixel gradients (see "Gradient rendering"
+  below); radial/focal-radial gradient fills are still reduced to the
+  average of their stop colors, and bitmap fills are still reduced to a
+  flat gray placeholder (bitmap decoding is unimplemented).
+
+### Run-scoped fill reconstruction (2026-08-30)
+
+Fixes a real user-reported bug: hobo.swf's title/menu screen was rendering
+"only base colors... not everything" — every fill region past the first
+in a shape was missing whenever the shape's SHAPERECORD stream switched
+fill style mid-run via a style-only `StyleChangeRecord` (no `hasMoveTo`).
+The pre-fix tessellator treated each MoveTo-to-MoveTo pen run as ONE
+polygon using whichever fill style was active when the run *started* —
+correct for simple content, but silently wrong for any run whose style
+changed partway through with no new MoveTo, which is exactly how a fair
+amount of hobo.swf's vector art (adjacent same-run color regions) is
+authored.
+
+**The fix.** `tessellateShape()` now tracks a `fillSubpath`/
+`fillSubpathStyle` accumulator alongside the pre-existing stroke-subpath
+one, flushing it into a closed `TessellatedPolygon` whenever the resolved
+fill style (fillStyle1, falling back to fillStyle0) changes mid-run — in
+addition to the existing MoveTo and end-of-shape flush points inherited
+from the stroke path. Edges stay in their authored sequential order within
+one run, so this needs no endpoint search or matching at all.
+
+**Two more "textbook-correct" designs were tried first and rejected**,
+after each caused a real regression confirmed by directly comparing
+before/after renders of hobo.swf (not just unit tests, which didn't catch
+either regression):
+
+1. *Whole-shape edge grouping with dual (fillStyle0 + fillStyle1)
+   contribution, chained by matching endpoints across the entire shape.*
+   The spec's own every-edge-borders-two-regions model, and the most
+   "correct" of the three attempts on paper. Broke hobo.swf's mute-button
+   icon (characterId=89): its black speaker-cutout contour, which the
+   original content already authors as several independently-closed
+   MoveTo'd contours, got welded across unrelated contours by the
+   endpoint-matching step whenever two different contours happened to
+   share a coordinate — producing a garbled ~65-point polygon — and the
+   white circle behind it lost its cutout entirely (rendered solid white)
+   from the spurious reversed fillStyle0 contribution.
+2. *The same whole-shape chaining, with contours additionally filtered by
+   winding sign* (shoelace-formula sign, keeping only contours matching
+   the dominant contour's sign) as a hole-vs-region heuristic. Did not fix
+   the mute icon (the scrambling happens during endpoint chaining, before
+   any sign check runs) and introduced a second regression: hobo.swf's
+   "Armor Games" caption, whose separate letters legitimately share one
+   fill style and wind in mixed directions, had its non-dominant-sign
+   letters discarded, garbling the text into "Amrae".
+
+Both were dropped in favor of the final run-scoped design specifically
+because scoping fill-chain construction to within one MoveTo-bounded run
+makes both failure modes structurally impossible: there's no endpoint
+search to weld unrelated contours together, and there's no cross-contour
+winding-sign judgment call to get wrong.
+
+**Verification.** All 431 unit tests pass, including a new regression
+test (`TessellateShape_TwoAdjacentSquaresNoMoveToBetween_
+ProducesTwoSeparatePolygons`) reproducing the exact bug pattern. Re-ran
+`/tmp/dump_tess.cpp` (a throwaway diagnostic linking directly against
+`libflash3ds_core.a`) against hobo.swf's characterId=89 (the mute icon)
+and confirmed it now tessellates into exactly 6 polygons — matching its 6
+MoveTo-bounded subpaths 1:1 — with clean, monotonic point sequences and no
+cross-contour scrambling. Rendered hobo.swf frame 1 before and after (via
+`git stash` on just the tessellator files) and compared crops directly:
+after the fix, the HOBO logo, CONTROLS text, gradient character panel, and
+"Armor Games" caption all show their full multi-region detail that was
+previously missing or muddy, and the mute-icon crop shows the correct
+white circle with its black speaker cutout intact — neither of the two
+rejected iterations' regressions reappear.
+
+**Still open** (unchanged from before this fix, and NOT what this fix
+addresses): a single fill style whose edges form multiple disjoint
+contours where one is genuinely meant to be a hole in the other (the
+letter "O" case) still renders as two solid same-color patches rather
+than a true even-odd cutout. Closing that gap needs a real multi-contour-
+aware (even-odd or nonzero-winding) fill rule in `SoftwareRenderer` — it
+currently only supports filling a single simple contour — plus a reliable
+way to tell "hole" and "separate same-style region" contours apart that
+isn't winding sign (rejected iteration 2 above is exactly why: winding
+sign alone can't distinguish them). No unit test or real corpus content
+examined so far exercises this narrower case badly enough to prioritize
+it yet.
 
 ### Gradient rendering (2026-08-28)
 

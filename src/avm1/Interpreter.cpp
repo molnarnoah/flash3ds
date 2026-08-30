@@ -1164,7 +1164,8 @@ Value Interpreter::execute(ExecutionContext& ctx, const uint8_t* code, size_t le
                 }
 
                 if (!objectVal.isObject() || !objectVal.asObject()) {
-                    LOG_WARN("AVM1", "CallMethod: target is not an object");
+                    LOG_WARN("AVM1", "CallMethod: target is not an object (method='%s')",
+                             methodName.c_str());
                     ctx.stack.push(Value::undefined());
                     break;
                 }
