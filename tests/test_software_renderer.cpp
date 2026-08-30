@@ -157,6 +157,134 @@ TEST_CASE(SoftwareRenderer_FillPolygon_ConcaveShapeExercisesActiveEdgeAddAndRemo
     CHECK_EQ(outside.g, 255);
 }
 
+// Anti-aliasing task (2026-08-30, Fidelity-audit TASK 3 divergence #1 --
+// see docs/flash-fidelity-audit.md and fillPolygon()'s own .cpp comment
+// for the full design/scope). This exercises the incidental off-by-one
+// over-fill bug fix that fell out of the coverage-based redesign: a
+// square landing on EXACT integer x-boundaries used to fill an inclusive
+// [xStart, xEnd] range (11 columns for a 10-pixel-wide shape), one column
+// too many. Geometrically [2, 12) is 10 pixels wide -- columns 2..11 --
+// so column 12 must now be untouched background, not red.
+TEST_CASE(SoftwareRenderer_FillPolygon_ExactIntegerBoundary_DoesNotOverfillByOneColumn) {
+    SoftwareRenderer renderer(20, 20);
+    renderer.beginFrame(RgbaColor{255, 255, 255, 255});
+
+    // A 10x10 square from (2,2) to (12,12) -- same shape as the very
+    // first fillPolygon test above, but this time sampling the exact
+    // boundary column instead of a point safely inside/outside.
+    std::vector<PointTwips> square = {
+        {2, 2}, {12, 2}, {12, 12}, {2, 12},
+    };
+    renderer.fillPolygon(square, RgbaColor{255, 0, 0, 255});
+
+    // Last real column of the shape: fully covered, fully red.
+    auto lastInside = renderer.pixelAt(11, 6);
+    CHECK_EQ(lastInside.r, 255);
+    CHECK_EQ(lastInside.g, 0);
+    CHECK_EQ(lastInside.b, 0);
+
+    // One column past the shape's right edge: the old inclusive-both-ends
+    // rounding filled this; coverage-based AA must not.
+    auto pastEdge = renderer.pixelAt(12, 6);
+    CHECK_EQ(pastEdge.r, 255);
+    CHECK_EQ(pastEdge.g, 255);
+    CHECK_EQ(pastEdge.b, 255);
+
+    // First column: also fully covered (xLeft lands exactly on its own
+    // integer boundary too).
+    auto firstInside = renderer.pixelAt(2, 6);
+    CHECK_EQ(firstInside.r, 255);
+    CHECK_EQ(firstInside.g, 0);
+    CHECK_EQ(firstInside.b, 0);
+}
+
+// Fractional-boundary coverage: a parallelogram with a slanted left edge
+// (slope 1, so at pixel-center sampling scanY = y+0.5 the intersection
+// x-coordinate is always exactly y+0.5, i.e. always sits at the midpoint
+// of a pixel column) and a vertical right edge at x=20. At any row this
+// gives an exact, hand-computable 50% coverage on the left boundary
+// column and full coverage on the right one -- verified independently via
+// brute-force overlap integration in Python before writing this test (see
+// this task's session notes), not guessed.
+TEST_CASE(SoftwareRenderer_FillPolygon_SlantedEdge_BlendsBoundaryColumnAtHalfCoverage) {
+    SoftwareRenderer renderer(30, 15);
+    renderer.beginFrame(RgbaColor{255, 255, 255, 255});
+
+    // Left edge from (10,10) to (0,0): at row y=3 (scanY=3.5),
+    // x_left = scanY = 3.5 exactly. Right edge is vertical at x=20.
+    std::vector<PointTwips> parallelogram = {
+        {0, 0}, {20, 0}, {20, 10}, {10, 10},
+    };
+    renderer.fillPolygon(parallelogram, RgbaColor{255, 0, 0, 255});
+
+    // Column 3 spans [3,4); xLeft=3.5 lands in the middle of it, so
+    // coverage = 4 - 3.5 = 0.5 -- half-strength red blended over white.
+    // alpha = round(255*0.5) = 128; blendChannel(255, 0, 128) for
+    // g/b = (0*128 + 255*(255-128))/255 = 255-128 = 127 exactly (255
+    // divides out with no truncation loss).
+    auto boundary = renderer.pixelAt(3, 3);
+    CHECK_EQ(boundary.r, 255);
+    CHECK_EQ(boundary.g, 127);
+    CHECK_EQ(boundary.b, 127);
+
+    // Column 2 is entirely left of xLeft=3.5 -- zero coverage, untouched.
+    auto beforeBoundary = renderer.pixelAt(2, 3);
+    CHECK_EQ(beforeBoundary.r, 255);
+    CHECK_EQ(beforeBoundary.g, 255);
+    CHECK_EQ(beforeBoundary.b, 255);
+
+    // Column 4 is fully inside the span (interior, full-cost fillSpan
+    // path) -- fully opaque red, unaffected by AA.
+    auto interior = renderer.pixelAt(4, 3);
+    CHECK_EQ(interior.r, 255);
+    CHECK_EQ(interior.g, 0);
+    CHECK_EQ(interior.b, 0);
+}
+
+// A narrow triangle apex: two boundary columns, each with the SAME
+// fractional coverage (0.75) and NO fully-covered interior column between
+// them -- confirms the algorithm doesn't assume a boundary/interior/
+// boundary structure always exists, and handles two adjacent partial
+// columns correctly. Expected coverage values derived and cross-checked
+// against a brute-force per-pixel overlap integration in Python first
+// (this task's session notes), not back-derived from a first failing run.
+TEST_CASE(SoftwareRenderer_FillPolygon_NarrowTriangleApex_BlendsBothBoundaryColumnsNoFullInterior) {
+    SoftwareRenderer renderer(12, 12);
+    renderer.beginFrame(RgbaColor{255, 255, 255, 255});
+
+    // Triangle: base (0,0)-(10,0), apex (5,10). At row y=8 (scanY=8.5):
+    // x_left = scanY/2 = 4.25, x_right = 10 - scanY/2 = 5.75. Width=1.5,
+    // spanning columns 4 (coverage 0.75) and 5 (coverage 0.75), no full
+    // interior column (leftPixel+1=5 > rightPixel-1=4).
+    std::vector<PointTwips> triangle = {
+        {0, 0}, {10, 0}, {5, 10},
+    };
+    renderer.fillPolygon(triangle, RgbaColor{255, 0, 0, 255});
+
+    // alpha = round(255*0.75) = round(191.25) = 191 (int(191.25+0.5) =
+    // int(191.75) = 191); g/b = 255 - 191 = 64 (255 divides out exactly).
+    auto left = renderer.pixelAt(4, 8);
+    CHECK_EQ(left.r, 255);
+    CHECK_EQ(left.g, 64);
+    CHECK_EQ(left.b, 64);
+
+    auto right = renderer.pixelAt(5, 8);
+    CHECK_EQ(right.r, 255);
+    CHECK_EQ(right.g, 64);
+    CHECK_EQ(right.b, 64);
+
+    // Columns 3 and 6 are entirely outside the [4.25, 5.75) span.
+    auto outsideLeft = renderer.pixelAt(3, 8);
+    CHECK_EQ(outsideLeft.r, 255);
+    CHECK_EQ(outsideLeft.g, 255);
+    CHECK_EQ(outsideLeft.b, 255);
+
+    auto outsideRight = renderer.pixelAt(6, 8);
+    CHECK_EQ(outsideRight.r, 255);
+    CHECK_EQ(outsideRight.g, 255);
+    CHECK_EQ(outsideRight.b, 255);
+}
+
 TEST_CASE(SoftwareRenderer_StrokePolyline_PlotsPointsAlongLine) {
     SoftwareRenderer renderer(20, 20);
     renderer.beginFrame(RgbaColor{255, 255, 255, 255});

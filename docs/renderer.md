@@ -218,6 +218,22 @@ for the current support-matrix status.
 - **Recursion guard.** `SceneRenderer` caps sprite-in-sprite recursion at 64
   levels to guard against a malformed/cyclic sprite reference; exceeding it
   logs a warning and stops that branch rather than crashing.
+- **Anti-aliasing is edge-pixel-coverage only, X-direction, flat fills only
+  (2026-08-30, Fidelity-audit TASK 3 divergence #1 — see
+  `docs/flash-fidelity-audit.md`).** `SoftwareRenderer::fillPolygon()`
+  blends the fractional-coverage boundary pixel column(s) of each scanline
+  span instead of hard-rounding them, but this is deliberately scoped
+  narrow, not a full AA implementation: (1) it only smooths near-vertical/
+  diagonal silhouette edges via X-direction sub-pixel coverage at each
+  scanline's left/right crossings — a shape's purely horizontal top/bottom
+  edges are NOT anti-aliased, since rendering still samples exactly one
+  scanline row per integer Y with no Y-direction coverage/supersampling;
+  (2) `fillPolygonGradient()` (gradient fills) is untouched — its own
+  independent copy of the scanline loop still hard-rounds both edges,
+  same as before this fix; (3) `strokePolyline()` (line strokes) is
+  untouched — still the naive Bresenham + square-stamp path, no AA. See
+  `fillPolygon()`'s own `.cpp` comment for the coverage-formula
+  derivation and verification method.
 
 ## CLI usage
 

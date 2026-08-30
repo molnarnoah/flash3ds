@@ -47,7 +47,13 @@ TEST_CASE(GameConfig_Defaults_MatchDocumentedConfigIniExample) {
     CHECK_EQ(config.input.lKeyCode, static_cast<int>('L'));
     CHECK_EQ(config.input.rKeyCode, static_cast<int>('R'));
     CHECK_EQ(config.input.startKeyCode, InputState::kEnter);
-    CHECK_EQ(config.input.selectKeyCode, InputState::kEscape);
+    // SELECT's default is kEnd, not kEscape (2026-08-30 fix) -- see
+    // GameConfig.h's selectKeyCode doc comment: kEnd matches the
+    // CondKeyPress=4 ("End") every real Hobo game's frame-1 buttons gate
+    // on, confirmed (docs/known-limitations.md L11) to drive real
+    // root-timeline navigation. The old kEscape default meant SELECT had
+    // no effect on real corpus content at all.
+    CHECK_EQ(config.input.selectKeyCode, InputState::kEnd);
     CHECK_EQ(config.input.zlKeyCode, static_cast<int>('Z'));
     CHECK_EQ(config.input.zrKeyCode, static_cast<int>('V'));
     CHECK_EQ(config.input.cStickUpKeyCode, static_cast<int>('I'));
@@ -210,9 +216,16 @@ TEST_CASE(GameConfig_SharedKeyCode_BothFieldsResolveToSameCode) {
     // one silently overriding the other -- see that file's own comment
     // for the merge logic itself. This test only verifies the CONFIG side
     // of that: both fields really do resolve to the identical code.
+    //
+    // B/SELECT deliberately do NOT share a code any more (2026-08-30 fix,
+    // see GameConfig.h's selectKeyCode doc comment): SELECT's default
+    // moved to kEnd (matching real Hobo content's CondKeyPress=4 trigger),
+    // independent of B's own kEscape default. Asserted explicitly here so
+    // a future edit that "helpfully" re-syncs them gets caught by this
+    // test, not silently reintroduced.
     GameConfig config = GameConfig::defaults();
     CHECK_EQ(config.input.aKeyCode, config.input.startKeyCode);
-    CHECK_EQ(config.input.bKeyCode, config.input.selectKeyCode);
+    CHECK(config.input.bKeyCode != config.input.selectKeyCode);
 }
 
 TEST_CASE(GameConfig_InvalidBoolean_FallsBackToDefault) {
@@ -232,11 +245,20 @@ TEST_CASE(GameConfig_InvalidTouchScreen_FallsBackToDefault) {
 // docs/hobo-title-progression.md) -- proving "wire the 3DS entry point to
 // hobo.swf" needed zero code changes to GameConfig/GamePackage/
 // nintendo3ds_main.cpp, only a title-specific config.ini a packager would
-// ship alongside hobo.swf (the CHECKED-IN romfs/config.ini stays the
-// generic documented default -- see this file's own
-// GameConfig_Defaults_MatchDocumentedConfigIniExample test and
-// docs/virtual-console.md's "guaranteed to never drift apart" note; this
-// test is a worked EXAMPLE, not a change to that default).
+// ship alongside hobo.swf.
+//
+// Update (2026-08-30): SELECT=END below used to be this test's own worked
+// EXAMPLE, deliberately DIFFERENT from the checked-in default (which was
+// SELECT=ESCAPE at the time). That default has since been promoted to
+// kEnd itself -- see GameConfig.h's selectKeyCode doc comment: with the
+// old ESCAPE default, physically pressing SELECT sent a key code no real
+// Hobo content's buttons listen for at all, a real reported "SELECT does
+// nothing" symptom. This test's explicit `SELECT=END` line is now
+// redundant with the default (harmless to leave -- fromIniText() applying
+// a value identical to the field's own default is indistinguishable from
+// omitting it) but kept for this test's own documentation value: it's
+// still proving the mechanism can express what real content needs, now
+// simply already true out of the box too.
 //
 // Hobo1's frame-1 preview icon (characterId=80) and its real frame-10
 // player character (characterId=1913) poll Key.isDown(37/38/39/40) --
@@ -251,9 +273,8 @@ TEST_CASE(GameConfig_InvalidTouchScreen_FallsBackToDefault) {
 // key table, InputState::kEnd) -- confirmed dynamically to drive real
 // root-timeline navigation (docs/known-limitations.md L11). This example
 // maps X/Y (free after the documented default's SPACE/SHIFT) to literal
-// 'A'/'S', and SELECT (free after the documented default's ESCAPE, and
-// distinct from the START+SELECT-held quit gesture, which needs BOTH
-// held) to End.
+// 'A'/'S', and SELECT (now the documented default itself, and distinct
+// from the START+SELECT-held quit gesture, which needs BOTH held) to End.
 TEST_CASE(GameConfig_Hobo1ExampleMapping_ParsesToExpectedKeyCodes) {
     GameConfig config = GameConfig::fromIniText(
         "[game]\n"

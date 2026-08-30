@@ -22,8 +22,16 @@
 //     spec-derived fact — content-specific remapping will likely be needed
 //     per game once real 3DS content is tested (not done in this session;
 //     see docs/3ds-toolchain.md and docs/input.md).
-//   - START maps to Key.ENTER (13), SELECT to Key.ESCAPE (27) as
-//     reasonable-effort conventions.
+//   - START maps to Key.ENTER (13) as a reasonable-effort convention.
+//     SELECT's default (2026-08-30, revised from an original Key.ESCAPE
+//     (27) reasonable-effort guess) is Key.END (35) instead — not a
+//     guess: real Hobo corpus content's frame-1 DefineButton2 characters
+//     gate their condActionsV2 on CondKeyPress=4 ("End" per the SWF
+//     spec's own legacy button-key table), confirmed (docs/known-
+//     limitations.md L11) to drive real root-timeline navigation. See
+//     vc::GameConfig.h's selectKeyCode doc comment for the full evidence
+//     trail. This is still just this file's/vc::InputMapping's DEFAULT —
+//     config.ini can remap it to anything, same as every other button.
 //   - L/R shoulder buttons (input-transitions phase, 2026-08-19) map to
 //     printable ASCII codes 'L'/'R' — same reasonable-effort convention as
 //     X/Y above (no natural AS2 Key.* equivalent exists for a shoulder
@@ -39,18 +47,21 @@
 // became a constructor parameter is WHICH InputState key code each
 // physical button maps to, and whether touch/mouse are fed into
 // InputState at all. The mapping struct's own default values exactly
-// match this file's ORIGINAL hardcoded behavior for D-Pad/A/B/START/
-// SELECT (Key.LEFT/RIGHT/UP/DOWN, Key.ENTER, Key.ESCAPE), touch (enabled),
-// and mouse (enabled) — a caller that never touches config.ini gets
-// unchanged behavior for those. The one deliberate exception: X/Y's
-// documented default changed from literal ASCII 'X'/'Y' to Key.SPACE/
-// Key.SHIFT, to match vc::GameConfig's own documented default config.ini
-// (see GameConfig.h) — AS2 content is far more likely to test
-// Key.SPACE/Key.SHIFT than literal 'X'/'Y' character codes, and having
-// ONE canonical default (shared by "no config.ini present" and "config.ini
-// present with the documented example values") was worth this small,
-// clearly-documented behavior change over preserving the old accidental
-// default. L/R's default (ASCII 'L'/'R') is unchanged.
+// match this file's ORIGINAL hardcoded behavior for D-Pad/A/B/START
+// (Key.LEFT/RIGHT/UP/DOWN, Key.ENTER, Key.ESCAPE), touch (enabled), and
+// mouse (enabled) — a caller that never touches config.ini gets unchanged
+// behavior for those. Two deliberate exceptions: X/Y's documented default
+// changed from literal ASCII 'X'/'Y' to Key.SPACE/Key.SHIFT, to match
+// vc::GameConfig's own documented default config.ini (see GameConfig.h) —
+// AS2 content is far more likely to test Key.SPACE/Key.SHIFT than literal
+// 'X'/'Y' character codes, and having ONE canonical default (shared by "no
+// config.ini present" and "config.ini present with the documented example
+// values") was worth this small, clearly-documented behavior change over
+// preserving the old accidental default. SELECT's default (2026-08-30)
+// changed again later, from this file's original Key.ESCAPE guess to
+// Key.END — see this file's header comment above and GameConfig.h's
+// selectKeyCode doc comment for the real-content evidence. L/R's default
+// (ASCII 'L'/'R') is unchanged.
 //
 // ZL/ZR/C-Stick (2026-08-24): New-3DS-only controls, polled the exact same
 // way as every other digital button above (they're just more bits in

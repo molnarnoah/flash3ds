@@ -26,7 +26,21 @@ proceeding to Step 2.
 
 Read `src/platform/nintendo3ds_main.cpp`'s tick/render loop in full (the
 only place a fixed-interval throttle could live). **The existing
-frame-rate-pacing logic is mathematically correct, not a bug:**
+frame-rate-pacing logic is mathematically correct, not a bug** — for the
+specific question this step was investigating (whether anything artificially
+caps the loop's real tick rate, causing the observed low FPS):
+
+> **Correction (2026-08-30):** the code quoted just below turned out to have
+> a real, separate bug after all — not a throttle (nothing here caps how
+> often the loop runs, so this step's own conclusion about *that* question
+> stands), but a systematic frame-RATE-ACCURACY error: `std::lround(60.0 /
+> swfFrameRate)` permanently mis-times any SWF whose declared rate isn't an
+> exact divisor of 60 (`hobo.swf`'s 25fps became 30fps actual, +20%). Found
+> and fixed in the later fidelity-audit phase — see
+> `docs/flash-fidelity-audit.md`'s "TASK 2 — FPS/timing" section and the new
+> `runtime::FramePacer` (`src/runtime/FramePacer.h/.cpp`). Left the original
+> text below unmodified (only this note added) since it was reasoning
+> correctly about the different question it was actually asking at the time.
 
 ```cpp
 const double swfFrameRate = movie->frameRateFps() > 0.0 ? movie->frameRateFps() : 12.0;

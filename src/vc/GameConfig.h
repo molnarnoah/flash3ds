@@ -41,7 +41,29 @@ struct InputMapping {
     int lKeyCode = 'L';
     int rKeyCode = 'R';
     int startKeyCode = runtime::InputState::kEnter;
-    int selectKeyCode = runtime::InputState::kEscape;
+    // SELECT default (2026-08-30, fixing a real observed "SELECT does
+    // nothing" report): was InputState::kEscape, matching this class's
+    // original pre-VC-layer hardcoded behavior -- but that default
+    // predates real-content evidence about what SELECT is actually FOR.
+    // MovieClipInstance.cpp's condKeyPressToInputKeyCode() confirms every
+    // Hobo game's frame-1 DefineButton2 characters gate their
+    // condActionsV2 on CondKeyPress=4 ("End" per the SWF spec's legacy
+    // button-key table -> InputState::kEnd), and docs/known-limitations.md
+    // L11's post-fix re-verification confirms pressing End for real moves
+    // hobo.swf's ROOT timeline from frame 1 to frame 2 via a real,
+    // byte-verified `_root.gotoAndStop(2)` button action -- i.e. this is
+    // the actual "advance past the title screen" key for this corpus, not
+    // a hypothetical. With the old kEscape default, physically pressing
+    // SELECT sent a key code none of those buttons listen for at all, so
+    // it had no effect whatsoever on real Hobo content -- exactly the
+    // reported symptom. kEnd was already the documented worked EXAMPLE for
+    // this exact scenario (see tests/test_vc_config.cpp's
+    // GameConfig_Hobo1ExampleMapping_ParsesToExpectedKeyCodes, 2026-08-27);
+    // this promotes it to the actual generic default so a config.ini-less
+    // (or default-config.ini) run reacts to SELECT out of the box. B keeps
+    // its own independent kEscape default -- it no longer needs to match
+    // SELECT now that SELECT has its own real, evidence-based target.
+    int selectKeyCode = runtime::InputState::kEnd;
 
     // ZL/ZR (2026-08-24): New-3DS-only extra shoulder buttons -- same
     // "no natural Key.* equivalent, so a documented arbitrary printable-

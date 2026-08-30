@@ -100,6 +100,19 @@ private:
     // strokes (alpha < 255) composite instead of clobbering.
     void blendPixel(int x, int y, swf::RgbaColor color);
 
+    // Anti-aliasing task (2026-08-30, Fidelity-audit TASK 3 divergence #1
+    // -- see docs/flash-fidelity-audit.md and fillPolygon()'s own comment
+    // in the .cpp for the full design): blends `color` at (x, y) with its
+    // alpha scaled by `coverage` (the fractional sub-pixel overlap between
+    // the filled span and this one pixel column, in [0, 1]) instead of at
+    // full strength. `coverage <= 0` is a no-op (matches blendPixel()'s
+    // own alpha==0 no-op convention); `coverage >= 1.0` skips the scaling
+    // multiply entirely and defers straight to blendPixel(), so a fully-
+    // covered boundary pixel (the common case for axis-aligned/integer-
+    // coordinate shapes) costs exactly what it did before this feature
+    // existed.
+    void blendPixelCoverage(int x, int y, swf::RgbaColor color, double coverage);
+
     // Performance fix (2026-08-28, "resolve the 7-12 FPS pacing" task --
     // see docs/performance-pacing.md's pixel-write-counter measurement:
     // ~146-148K opaque writes per frame, 0.4% blended): fillPolygon()'s

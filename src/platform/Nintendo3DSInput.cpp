@@ -80,9 +80,13 @@ void Nintendo3DSInput::poll(runtime::InputState& state) {
     //
     // config.ini can legally map two DIFFERENT physical buttons to the
     // SAME InputState key code (the documented default already does this:
-    // A and START both map to Key.ENTER, B and SELECT both to
-    // Key.ESCAPE — matching this class's original hardcoded behavior,
-    // which combined both with a single OR'd setKeyDown call). Calling
+    // A and START both map to Key.ENTER — matching this class's original
+    // hardcoded behavior, which combined both with a single OR'd
+    // setKeyDown call. B and SELECT used to share Key.ESCAPE the same
+    // way; SELECT's default moved to Key.END on 2026-08-30 — see
+    // GameConfig.h's selectKeyCode doc comment — so they no longer share
+    // a code by default, though a config.ini is still free to remap them
+    // back together). Calling
     // setKeyDown() once per physical button independently would let a
     // later call silently stomp an earlier one for the same code (e.g.
     // "A held, START not held" would incorrectly clear Key.ENTER if the

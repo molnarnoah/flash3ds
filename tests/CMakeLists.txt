@@ -9,6 +9,7 @@ add_executable(flash3ds_tests
     test_place_object_tag.cpp
     test_display_list.cpp
     test_timeline.cpp
+    test_frame_pacer.cpp
     test_shape_records.cpp
     test_define_shape_tag.cpp
     test_define_morph_shape_tag.cpp

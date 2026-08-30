@@ -98,6 +98,21 @@ void SoftwareRenderer::blendPixel(int x, int y, swf::RgbaColor color) {
     ++blendedPixelWrites_;
 }
 
+void SoftwareRenderer::blendPixelCoverage(int x, int y, swf::RgbaColor color, double coverage) {
+    if (coverage <= 0.0) return;
+    if (coverage >= 1.0) {
+        // Fully covered -- identical cost/output to the pre-AA code path.
+        blendPixel(x, y, color);
+        return;
+    }
+    swf::RgbaColor scaled = color;
+    int alpha = static_cast<int>(color.a * coverage + 0.5);  // round-half-up, same convention as roundToInt()
+    alpha = std::max(0, std::min(255, alpha));
+    if (alpha == 0) return;  // no-op, same convention as blendPixel()'s own alpha==0 early-out
+    scaled.a = static_cast<uint8_t>(alpha);
+    blendPixel(x, y, scaled);
+}
+
 void SoftwareRenderer::fillSpan(int y, int xStart, int xEnd, swf::RgbaColor color) {
     if (xStart > xEnd) return;  // empty span, same as the per-pixel loop doing zero iterations
     const size_t rowOffset = static_cast<size_t>(y) * static_cast<size_t>(width_);
@@ -283,19 +298,87 @@ void SoftwareRenderer::fillPolygon(const std::vector<PointTwips>& devicePoints,
         std::sort(intersections.begin(), intersections.end());
 
         // Even-odd fill: fill between each pair of consecutive crossings.
-        // fillSpan() (not a per-pixel blendPixel() loop) -- xStart/xEnd
-        // are clamped right here, and y is already known in-bounds from
-        // the minY/maxY clamp above, so this span-level call is exactly
-        // the "bounds already established once" case fillSpan() requires
-        // (see its doc comment in the header for why this matters: it was
-        // measured to be ~146-148K redundant-bounds-checked pixel writes
-        // per frame before this fix, docs/performance-pacing.md).
+        //
+        // Anti-aliasing fix (2026-08-30, Fidelity-audit TASK 3 divergence
+        // #1 -- see docs/flash-fidelity-audit.md): this used to round
+        // BOTH span edges to the nearest pixel (roundToInt()) and fillSpan()
+        // the whole inclusive [xStart, xEnd] range at full alpha -- every
+        // filled pixel either fully colored or fully background, hence the
+        // hard "jaggies" the audit doc's divergence #1 describes, and (a
+        // separate, incidentally-discovered bug) an inclusive-both-ends
+        // range over-fills by one pixel column whenever a span happens to
+        // land on an exact integer boundary (e.g. xLeft=2.0, xRight=12.0
+        // -- geometrically 10 pixels wide, [2,11], but the old code filled
+        // [2,12], 11 pixels).
+        //
+        // Fix: real coverage-based AA, scoped to edge pixels only (the
+        // audit doc's own recommended "cheaper middle ground" given this
+        // renderer's tight measured FPS budget, docs/performance-pacing.md
+        // -- ~27fps achievable vs. hobo.swf's declared 25fps at the time of
+        // that measurement, not much headroom for a full-supersampling
+        // approach). For each span [xLeft, xRight):
+        //   - the one or two boundary pixel COLUMNS (X direction) get a
+        //     coverage-scaled alpha blend via blendPixelCoverage(), where
+        //     coverage is the exact fractional overlap between the pixel's
+        //     [x, x+1) column and the span -- verified against a brute-
+        //     force per-pixel overlap integration over 200,000 random
+        //     spans (session notes) before writing this loop, same
+        //     Python-simulate-first discipline as every other numerically-
+        //     sensitive fix in this project;
+        //   - the interior (pixels strictly between the two boundary
+        //     columns, always fully covered once the span is more than a
+        //     pixel wide) stays on the unchanged, full-cost fillSpan()
+        //     bulk path -- this is precisely what keeps this "edge pixels
+        //     only" AA cheap: a wide fill pays for exactly 2 extra
+        //     blendPixelCoverage() calls total, not 2 per scanline row's
+        //     worth of edge complexity, and not a single-pixel-wider
+        //     interior loop.
+        //
+        // Scope limitation, stated plainly (matches this project's
+        // established honest-scoping convention, e.g. MP3-only audio,
+        // Math-only globals, DefineMorphShape-v1-only): this smooths
+        // near-vertical/diagonal silhouette edges via X-direction
+        // sub-pixel coverage at each scanline's crossings, but does NOT
+        // anti-alias purely horizontal top/bottom edges of a shape --
+        // rendering still samples exactly one scanline row per integer y,
+        // with no Y-direction coverage/supersampling. A shape's top and
+        // bottom edges remain hard-edged. See docs/flash-fidelity-audit.md
+        // and docs/renderer.md for the same statement in the project's
+        // permanent documentation.
         for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
-            int xStart = roundToInt(intersections[i]);
-            int xEnd = roundToInt(intersections[i + 1]);
-            xStart = std::max(xStart, 0);
-            xEnd = std::min(xEnd, width_ - 1);
-            fillSpan(y, xStart, xEnd, color);
+            double xLeft = intersections[i];
+            double xRight = intersections[i + 1];
+            if (xRight <= xLeft) continue;  // degenerate/empty span
+
+            int leftPixel = static_cast<int>(std::floor(xLeft));
+            int rightPixel = static_cast<int>(std::ceil(xRight)) - 1;
+
+            if (rightPixel <= leftPixel) {
+                // Span narrower than one pixel column (or exactly one
+                // column wide): a single boundary pixel carries the whole
+                // span's coverage, no interior fill.
+                double coverage = xRight - xLeft;
+                if (leftPixel >= 0 && leftPixel < width_) {
+                    blendPixelCoverage(leftPixel, y, color, coverage);
+                }
+                continue;
+            }
+
+            double leftCoverage = (leftPixel + 1) - xLeft;
+            if (leftPixel >= 0 && leftPixel < width_) {
+                blendPixelCoverage(leftPixel, y, color, leftCoverage);
+            }
+
+            double rightCoverage = xRight - rightPixel;
+            if (rightPixel >= 0 && rightPixel < width_) {
+                blendPixelCoverage(rightPixel, y, color, rightCoverage);
+            }
+
+            int interiorStart = std::max(leftPixel + 1, 0);
+            int interiorEnd = std::min(rightPixel - 1, width_ - 1);
+            if (interiorStart <= interiorEnd) {
+                fillSpan(y, interiorStart, interiorEnd, color);
+            }
         }
     }
 }

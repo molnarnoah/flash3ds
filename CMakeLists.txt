@@ -71,6 +71,7 @@ add_library(flash3ds_core
     src/runtime/Movie.cpp
     src/runtime/DisplayList.cpp
     src/runtime/Timeline.cpp
+    src/runtime/FramePacer.cpp
     src/runtime/CharacterDictionary.cpp
     src/runtime/CharacterBounds.cpp
     src/runtime/InputState.cpp

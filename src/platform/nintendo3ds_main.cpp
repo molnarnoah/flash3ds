@@ -66,6 +66,7 @@
 #include "renderer/SceneRenderer.h"
 #include "renderer/ShapeTessellator.h"
 #include "runtime/CharacterDictionary.h"
+#include "runtime/FramePacer.h"
 #include "runtime/MovieClipInstance.h"
 #include "swf/SwfRecords.h"
 #include "vc/GamePackage.h"
@@ -80,6 +81,7 @@ using flash3ds::renderer::Nintendo3DSRenderer;
 using flash3ds::renderer::PointTwips;
 using flash3ds::renderer::SceneRenderer;
 using flash3ds::runtime::CharacterDictionary;
+using flash3ds::runtime::FramePacer;
 using flash3ds::runtime::MovieClipInstance;
 using flash3ds::runtime::ScriptEnvironment;
 using flash3ds::swf::RgbaColor;
@@ -456,10 +458,47 @@ int main(int argc, char** argv) {
     // a busy-spin), it just doesn't always advance the movie frame. The
     // bottom-screen button test picture is redrawn every real frame
     // regardless (input should feel immediate, unlike movie playback).
+    //
+    // Fidelity-audit TASK 2, divergence #1 (docs/flash-fidelity-audit.md,
+    // 2026-08-30): this used to be a single fixed integer divisor,
+    // `std::lround(60.0 / swfFrameRate)` vblanks per movie-frame advance,
+    // which permanently mis-times any SWF whose declared rate isn't an
+    // exact divisor of 60 -- confirmed on real content: hobo.swf declares
+    // 25fps, lround(60/25)=lround(2.4)=2, so the movie was advanced every
+    // 2 vblanks -> 30fps actual, a systematic +20% speedup for the whole
+    // game. Replaced with FramePacer (src/runtime/FramePacer.h), a
+    // fractional accumulator that converges to EXACTLY the declared rate
+    // on long-run average with zero cumulative drift (see that file and
+    // tests/test_frame_pacer.cpp for the full design/verification) at the
+    // cost of slightly uneven per-vblank spacing, imperceptible in
+    // practice.
     const double swfFrameRate = movie->frameRateFps() > 0.0 ? movie->frameRateFps() : 12.0;
     constexpr double kVBlankHz = 60.0;
-    int vblanksPerSwfFrame = std::max(1, static_cast<int>(std::lround(kVBlankHz / swfFrameRate)));
-    int vblankCounter = 0;
+    FramePacer framePacer(swfFrameRate, kVBlankHz);
+
+    // Fidelity-audit TASK 2, divergence #2 (docs/flash-fidelity-audit.md,
+    // 2026-08-30): real wall-clock-driven frame-skip/catch-up. Previously
+    // this loop called `framePacer.advanceTick()`, which ASSUMES exactly
+    // one vblank's worth of real time (1/60s) elapsed since the last
+    // call -- true only when rendering keeps up with vsync. If a frame's
+    // render work takes longer than one vblank's budget (this project's
+    // own docs/performance-pacing.md measured real render times well over
+    // that before its own fixes, and heavier content -- anti-aliasing,
+    // real gradients -- could push it there again), the movie's timeline
+    // silently falls behind real time instead of staying at its declared
+    // rate. `framePacer.advanceElapsed()` takes the ACTUAL measured
+    // elapsed time instead, so a slow iteration still produces the
+    // correct number of logical-frame advances (scripts/sounds tick the
+    // right number of times) even though `scene.render()` below still
+    // only runs once per real loop iteration -- see FramePacer.h's
+    // top-of-file comment for the full design and the catch-up cap.
+    // `svcGetSystemTick()` (a monotonic hardware tick counter, immune to
+    // any RTC/wall-clock adjustment `osGetTime()` could be subject to) /
+    // `SYSCLOCK_ARM11` (ticks per second) is the same pairing the audit
+    // doc's own writeup names as the wall-clock read this file was
+    // missing entirely.
+    u64 lastTick = svcGetSystemTick();
+    int realFrameCount = 0;  // real loop iterations since boot -- drives the frame-10 RAM-usage diagnostic below
 
     while (aptMainLoop()) {
         hidScanInput();
@@ -467,6 +506,40 @@ int main(int argc, char** argv) {
 
         const u32 kHeld = hidKeysHeld();
         const u32 kDown = hidKeysDown();
+        ++realFrameCount;
+
+        // RAM-usage testing lines (2026-08-30, follow-up request):
+        // MemoryDiagnostics checkpoints already exist at every major
+        // startup milestone above (see the "M2 RAM-validation phase"
+        // comment near main()'s top), but they're gated behind holding L
+        // at boot -- a gesture that has to be known and timed ahead of
+        // gfxInitDefault(), awkward for routine on-device testing. This
+        // gives the same LOG_INFO("MEMDIAG", ...) output automatically,
+        // no boot gesture required: at real frame 10 (deliberately past
+        // every one-shot startup checkpoint, so this reflects genuine
+        // steady-state/in-game memory behavior rather than boot noise),
+        // diagnostics turn on if they aren't already and a checkpoint
+        // fires immediately; from then on a checkpoint fires roughly once
+        // a second (every 60 real frames) for the rest of the run, so a
+        // real test session produces a running series of resident/delta/
+        // peak numbers -- enough to actually TEST for a leak (a flat
+        // `delta=`/`resident=` across many checkpoints) rather than a
+        // single snapshot. Deliberately does NOT reset an already-running
+        // hold-L session's peak/baseline tracking (`!isEnabled()` guard)
+        // -- if L was held at boot, that session's own "cumulative since
+        // start" baseline (covering the startup checkpoints too) is left
+        // completely untouched; this only takes over when nothing else
+        // already turned diagnostics on.
+        if (realFrameCount == 10) {
+            if (!flash3ds::platform::isEnabled()) {
+                flash3ds::platform::setEnabled(true);
+                flash3ds::platform::resetPeak();
+            }
+            flash3ds::platform::checkpoint("frame 10 (RAM-usage diagnostic)");
+        } else if (realFrameCount > 10 && flash3ds::platform::isEnabled() &&
+                   (realFrameCount % 60) == 0) {
+            flash3ds::platform::checkpoint("periodic RAM-usage check (~1s interval)");
+        }
 
         // START alone no longer quits -- it needs to be visible/testable
         // on the bottom-screen button picture. START+SELECT held together
@@ -486,8 +559,18 @@ int main(int argc, char** argv) {
         if (kDown & KEY_X) audioBackend.playTestTone(554.0, 0.15);   // C#5
         if (kDown & KEY_Y) audioBackend.playTestTone(659.0, 0.15);   // E5
 
-        if (++vblankCounter >= vblanksPerSwfFrame) {
-            vblankCounter = 0;
+        // Real elapsed time since the previous iteration -- see the
+        // FramePacer construction site above for why this replaced
+        // advanceTick(). The loop form below matters for real catch-up
+        // now, not just the "logicalHz > hostHz" edge case advanceTick()
+        // needed it for: a slow-rendering iteration can legitimately owe
+        // more than one logical frame.
+        const u64 nowTick = svcGetSystemTick();
+        const double elapsedSeconds =
+            static_cast<double>(nowTick - lastTick) / static_cast<double>(SYSCLOCK_ARM11);
+        lastTick = nowTick;
+        const int framesToAdvance = framePacer.advanceElapsed(elapsedSeconds);
+        for (int i = 0; i < framesToAdvance; ++i) {
             root->advanceFrame();
             if (!loggedFirstFrame) {
                 loggedFirstFrame = true;

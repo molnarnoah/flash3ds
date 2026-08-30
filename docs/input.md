@@ -36,9 +36,17 @@ never designed for a handheld's button layout):
 - **D-Pad / Circle Pad -> arrow keys** (`Key.LEFT`/`RIGHT`/`UP`/`DOWN`),
   merging both input methods per libctru's own `KEY_LEFT`/etc. convenience
   masks (each already ORs the D-Pad and Circle Pad bits together).
-- **A/START -> `Key.ENTER`, B/SELECT -> `Key.ESCAPE`** (a common
-  confirm/cancel convention), **X/Y -> printable ASCII `'X'`/`'Y'`** (no
-  natural AS2 equivalent exists for these buttons at all).
+- **A/START -> `Key.ENTER`, B -> `Key.ESCAPE`** (a common confirm/cancel
+  convention), **X/Y -> printable ASCII `'X'`/`'Y'`** (no natural AS2
+  equivalent exists for these buttons at all). **SELECT's default changed
+  (2026-08-30) from `Key.ESCAPE` to `Key.END`** — not a convention this
+  time but real-content evidence: every Hobo game's frame-1
+  `DefineButton2` characters gate their `condActionsV2` on
+  `CondKeyPress=4` ("End"), confirmed to drive real root-timeline
+  navigation (`docs/known-limitations.md` L11). With the old `Key.ESCAPE`
+  default, physically pressing SELECT had no effect on real corpus content
+  at all — see `src/vc/GameConfig.h`'s `selectKeyCode` doc comment for the
+  full evidence trail.
 
 The user confirmed the Phase 10 `.3dsx` boots and runs in Azahar (a
 Citra-based 3DS emulator); this specific mapping's real-input behavior has
