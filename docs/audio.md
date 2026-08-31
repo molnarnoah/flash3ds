@@ -628,3 +628,106 @@ Not exercised against real content (same caveat as the round-trip-only
 verification above implies) — this is real, spec-clean, tested code, but
 genuinely unconfirmed against an actual SWF file using either format,
 since none exists anywhere in the corpus.
+
+## Re-confirmation (2026-08-31): "sound not working from the main menu screen" — re-checked against the CURRENT engine, same conclusion, much stronger evidence
+
+User bug report (continuing the FPS/rendering bug-fix task): "sound not
+works from main menu screen." This is the same screen this doc's own
+"the buttons make sound but the game doesn't" section (above) already
+investigated on 2026-08-29 and concluded was genuinely silent in the
+source data. But that investigation predates real button/clip event
+dispatch (`onPress`/`onRelease`/`onClipEvent`, hit-testing, and a
+per-placement `ButtonInstance` — see `src/runtime/MovieClipInstance.cpp:
+609-665`) — none of which existed yet when it only checked 3 known
+button positions via `click_probe.cpp`. Given how much has changed since,
+this re-checks the original question from scratch against the current
+engine, rather than assuming a two-day-old conclusion still holds.
+
+**Method:** a new throwaway diagnostic
+(`/tmp/sound_dispatch_probe.cpp`, not committed — same convention as
+every other `/tmp/*_probe.cpp` tool this task has used), instrumenting a
+`SpyAudioBackend` (same shape as `tests/test_movieclip_instance.cpp`'s)
+so every real `IAudioBackend::loadSound()`/`playSound()` call is
+captured directly, not inferred from log output. Four independent checks
+against a fresh `hobo.swf` load each:
+
+1. **Keyboard** — the exact proven-realistic methodology from
+   `hobo_frame_progression_probe.cpp` (movement keys held, End tapped
+   every 2 ticks, 1200 ticks).
+2. **Mouse sweep** — hover+press+release at every point of a 24×18 grid
+   covering the ENTIRE 600×450px stage (432 points, no gaps), no keyboard
+   input at all. This is the real upgrade over the 2026-08-21
+   `real-game-readiness.md` finding ("no observable effect from clicking
+   any of the 3 [known] positions") — that check covered 3 points with no
+   working dispatcher behind it yet; this covers the whole stage with the
+   dispatcher that actually exists today.
+3. **Combined** — mouse sweep with movement keys and End held/tapped
+   throughout at every grid point, in case a trigger needs both an active
+   hover/drag state and a keypress at once.
+4. **Structural** — bypassing simulation entirely: recursively walk every
+   currently-placed clip in the real runtime tree at tick 0 (before any
+   input) and call `Timeline::currentFrameStartSoundEvents()` directly —
+   the exact API `runCurrentFrameSounds()` itself uses — on each one.
+   This is the most direct possible answer to "does anything reachable
+   right now have a StartSound record on its current frame," independent
+   of any input sequence, guess, or reliance on the original (now-wiped-
+   by-an-environment-reset) tag-scan tool from the 2026-08-29
+   investigation.
+
+**Result: identical across all four.**
+
+```
+keyboard:      0 loadSound calls, 0 playSound calls (1200 ticks)
+mouse_sweep:   0 loadSound calls, 0 playSound calls (432 points x 3 ticks)
+combined:      0 loadSound calls, 0 playSound calls (432 points x 3 ticks)
+structural:    19 clips walked, 0 StartSound events found on any of them
+```
+
+Root's own `currentFrame()` stays at 1 throughout every scenario. A full
+stderr capture of all three simulated runs (6,064 `WARN` lines total —
+mostly the known-benign `TIMELINE`/`CallMethod`-target warnings this
+corpus always produces) contains **zero** `attachSound`/`AUDIO`-tagged
+lines of any kind — ruling out, again with fresh evidence, the
+`Sound.attachSound(name: String)` linkage-name gap as a factor here (it
+would log a distinct `LOG_WARN` if any script attempted it; none does).
+
+**Conclusion, now on much stronger footing than the 2026-08-29
+investigation could establish:** this is not an audio-pipeline bug, not a
+dispatcher bug, and not a coverage gap in what was tested. It is a
+verified content-reachability fact: `hobo.swf`'s frame-1 subtree — root
+plus every clip actually placed within it (19 total, walked directly) —
+contains zero `StartSound` records on any currently-active frame, and no
+AS2 script running on this screen, under any realistic input this engine
+can generate across every stage pixel and every documented control key,
+ever calls any sound-playing API at all. The audio SUBSYSTEM itself is
+proven working end-to-end elsewhere in this project (audible A/B/X/Y test
+tones on real hardware/Azahar, MP3/uncompressed/ADPCM decode all
+implemented and tested, `setVolume`/`SyncNoMultiple`/InPoint-OutPoint all
+wired) — there is no fix available here within the audio code itself,
+because there is nothing in this screen's own content for it to play.
+
+**What this means for the user's report, stated plainly:** if the
+original browser game genuinely has audible music/sound on this exact
+title/loading screen, that would mean either (a) it's triggered by a
+mechanism this SWF simply doesn't encode via any of the three real AS2/
+tag-level sound-trigger paths this check covers exhaustively (unlikely —
+those three paths, `StartSound` tags, numeric `Sound.attachSound(id)`,
+and string `Sound.attachSound(name)`, are the complete set real Flash
+Player itself supports), or (b) the sound the user remembers is
+associated with a LATER screen (real gameplay — 266 real `StartSound`
+tags across 35 `DefineSound` assets do exist in this file, just entirely
+outside this currently-reachable frame-1 subtree, confirmed by both this
+check and the earlier 2026-08-29 tag scan), and what looks like "the main
+menu" in this reconstruction is not distinguishable, from inside this
+engine, from any later screen without a real Flash Player available to
+compare against directly (this project has none). This project has no
+way to independently confirm which of those is true without either the
+user's own memory of the original game's exact audio-vs-screen pairing,
+or a side-by-side real-Flash-Player comparison — neither of which this
+session can produce on its own.
+
+**No source change in this entry** — this is a pure diagnostic
+re-confirmation, following this project's own precedent for documenting a
+negative/investigative result as a real, useful outcome
+(`hobo-title-progression.md`'s addendum is the closest prior example).
+`tests/flash3ds_tests` and both builds are unaffected (no code touched).

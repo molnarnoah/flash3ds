@@ -859,3 +859,120 @@ itself are the remaining candidates visible in this profile; if they'd
 rather chase the bigger win, the tree-walk-side `lround` cost
 (`toDevicePolyline`/`ShapeTessellator`) is now a clearly evidenced,
 separate target.
+
+## Ninth fix: `std::lround()` in `SceneRenderer.cpp`'s tree-walk (`toDevicePolyline`/glyph scaling) — the tree-walk-side target the eighth fix flagged and deliberately didn't touch
+
+Direct continuation of the eighth fix's own "what's needed to close this
+out" pointer. Re-read the eighth fix's finding carefully before starting
+this one, and it named two files as the tree-walk-side cost:
+`SceneRenderer.cpp`'s `toDevicePolyline()` and `ShapeTessellator.cpp`. A
+closer read of the actual call graph this time narrows that: `tessellateShape()`
+(and therefore every `std::lround()` call inside `ShapeTessellator.cpp`'s
+`flattenQuadraticBezier`/`lerpChannel`) only runs on a real cache miss —
+`SceneRenderer::shapeTessellationCache_` (keyed by `const swf::Shape*`)
+means it executes once ever per distinct shape, not once per frame. That
+makes `ShapeTessellator.cpp`'s calls cold, not hot, and this fix
+deliberately leaves them alone — touching cold-path code wouldn't move a
+single frame's render time. (Worth noting for a future session: this
+correction doesn't apply to *glyphs* — see below.)
+
+**What's actually hot, confirmed by reading every call site in
+`SceneRenderer.cpp`, not assumed:**
+
+- `toDevicePolyline()` (via `applyMatrix()`/`twipsToDevice()`) — converts
+  each already-tessellated (and cached) local-twip vertex to a device
+  pixel through the *current* world transform. This can't be cached the
+  way tessellation is, because the world transform changes frame-to-frame
+  under animation — it runs once per vertex, per visible shape, every
+  single frame.
+- The stroke-width-to-pixels scaling in `renderShapeCharacter()`/
+  `renderMorphShapeCharacter()` (`stroke.widthTwips * avgPixelsPerTwip`) —
+  once per stroke, every frame. Lower call volume than the vertex loop,
+  but the same per-frame cost class, and free to fix at the same time.
+- `renderGlyph()`'s edge-scaling loop (`moveToXTwips`/`deltaXTwips`/
+  `controlDeltaXTwips`/`anchorDeltaXTwips` × scale, one `swf::ShapeRecord`
+  at a time) — this one is actually **hotter** than the shape case, not
+  cooler: `renderGlyph()` synthesizes a fresh scaled `swf::Shape` and
+  calls `tessellateShape()` on it directly, with **no cache at all**
+  (unlike `renderShapeCharacter()`, it never touches
+  `shapeTessellationCache_`). Every glyph, in every visible text run, is
+  re-scaled and re-tessellated from scratch on every frame. This is the
+  real reason the eighth fix's blanket "`ShapeTessellator.cpp` is part of
+  the tree-walk cost" framing was half right — not because
+  `tessellateShape()` itself is hot, but because `renderGlyph()` calls it
+  on a hot path with no cache guarding it. (A real follow-up target for a
+  future session — caching per-(glyph, scale) tessellation results — but
+  out of scope for *this* fix, which is specifically the `lround` cost,
+  one thing at a time.)
+- The cursor-advance `lround()` calls in `renderTextCharacter()`/
+  `renderEditTextCharacter()` (`glyph.advance * scale` /
+  `font->glyphAdvances[...] * scale`) — once per glyph, every frame.
+
+14 call sites total across these five spots.
+
+**Fix:** the same `roundToInt()` pattern as the eighth fix, applied
+locally to `SceneRenderer.cpp` (its own inline function in the file's
+anonymous namespace, not shared with `SoftwareRenderer.cpp` — same
+reasoning, no cross-file coupling needed for a two-line function). Same
+safety argument: every value reaching these 14 call sites is a finite,
+small-magnitude twip or device-pixel coordinate — stage/glyph dimensions,
+never NaN/Inf/near-overflow — so `x >= 0 ? x+0.5 : x-0.5` truncated is
+bit-identical to `std::lround()`'s round-half-away-from-zero result across
+this renderer's entire coordinate range.
+
+**A real portability bug caught by the 3DS cross-build, not the desktop
+build:** the first pass wrote `std::max(1, roundToInt(...))` for the two
+stroke-width call sites, which compiled clean on desktop (where `int` and
+`int32_t` are the same type) but **failed to compile** on the ARM11
+cross-compiler with "no matching function for call to
+`max(int, int32_t)`" — `roundToInt()` returns `int32_t`, and `1` is
+plain `int`, and unlike x86_64 those aren't the same type for template
+argument deduction on this target. This is the exact same class of
+portability gap Phase 10's own toolchain bring-up already documented in
+this project's `CLAUDE.md` (the `uint32_t`/`unsigned int`/`clamp`/`min`/
+`max` finding) — a fresh instance of it, not a new discovery, but a good
+reminder that a desktop-only "it built and tests pass" is never sufficient
+sign-off for this project; the 3DS cross-build has to actually succeed
+before calling a fix done. Fixed with an explicit
+`static_cast<int>(roundToInt(...))` at both call sites.
+
+**Correctness:** rendered `hobo.swf` frames 1–5 before/after are
+byte-identical MD5s (`9a3c80e3ed76dc723c2343c6137fe7d6` for frames 1/3/5,
+`6687633fa2f76d2daab40eaae0591757` for frames 2/4) — same MD5 values as
+the eighth fix's own before-state, confirming this fix changed nothing
+observable while removing the libm calls. Full existing test suite
+(431/431, up from 385/385 at the eighth fix — this project has grown
+significantly since then) passes unmodified. 3DS cross-build clean after
+the `int`/`int32_t` fix above, zero new warnings from `SceneRenderer.cpp`
+specifically (forced incremental rebuild + targeted grep, same method as
+every prior fix).
+
+**Scope note, matching the eighth fix's own honesty standard:** frames 1-5
+of `hobo.swf` are the title/menu screen and are not text-heavy, so this
+before/after MD5 comparison mostly exercises the `toDevicePolyline()`/
+stroke-width call sites, not `renderGlyph()`'s edge-scaling path in real
+content. The `renderGlyph()` call sites were still verified the same way
+every other `roundToInt()` site in this codebase has been (the identical
+mathematical argument SoftwareRenderer.cpp's own fix already established,
+and this codebase's existing text-rendering tests — `renderGlyph`/
+`renderTextCharacter`/`renderEditTextCharacter` are exercised in
+`tests/test_scene_renderer.cpp` — all pass unmodified), but a future
+session revisiting real content with heavier on-screen text would be the
+place to add a byte-identical MD5 check that specifically stresses that
+path, if more confidence is ever wanted there.
+
+### What's needed to close this out
+
+Same as every prior fix in this task: a recording of the `.3dsx` built
+from this fix, since real on-device FPS can only be confirmed by the user
+running it — this session cannot measure real hardware/emulator timing
+itself. With this fix and the eighth fix both in, every `std::lround()`
+call in the hot render path (`SoftwareRenderer.cpp`'s raster loop AND
+`SceneRenderer.cpp`'s tree-walk) has now been addressed;
+`ShapeTessellator.cpp`'s own calls remain deliberately untouched as
+confirmed cold-path code. If the user's next recording still isn't at the
+30fps rung, the next candidates are the ones already named in this doc:
+tessellation/edge-count reduction, the `std::sort` call in the
+active-edge-table fill, or (new, from this fix's own investigation) adding
+a per-(glyph, scale) tessellation cache to `renderGlyph()` so text-heavy
+screens stop re-tessellating every glyph from scratch every frame.

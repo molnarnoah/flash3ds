@@ -11,18 +11,47 @@ namespace flash3ds::renderer {
 
 namespace {
 
+// Performance fix (continuing the FPS task after SoftwareRenderer.cpp's
+// fillPolygon() roundToInt() fix -- see docs/performance-pacing.md): that
+// earlier fix only addressed lround() calls inside the rasterizer's own
+// span-fill inner loop. This file's calls are a separate, previously-
+// unaddressed cost site the doc explicitly flagged as "now a clearly
+// evidenced, separate target" -- the tree-walk/tessellation-to-device side
+// of the pipeline, not the rasterizer. Unlike ShapeTessellator.cpp's own
+// lround() calls (cold: tessellateShape() runs once per shape, cached in
+// SceneRenderer::shapeTessellationCache_, and only recomputed on a cache
+// miss), every call site in THIS file runs every single frame: toDevicePolyline()
+// converts each already-tessellated vertex to device pixels via the current
+// world transform once per vertex per visible shape (the transform can
+// change frame-to-frame from animation, so this can't be cached the way
+// tessellation is), and renderGlyph() re-tessellates and re-scales its
+// synthesized glyph shape from scratch on every call with no cache at all --
+// so its edge-scaling lround() calls are, if anything, hotter per-glyph than
+// toDevicePolyline()'s per-vertex calls.
+//
+// Same reasoning and same safety argument as SoftwareRenderer.cpp's
+// roundToInt(): every value reaching these call sites is a finite,
+// small-magnitude twip or device-pixel coordinate (stage/glyph dimensions,
+// never NaN/Inf/near-overflow), so std::lround()'s full IEEE-754 contract
+// handling is pure overhead here, and `x + 0.5`/`x - 0.5` truncated is
+// bit-identical to it (round-half-away-from-zero) across this renderer's
+// entire coordinate range.
+inline int32_t roundToInt(double x) {
+    return x >= 0.0 ? static_cast<int32_t>(x + 0.5) : static_cast<int32_t>(x - 0.5);
+}
+
 // Applies a Matrix (twips-space affine transform) to a single twips-space
 // point. Same formula as SwfRecords::concatMatrix's translate terms, kept
 // local here since it operates on a point rather than another matrix.
 PointTwips applyMatrix(const swf::Matrix& m, int32_t x, int32_t y) {
     double nx = m.scaleX * x + m.rotateSkew1 * y + m.translateXTwips;
     double ny = m.rotateSkew0 * x + m.scaleY * y + m.translateYTwips;
-    return PointTwips{static_cast<int32_t>(std::lround(nx)), static_cast<int32_t>(std::lround(ny))};
+    return PointTwips{roundToInt(nx), roundToInt(ny)};
 }
 
 PointTwips twipsToDevice(PointTwips worldTwips, double pixelsPerTwipX, double pixelsPerTwipY) {
-    return PointTwips{static_cast<int32_t>(std::lround(worldTwips.x * pixelsPerTwipX)),
-                       static_cast<int32_t>(std::lround(worldTwips.y * pixelsPerTwipY))};
+    return PointTwips{roundToInt(worldTwips.x * pixelsPerTwipX),
+                       roundToInt(worldTwips.y * pixelsPerTwipY)};
 }
 
 std::vector<PointTwips> toDevicePolyline(const std::vector<PointTwips>& localTwipsPoints,
@@ -255,7 +284,7 @@ void SceneRenderer::renderShapeCharacter(const swf::ShapeDef& shapeDef,
             toDevicePolyline(stroke.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
         double avgPixelsPerTwip = (pixelsPerTwipX + pixelsPerTwipY) / 2.0;
         int widthPixels =
-            std::max(1, static_cast<int>(std::lround(stroke.widthTwips * avgPixelsPerTwip)));
+            std::max(1, static_cast<int>(roundToInt(stroke.widthTwips * avgPixelsPerTwip)));
         target.strokePolyline(devicePoints, swf::applyColorTransform(stroke.color, worldColorTransform),
                                widthPixels);
     }
@@ -313,7 +342,7 @@ void SceneRenderer::renderMorphShapeCharacter(const swf::MorphShapeDef& morphDef
             toDevicePolyline(stroke.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
         double avgPixelsPerTwip = (pixelsPerTwipX + pixelsPerTwipY) / 2.0;
         int widthPixels =
-            std::max(1, static_cast<int>(std::lround(stroke.widthTwips * avgPixelsPerTwip)));
+            std::max(1, static_cast<int>(roundToInt(stroke.widthTwips * avgPixelsPerTwip)));
         target.strokePolyline(devicePoints, swf::applyColorTransform(stroke.color, worldColorTransform),
                                widthPixels);
     }
@@ -360,26 +389,26 @@ void SceneRenderer::renderGlyph(const swf::Shape& glyphShape, const swf::RgbaCol
                 // moveTo without mutating the original glyph's own record.
                 sr.styleChange = std::make_shared<swf::ShapeStyleChange>(*r.styleChange);
                 sr.styleChange->moveToXTwips =
-                    static_cast<int32_t>(std::lround(r.styleChange->moveToXTwips * scale));
+                    roundToInt(r.styleChange->moveToXTwips * scale);
                 sr.styleChange->moveToYTwips =
-                    static_cast<int32_t>(std::lround(r.styleChange->moveToYTwips * scale));
+                    roundToInt(r.styleChange->moveToYTwips * scale);
                 break;
             }
             case swf::ShapeRecordType::kStraightEdge:
                 sr.edge.straightEdge.deltaXTwips =
-                    static_cast<int32_t>(std::lround(r.edge.straightEdge.deltaXTwips * scale));
+                    roundToInt(r.edge.straightEdge.deltaXTwips * scale);
                 sr.edge.straightEdge.deltaYTwips =
-                    static_cast<int32_t>(std::lround(r.edge.straightEdge.deltaYTwips * scale));
+                    roundToInt(r.edge.straightEdge.deltaYTwips * scale);
                 break;
             case swf::ShapeRecordType::kCurvedEdge:
                 sr.edge.curvedEdge.controlDeltaXTwips =
-                    static_cast<int32_t>(std::lround(r.edge.curvedEdge.controlDeltaXTwips * scale));
+                    roundToInt(r.edge.curvedEdge.controlDeltaXTwips * scale);
                 sr.edge.curvedEdge.controlDeltaYTwips =
-                    static_cast<int32_t>(std::lround(r.edge.curvedEdge.controlDeltaYTwips * scale));
+                    roundToInt(r.edge.curvedEdge.controlDeltaYTwips * scale);
                 sr.edge.curvedEdge.anchorDeltaXTwips =
-                    static_cast<int32_t>(std::lround(r.edge.curvedEdge.anchorDeltaXTwips * scale));
+                    roundToInt(r.edge.curvedEdge.anchorDeltaXTwips * scale);
                 sr.edge.curvedEdge.anchorDeltaYTwips =
-                    static_cast<int32_t>(std::lround(r.edge.curvedEdge.anchorDeltaYTwips * scale));
+                    roundToInt(r.edge.curvedEdge.anchorDeltaYTwips * scale);
                 break;
             case swf::ShapeRecordType::kEnd:
                 break;
@@ -440,7 +469,7 @@ void SceneRenderer::renderTextCharacter(const swf::TextDef& textDef,
                             cursorY, textWorld, worldColorTransform, target, pixelsPerTwipX,
                             pixelsPerTwipY);
             }
-            cursorX += static_cast<int32_t>(std::lround(glyph.advance * scale));
+            cursorX += roundToInt(glyph.advance * scale);
         }
     }
 }
@@ -489,7 +518,7 @@ void SceneRenderer::renderEditTextCharacter(const swf::EditTextDef& editTextDef,
                            static_cast<size_t>(glyphIndex) < font->glyphAdvances.size())
                               ? font->glyphAdvances[static_cast<size_t>(glyphIndex)] * scale
                               : 0.0;
-        cursorX += static_cast<int32_t>(std::lround(advance));
+        cursorX += roundToInt(advance);
     }
 }
 
