@@ -688,3 +688,58 @@ with the same discipline `CLAUDE.md`'s audit methodology already
 prescribes for everything else — verify against the actual current source,
 not the doc's word alone, before building on top of it. This section's own
 existence is the proof that doing so matters.
+
+## 13. Priority Fix List item #2 (2026-08-31): decoded-bitmap RAM cost — MEASURED
+
+Bitmap rendering (`docs/renderer.md`'s "Bitmap rendering" section)
+decodes every `DefineBitsLossless`/`2`/`DefineBitsJpeg2`/`3` character to
+straight RGBA8 (`swf::BitmapDef::pixels`, 4 bytes/pixel) EAGERLY on first
+`CharacterDictionary::find()` — unlike audio's lazy-decode-and-cache
+pattern (§9), a bitmap referenced by a placed shape's fill style is
+essentially always about to be sampled, so there's no meaningful
+"defined but never used" case worth optimizing for the way sound has (see
+`src/swf/DefineBitsTag.h`'s own header comment for the full reasoning).
+This section measures the actual cost, per this project's "measure, don't
+assume negligible" discipline (mirrors §6 Option B's own "PROVEN not
+INFERRED" framing) — via a new permanent tool,
+`tools/real_game_harness/bitmap_ram_probe.cpp`, which parses every
+`DefineBits*` character in a real movie (top-level and nested inside
+`DefineSprite` streams) with the exact same `swf::parseDefineBits()` call
+`CharacterDictionary` uses, and sums `width*height*4` bytes.
+
+| File | Bitmap characters | Decoded RGBA8 total |
+|---|---:|---:|
+| Hobo1 (`hobo.swf`) | 0 | 0 |
+| Hobo2 | 10 | 1,577,520 bytes (~1.50 MB) |
+| Hobo3 | 1 | 22,320 bytes (~21.8 KB) |
+| Hobo4 | 1 | 22,320 bytes (~21.8 KB) |
+| Hobo5 | 1 | 22,320 bytes (~21.8 KB) |
+| Hobo6 | 2 | 3,168,048 bytes (~3.02 MB) |
+| Hobo7 | 2 | 3,168,048 bytes (~3.02 MB) |
+| Extreme Pamplona (loader only) | 10 | 7,274,076 bytes (~6.94 MB) |
+
+The two largest single contributors are Hobo6/Hobo7's `DefineBitsJpeg2`
+characters (one each) — a 1024x768 photographic background, ~3.15 MB
+decoded RGBA8 apiece, roughly the same order of magnitude as this
+project's entire measured *session* RAM budget for some titles (§4).
+Every bitmap character `CharacterDictionary::find()` is ever called for
+(i.e. actually placed and reached, not just defined) stays resident for
+the life of that `CharacterDictionary` — there is no eviction, matching
+§6/Roadmap-Phase-6's own explicit "not implemented, no evidence of real
+unbounded growth" decision for the sound/loadMovie caches. Extreme
+Pamplona's loader alone (~6.9 MB, before even reaching any of its
+`loadMovie`-loaded content sub-SWFs — see `docs/known-limitations.md` L6)
+is the more RAM-relevant data point for a 3DS target than any Hobo file:
+a real one-time budget line, not a hypothetical.
+
+**Deliberately not implemented this phase:** no bitmap-cache
+eviction/streaming/downsampling strategy. Consistent with §6 Option B's
+own precedent (`loadMovie`/sound-cache eviction was investigated and
+explicitly deferred for lack of real evidence of unbounded growth) — this
+measurement instead gives a real, evidence-based number for a *future*
+session to weigh against an actual 3DS RAM budget and a specific target
+title's real total footprint (this bitmap cost stacks with every other
+§4/§10 finding, not in isolation), rather than tuning against a
+hypothetical now. `bitmap_ram_probe` is registered in `CMakeLists.txt`
+(`add_executable(bitmap_ram_probe ...)`) so this measurement is
+trivially re-run against any future corpus addition.

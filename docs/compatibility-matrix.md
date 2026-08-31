@@ -53,12 +53,12 @@ observation only.
 | DefineShape3 (32) | yes (RGBA) | yes | WORKING |
 | DefineShape4 (83) | **no** — explicit `nullopt` early-out (`DefineShapeTag.cpp:13`) | — | NOT IMPLEMENTED |
 | DefineSprite (39) | yes (header + nested tag scan) | yes, recursively (nested `Timeline::build`) | WORKING |
-| DefineBits (6) | **no** — no parser file exists | — | NOT IMPLEMENTED |
-| DefineBitsJPEG2 (21) | **no** | — | NOT IMPLEMENTED |
-| DefineBitsJPEG3 (35) | **no** | — | NOT IMPLEMENTED |
-| DefineBitsJPEG4 (90) | **no** | — | NOT IMPLEMENTED |
-| DefineBitsLossless (20) | **no** | — | NOT IMPLEMENTED |
-| DefineBitsLossless2 (36) | **no** | — | NOT IMPLEMENTED |
+| DefineBits (6) | **no** — needs external JPEGTables(8), zero corpus evidence | — | NOT IMPLEMENTED |
+| DefineBitsJPEG2 (21) | yes — full JPEG decode via vendored `jpgd` (`src/swf/DefineBitsTag.h/.cpp`) | yes, rendered (bitmap fill sampling — see §8) | WORKING (Priority Fix List item #2, 2026-08-31) |
+| DefineBitsJPEG3 (35) | yes — JPEG decode + optional separate alpha channel | yes, rendered | WORKING (Priority Fix List item #2, 2026-08-31) |
+| DefineBitsJPEG4 (90) | **no** — zero corpus evidence | — | NOT IMPLEMENTED |
+| DefineBitsLossless (20) | yes — zlib-inflated, BitmapFormat 3/4/5 | yes, rendered | WORKING (Priority Fix List item #2, 2026-08-31) |
+| DefineBitsLossless2 (36) | yes — zlib-inflated, BitmapFormat 3/5 (un-premultiplied) | yes, rendered | WORKING (Priority Fix List item #2, 2026-08-31) |
 | DefineText (11) | yes, full `TEXTRECORD` | yes | WORKING (rendered — see §10) |
 | DefineText2 (33) | yes, RGBA | yes | WORKING |
 | DefineEditText (37) | yes, structural | yes | PARTIALLY WORKING — parses fully; renders only when the field embeds a DefineFont2-with-code-table font and has literal text (see §10); no variable binding/input/word-wrap |
@@ -199,7 +199,7 @@ tracing this phase confirms it is real and fully wired.
 | Solid fills | WORKING | |
 | Gradient fills — linear | **FIXED 2026-08-28 (was BROKEN/simplified)** | real per-pixel 256-stop gradient, gradientMatrix + world-transform-aware (see `docs/renderer.md`'s "Gradient rendering" section); real-corpus scope evidence in `docs/known-limitations.md`/`ShapeTessellator.h`'s header comment |
 | Gradient fills — radial/focal-radial | **BROKEN/simplified (deliberately, by evidence)** | still rendered as a flat *average* of all gradient stop colors (`ShapeTessellator.cpp`'s `toFlatColor()`) — real hobo.swf corpus scan found zero radial/focal-radial fills, so real rendering isn't implemented against no evidence (same discipline as this project's other evidence-scoped decisions) |
-| Bitmap fills | **NOT IMPLEMENTED** | flat gray (160,160,160,255) placeholder — no bitmap character even resolves (see §2), so this path is effectively unreachable for now anyway |
+| Bitmap fills | **FIXED 2026-08-31 (was NOT IMPLEMENTED)** | real per-pixel nearest-neighbor sampling of decoded bitmap character data (see §2 for the 4 supported `DefineBits*` tags), `ColorTransform`-applied per sampled pixel; real-corpus verification also found and fixed a separate JPEG-decode bug affecting most of the corpus's `DefineBitsJpeg2`/`3` tags (see `docs/renderer.md`'s "Bitmap rendering" section); `smoothed`/bilinear filtering still not implemented (nearest-neighbor only) |
 | Shape tessellation topology correctness | **BROKEN for some real content** | "one closed polygon per MoveTo run, no edge-boundary merging" — shapes with holes (e.g. letter "O") or one fill region authored across multiple `StyleChangeRecord` runs render wrong (overlapping opaque polygons instead of a merged/subtracted region); confirmed by reading the actual tessellation algorithm, not assumed |
 | Stroke rendering | WORKING (crude) | naive Bresenham + square-stamp thickness, no joins/caps/anti-aliasing |
 | Text rendering (`DefineText`/`2`) | WORKING | both DefineFont v1 and v2 glyphs render (glyph-index lookup doesn't need a code table) |

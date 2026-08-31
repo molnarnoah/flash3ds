@@ -67,7 +67,9 @@ struct FillStyle {
     RgbaColor solidColor;         // valid iff type == kSolid
     Matrix gradientMatrix;         // valid iff type is a gradient or bitmap fill
     Gradient gradient;              // valid iff type is a gradient fill
-    uint16_t bitmapCharacterId = 0;  // valid iff type is a bitmap fill (not decoded/rendered — see docs)
+    uint16_t bitmapCharacterId = 0;  // valid iff type is a bitmap fill; see swf/DefineBitsTag.h and
+                                      // renderer/IRenderer.h's DeviceBitmapFill for how this is
+                                      // resolved and rendered (Priority Fix List item #2, 2026-08-31)
 
     bool isSolid() const { return type == FillStyleType::kSolid; }
     bool isGradient() const {

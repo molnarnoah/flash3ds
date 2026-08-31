@@ -1060,6 +1060,91 @@ discipline — no copyrighted trace content, only this summary).
 
 ---
 
+## L12 — Bitmap tag support (`DefineBits*`) — DONE (Priority Fix List item #2, 2026-08-31)
+
+- **Subsystem:** SWF tag parsing / rendering (`src/swf/DefineBitsTag.h/
+  .cpp`, new; `src/runtime/CharacterDictionary.h/.cpp`;
+  `src/renderer/ShapeTessellator.h/.cpp`, `src/renderer/IRenderer.h`,
+  `src/renderer/SoftwareRenderer.h/.cpp`,
+  `src/renderer/Nintendo3DSRenderer.h/.cpp`,
+  `src/renderer/SceneRenderer.cpp`).
+- **Status:** **Fixed and regression-tested.** Every bitmap fill
+  previously rendered as `ShapeTessellator`'s flat gray (160,160,160,255)
+  placeholder — a hard visual ceiling for any title (Extreme Pamplona
+  named specifically) leaning on bitmap art rather than vector shapes.
+  `DefineBitsLossless`(20)/`DefineBitsLossless2`(36)/
+  `DefineBitsJpeg2`(21)/`DefineBitsJpeg3`(35) — the only variants with
+  real-corpus evidence (`tools/swf_diagnostic` tag histograms across all
+  8 Hobo titles + Extreme Pamplona's loader and content sub-SWFs; zero
+  `DefineBits`(6)/`JPEGTables`(8)/`DefineBitsJpeg4`(90) anywhere) — are
+  now fully decoded to normalized RGBA8 (`swf::BitmapDef`) and rendered
+  with real per-pixel nearest-neighbor sampling through the full
+  `ShapeTessellator` -> `SceneRenderer` -> `SoftwareRenderer`/
+  `Nintendo3DSRenderer` pipeline, mirroring the existing (2026-08-28)
+  gradient-fill architecture end to end. See `docs/renderer.md`'s
+  "Bitmap rendering" section for the full pipeline writeup and
+  `docs/memory-audit.md` §13 for measured RAM cost.
+- **New dependency:** `third_party/jpgd` (Rich Geldreich's
+  Public-Domain/Apache-2.0 `jpeg-compressor` JPEG decoder), vendored via
+  Ubuntu's `libjpeg-compressor-cpp-dev` apt package (raw.githubusercontent.com
+  is blocked in this project's sandbox — same limitation
+  `third_party/minimp3`'s own README already documents), built as an
+  isolated CMake target (`jpgd_vendor`, `-w` to suppress the vendored
+  code's own warnings without weakening this project's `-Wall -Wextra`
+  everywhere else) and linked `PRIVATE` into `flash3ds_core`.
+- **Real-corpus finding — a genuinely surprising second bug found during
+  verification, not just the headline placeholder fix:** initial
+  real-corpus testing (`tools/real_game_harness/bitmap_ram_probe.cpp`)
+  found 6 of 7 real `DefineBitsJpeg2`/`3` tags across the corpus failed
+  to decode at all. Investigation found the raw tag bytes are not always
+  one self-contained JPEG stream as the SWF spec describes for these two
+  tag types — several Flash-authoring-tool encoders instead embed a
+  shared quantization/Huffman-tables segment, then a spurious 4-byte
+  `0xFF 0xD9 0xFF 0xD8` ("EOI SOI") marker pair, then the real per-image
+  segment which references the first segment's tables by ID without
+  redefining them. `stripErroneousEoiSoiMarkers()` (`DefineBitsTag.cpp`)
+  splices out every occurrence of that exact 4-byte sequence before
+  handing bytes to `jpgd`, verified via a standalone probe against every
+  failing corpus sample: real-corpus JPEG bitmap decode success went from
+  ~14% (1 of 7 tags) to 100%, zero regression on the one sample that
+  never had the quirk. A simpler, earlier theory (naively trim to the
+  LAST SOI marker in the stream) was tried first and disproved with the
+  same evidence — it discards the shared tables the second segment
+  actually depends on, failing differently (`JPGD_UNDEFINED_HUFF_TABLE`/
+  `JPGD_UNDEFINED_QUANT_TABLE`-class errors) rather than fixing anything.
+  Regression-tested:
+  `DefineBitsJpeg2_ErroneousEoiSoiMarkerPairMidStream_StillDecodesCorrectly`
+  (`tests/test_define_bits_tag.cpp`).
+- **Verification:** 446/446 desktop tests passing (up from 434 before
+  this task — 11 new unit tests covering every supported BitmapFormat/
+  colormap/JPEG-alpha/no-alpha/out-of-scope-tag path, plus one end-to-end
+  `SceneRenderer` integration test,
+  `SceneRenderer_BitmapFill_SamplesRealBitmapPixelsNotGrayPlaceholder`,
+  confirming the full parse->tessellate->matrix-invert->rasterize pipeline
+  samples real bitmap pixels rather than the gray placeholder), zero
+  regressions, zero new compiler warnings. Real-corpus render-harness
+  frames (Hobo2 all 13 frames, Extreme Pamplona's 2-frame loader) are
+  byte-identical before/after this change — **not a red flag**: the same
+  pattern this project's Roadmap Phase 8/9 entries already document (real
+  bitmap-filled content in this corpus sits in gameplay/timeline frames
+  outside the render harness's reachable frame range, same as
+  `Math`/`DefineMorphShape` before it), confirmed by the dedicated
+  end-to-end unit test above actually exercising the rendering pipeline
+  directly rather than relying on the harness alone. 3DS cross-build
+  (`build_3ds/flash3ds_3ds.3dsx`, RomFS-packaged) compiles clean, zero
+  non-weak undefined symbols, `jpgd_vendor`/`DefineBitsTag.cpp`
+  cross-compile without incident.
+- **Explicitly not implemented:** `smoothed` (bilinear) filtering —
+  sampling is nearest-neighbor only, same "no established
+  texture-filtering precedent to extend" reasoning as other deferred
+  render-quality work; a bitmap-cache eviction/streaming strategy — no
+  evidence of real unbounded growth, same discipline as the pre-existing
+  `loadMovie`/sound-cache eviction decision (§5b Option C /
+  Roadmap Phase 6); `DefineBits`(6)/`JPEGTables`(8)/
+  `DefineBitsJpeg4`(90) — zero real-corpus evidence.
+
+---
+
 ## RESOLVED this audit (previously listed as open/uncertain — confirmed done)
 
 ### R1 — Button/clip event dispatch (`condActionsV2` + `onPress`/`onRelease`/`onRollOver`/`onRollOut` property handlers + `CondKeyPress`)

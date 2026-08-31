@@ -67,6 +67,7 @@ add_library(flash3ds_core
     src/swf/DefineTextTag.cpp
     src/swf/DefineButtonTag.cpp
     src/swf/DefineEditTextTag.cpp
+    src/swf/DefineBitsTag.cpp
     src/swf/SwfLoader.cpp
     src/runtime/Movie.cpp
     src/runtime/DisplayList.cpp
@@ -106,6 +107,32 @@ target_include_directories(flash3ds_core PUBLIC
 target_include_directories(flash3ds_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/minimp3
 )
+
+# jpgd (third_party/jpgd, vendored -- see its own README.md): a real .cpp
+# translation unit (unlike minimp3.h's single-header-with-IMPLEMENTATION-
+# macro shape), so it's built as its own small static library instead of
+# being folded into flash3ds_core's own source list or #include'd from one
+# of flash3ds_core's .cpp files -- that's what lets its real compiler
+# warnings (old-style casts, signed shifts, etc. -- typical of a ~2010s
+# vendored C++ codebase) be suppressed for exactly this one target without
+# touching flash3ds_core's own -Wall -Wextra zero-warnings bar below, or
+# needing a #pragma push/pop include trick the way Mp3Decoder.cpp uses for
+# minimp3.h.
+add_library(jpgd_vendor STATIC
+    third_party/jpgd/jpgd.cpp
+)
+target_include_directories(jpgd_vendor PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jpgd
+)
+target_compile_options(jpgd_vendor PRIVATE -w)
+
+# PRIVATE: only src/swf/DefineBitsTag.cpp includes jpgd.h directly, and
+# PRIVATE linkage still pulls jpgd_vendor into any executable that links
+# flash3ds_core (CMake resolves the full static-library dependency chain
+# at final link time regardless of PRIVATE/PUBLIC -- PRIVATE only affects
+# whether the include-directory/compile-definition usage requirements
+# propagate further, which nothing outside flash3ds_core needs here).
+target_link_libraries(flash3ds_core PRIVATE jpgd_vendor)
 
 target_link_libraries(flash3ds_core PUBLIC ZLIB::ZLIB)
 
@@ -249,6 +276,15 @@ if(FLASH3DS_BUILD_TOOLS)
     # session needs it again.
     add_executable(avm1_loader_disasm tools/real_game_harness/avm1_loader_disasm.cpp)
     target_link_libraries(avm1_loader_disasm PRIVATE flash3ds_core)
+
+    # Priority Fix List item #2 (2026-08-31): measures the actual decoded-
+    # RGBA8 RAM cost of every DefineBits* bitmap character in a real movie
+    # (bitmaps are decoded EAGERLY on first CharacterDictionary::find(), so
+    # this is real resident memory, not a hypothetical) -- see
+    # tools/real_game_harness/bitmap_ram_probe.cpp and
+    # docs/memory-audit.md's Priority Fix List item #2 addendum.
+    add_executable(bitmap_ram_probe tools/real_game_harness/bitmap_ram_probe.cpp)
+    target_link_libraries(bitmap_ram_probe PRIVATE flash3ds_core)
 endif()
 
 # ---------------------------------------------------------------------------

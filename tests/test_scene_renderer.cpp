@@ -638,3 +638,97 @@ TEST_CASE(SceneRenderer_LinearGradientFill_SweepsRedToBlueAcrossDeviceXAxis) {
     CHECK_EQ(outside.g, 255);
     CHECK_EQ(outside.b, 255);
 }
+
+// --- Priority Fix List item #2 (2026-08-31): end-to-end integration test
+// for the bitmap-fill rendering pipeline (ShapeTessellator's kBitmap paint
+// -> SceneRenderer's resolveBitmapFill() matrix inversion/twips-scale
+// folding -> SoftwareRenderer::fillPolygonBitmap()'s nearest-neighbor
+// sampling), mirroring the gradient-fill integration test above: this goes
+// through the REAL byte-level DefineBitsLossless + DefineShape parse ->
+// CharacterDictionary -> SceneRenderer -> SoftwareRenderer pipeline, so a
+// wiring bug anywhere in that chain (a transposed bitmap-space term, the
+// /20 twips-per-pixel scale being applied to the wrong terms — see this
+// project's own self-caught bug during development, documented in
+// SceneRenderer.cpp's resolveBitmapFill() — an unresolved character
+// lookup, ...) would show up here even though every unit's own tests
+// (DefineBitsTag/ShapeTessellator/SoftwareRenderer) already pass
+// individually. Before this task, every bitmap fill rendered as
+// SoftwareRenderer's flat gray (160,160,160,255) placeholder (see
+// ShapeTessellator.cpp's pre-existing toFlatColor() fallback) — this test
+// would have failed against that placeholder.
+
+namespace {
+
+// A 2x1-pixel bitmap character (id=60): pixel (0,0) opaque red, pixel
+// (1,0) opaque green — DefineBitsLossless (tag 20), BitmapFormat=5 PIX24.
+std::vector<uint8_t> buildTwoPixelRedGreenBitmapTag() {
+    std::vector<std::vector<fixtures::Pix24Fixture>> rows = {
+        {{255, 0, 0}, {0, 255, 0}},
+    };
+    return fixtures::buildDefineBitsLosslessRgbBytes(/*characterId=*/60, /*width=*/2,
+                                                       /*height=*/1, rows);
+}
+
+// A 40x20-twip rectangle (id=61) filled entirely with the bitmap above,
+// using an IDENTITY bitmap matrix (see buildBitmapFillStyleArrayBytes's own
+// doc comment for why identity means exactly 20 twips per bitmap pixel).
+// 40x20 twips is precisely 2 bitmap pixels wide by 1 bitmap pixel tall, so
+// with a stage sized to make pixelsPerTwip exactly 1/20 (the same
+// convention every other fixture in this file already uses), the rendered
+// output is exactly 2x1 DEVICE pixels too — a clean 1:1 mapping from
+// device pixel to bitmap pixel, letting the expected output be read off
+// directly rather than needing any interpolation reasoning.
+std::vector<uint8_t> buildBitmapFillRectMovie() {
+    auto bitmapMatrix = fixtures::buildMatrixBytes(/*translateXTwips=*/0, /*translateYTwips=*/0);
+    auto shapeBody = fixtures::buildDefineShapeWithBitmapFillBytes(
+        /*shapeVersion=*/3, /*characterId=*/61, /*widthTwips=*/40, /*heightTwips=*/20,
+        /*fillStyleType=*/0x41 /* FillStyleType::kClippedBitmap */, /*bitmapCharacterId=*/60,
+        bitmapMatrix);
+
+    std::vector<fixtures::FixtureTag> tags = {
+        {static_cast<uint16_t>(TagCode::DefineBitsLossless), buildTwoPixelRedGreenBitmapTag()},
+        {static_cast<uint16_t>(TagCode::DefineShape3), shapeBody},
+        // Placed at the origin (no matrix -> identity), so world space ==
+        // shape-local space, matching the gradient test's own convention.
+        {26 /* PlaceObject2 */, fixtures::buildPlaceObject2Bytes(1, false, 61, std::nullopt)},
+        {1 /* ShowFrame */, {}},
+    };
+    auto body = fixtures::buildMovieBody(/*stageWidthTwips=*/40, /*stageHeightTwips=*/20, 12.0, 1,
+                                          tags);
+    return fixtures::wrapFws(6, body);
+}
+
+}  // namespace
+
+TEST_CASE(SceneRenderer_BitmapFill_SamplesRealBitmapPixelsNotGrayPlaceholder) {
+    auto bytes = buildBitmapFillRectMovie();
+    auto movie = SwfLoader::loadSwf(bytes.data(), bytes.size());
+    CHECK(movie->valid);
+    auto characters = CharacterDictionary::build(*movie);
+    ScriptEnvironment env;
+    auto root = MovieClipInstance::createRoot(*movie, characters, env);
+    CHECK(root != nullptr);
+
+    int width = static_cast<int>(movie->frameSize.widthPixels());
+    int height = static_cast<int>(movie->frameSize.heightPixels());
+    CHECK_EQ(width, 2);
+    CHECK_EQ(height, 1);
+
+    SoftwareRenderer renderer(width, height);
+    SceneRenderer scene(*movie, characters);
+    scene.render(*root, renderer, width, height);
+
+    // Left device pixel samples bitmap pixel 0 (red) -- real bitmap data,
+    // not the (160,160,160,255) flat-gray placeholder toFlatColor() would
+    // have produced for an unresolved bitmap paint before this task.
+    auto left = renderer.pixelAt(0, 0);
+    CHECK(left.r > 200);
+    CHECK(left.g < 50);
+    CHECK(left.b < 50);
+
+    // Right device pixel samples bitmap pixel 1 (green).
+    auto right = renderer.pixelAt(1, 0);
+    CHECK(right.r < 50);
+    CHECK(right.g > 200);
+    CHECK(right.b < 50);
+}

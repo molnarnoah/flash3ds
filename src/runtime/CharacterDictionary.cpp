@@ -184,17 +184,34 @@ void CharacterDictionary::scanTagsForCharacters(
                 continue;
             }
             pending[characterId] = PendingCharacter{tag, code};
+        } else if (code == swf::TagCode::DefineBitsLossless ||
+                   code == swf::TagCode::DefineBitsLossless2 ||
+                   code == swf::TagCode::DefineBitsJpeg2 ||
+                   code == swf::TagCode::DefineBitsJpeg3) {
+            // Priority Fix List item #2 (2026-08-31) — see
+            // swf/DefineBitsTag.h. Every supported variant's CharacterID is
+            // the tag body's first UI16, same as every other character-
+            // defining tag scanned here.
+            swf::SwfReader reader = movie.tagBodyReader(tag);
+            uint16_t characterId = reader.readU16();
+            if (reader.failed()) {
+                LOG_WARN("CHARDICT", "Failed to read character ID for %s at offset=%zu",
+                          tag.name.c_str(), tag.bodyOffset);
+                continue;
+            }
+            pending[characterId] = PendingCharacter{tag, code};
         } else if (code == swf::TagCode::ExportAssets) {
             parseExportAssets(movie, tag, linkageNameToId);
         }
-        // Other character-defining tags (DefineBits*/bitmaps,
-        // DefineMorphShape2 — zero real-corpus evidence per Phase 9's
-        // tag-histogram check, see swf/DefineMorphShapeTag.h) are
+        // Other character-defining tags (plain DefineBits(6) — needs an
+        // external JPEGTables(8) tag, DefineBitsJpeg4(90),
+        // DefineMorphShape2 — zero real-corpus evidence for any of these
+        // three, see swf/DefineBitsTag.h and swf/DefineMorphShapeTag.h) are
         // recognized by TagCode elsewhere but not resolved into the
-        // dictionary yet — later phase. A PlaceObject2 referencing one of
-        // these silently places nothing (SceneRenderer::renderCharacter
-        // finds no CharacterDef and skips it), matching how unresolved
-        // characters are already handled.
+        // dictionary — deliberately out of scope, not a later-phase gap. A
+        // PlaceObject2 referencing one of these silently places nothing
+        // (SceneRenderer::renderCharacter finds no CharacterDef and skips
+        // it), matching how unresolved characters are already handled.
     }
 }
 
@@ -284,6 +301,16 @@ std::optional<CharacterDef> CharacterDictionary::parseOneCharacter(const Movie& 
             auto morphDef = swf::parseDefineMorphShape(reader, tag.code);
             if (morphDef) return CharacterDef(*morphDef);
             LOG_WARN("CHARDICT", "Failed to parse DefineMorphShape at offset=%zu", tag.bodyOffset);
+            return std::nullopt;
+        }
+        case swf::TagCode::DefineBitsLossless:
+        case swf::TagCode::DefineBitsLossless2:
+        case swf::TagCode::DefineBitsJpeg2:
+        case swf::TagCode::DefineBitsJpeg3: {
+            swf::SwfReader reader = movie.tagBodyReader(tag);
+            auto bitmapDef = swf::parseDefineBits(reader, tag.code);
+            if (bitmapDef) return CharacterDef(*bitmapDef);
+            LOG_WARN("CHARDICT", "Failed to parse %s at offset=%zu", tag.name.c_str(), tag.bodyOffset);
             return std::nullopt;
         }
         default:

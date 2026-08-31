@@ -64,6 +64,24 @@ void Nintendo3DSRenderer::fillPolygonGradientGroup(
     rasterMs_ += osTickCounterRead(&t);
 }
 
+void Nintendo3DSRenderer::fillPolygonBitmap(const std::vector<PointTwips>& devicePoints,
+                                             const DeviceBitmapFill& fill) {
+    TickCounter t;
+    osTickCounterStart(&t);
+    software_.fillPolygonBitmap(devicePoints, fill);
+    osTickCounterUpdate(&t);
+    rasterMs_ += osTickCounterRead(&t);
+}
+
+void Nintendo3DSRenderer::fillPolygonBitmapGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                                  const DeviceBitmapFill& fill) {
+    TickCounter t;
+    osTickCounterStart(&t);
+    software_.fillPolygonBitmapGroup(contours, fill);
+    osTickCounterUpdate(&t);
+    rasterMs_ += osTickCounterRead(&t);
+}
+
 void Nintendo3DSRenderer::strokePolyline(const std::vector<PointTwips>& devicePoints,
                                           swf::RgbaColor color, int widthPixels) {
     TickCounter t;

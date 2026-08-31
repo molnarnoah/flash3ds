@@ -13,6 +13,7 @@ add_executable(flash3ds_tests
     test_shape_records.cpp
     test_define_shape_tag.cpp
     test_define_morph_shape_tag.cpp
+    test_define_bits_tag.cpp
     test_character_dictionary.cpp
     test_shape_tessellator.cpp
     test_software_renderer.cpp

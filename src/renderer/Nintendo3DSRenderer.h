@@ -91,6 +91,14 @@ public:
     void fillPolygonGradientGroup(const std::vector<std::vector<PointTwips>>& contours,
                                    const DeviceGradientFill& fill) override;
 
+    // Bitmap rendering (2026-08-31, Priority Fix List item #2) — forward to
+    // the wrapped SoftwareRenderer, same composition pattern and rasterMs_
+    // timing accumulation as every other fillPolygon*() override above.
+    void fillPolygonBitmap(const std::vector<PointTwips>& devicePoints,
+                            const DeviceBitmapFill& fill) override;
+    void fillPolygonBitmapGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                 const DeviceBitmapFill& fill) override;
+
     int width() const { return software_.width(); }
     int height() const { return software_.height(); }
 

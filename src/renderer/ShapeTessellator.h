@@ -113,9 +113,22 @@
 // comment for the full reasoning. FillStyleType::kLinearGradient fills are
 // now tessellated with a real 256-stop color ramp (GradientPaint below,
 // PaintKind::kLinearGradient) instead of being flattened by toFlatColor();
-// radial/focal-radial/bitmap fills still go through the original
-// toFlatColor() path (PaintKind::kFlat) — zero corpus evidence for those,
-// so they're deliberately left alone rather than implemented speculatively.
+// radial/focal-radial fills still go through the original toFlatColor()
+// path (PaintKind::kFlat) — zero corpus evidence for those, so they're
+// deliberately left alone rather than implemented speculatively.
+//
+// Priority Fix List item #2 (2026-08-31): bitmap fills are now the other
+// half — see swf/DefineBitsTag.h for the decoder and IRenderer.h's
+// DeviceBitmapFill doc comment for the device-space resolution this
+// mirrors from the gradient work. A bitmap fill referencing any of the
+// four supported DefineBits* variants is tessellated as PaintKind::kBitmap
+// (BitmapPaint below, carrying the fill's own matrix/characterId/repeat/
+// smoothed flags — NOT the decoded pixels themselves, which this file has
+// no way to look up; see BitmapPaint's own doc comment) instead of being
+// flattened by toFlatColor(); a bitmap fill whose character doesn't
+// resolve (an out-of-scope DefineBits(6)/DefineBitsJpeg4(90) tag, or a
+// dangling characterId) still falls back to toFlatColor()'s neutral-gray
+// placeholder at actual render time, in SceneRenderer.
 
 #pragma once
 
@@ -145,13 +158,43 @@ struct GradientPaint {
     std::array<swf::RgbaColor, 256> ramp{};
 };
 
-enum class PaintKind { kFlat, kLinearGradient };
+// A bitmap fill resolved just enough to render, still in the shape's own
+// local twips space (real device-space resolution — matrix inversion PLUS
+// looking up the actual decoded pixel data by character ID — happens
+// later, in SceneRenderer, exactly parallel to GradientPaint/
+// DeviceGradientFill's own split; see IRenderer.h's DeviceBitmapFill).
+// `matrix` is FillStyle::gradientMatrix unchanged (SWF's FILLSTYLE record
+// reuses the same matrix field for gradient and bitmap fills — see
+// swf/ShapeRecords.h): it maps "bitmap space" (each source pixel treated
+// as a 20x20-twip square, i.e. pixel (px, py) sits at twips-space point
+// (px*20, py*20) before this matrix is applied) into this shape's local
+// twips space. ShapeTessellator itself never resolves `bitmapCharacterId`
+// against a CharacterDictionary — it has no access to one, by design (see
+// this file's own architecture: it converts a bare swf::Shape into flat
+// geometry with zero character-dictionary/runtime dependencies) — so
+// SceneRenderer, which already owns that lookup for every other leaf
+// character kind, is the only place the actual pixel buffer gets attached.
+struct BitmapPaint {
+    swf::Matrix matrix;
+    uint16_t bitmapCharacterId = 0;
+    bool repeat = true;      // kRepeatingBitmap/kNonSmoothedRepeatingBitmap vs. k*ClippedBitmap
+    bool smoothed = true;    // kRepeatingBitmap/kClippedBitmap vs. kNonSmoothed*
+};
+
+enum class PaintKind { kFlat, kLinearGradient, kBitmap };
 
 struct TessellatedPolygon {
     swf::RgbaColor color;  // flat color (see toFlatColor); the fallback/degenerate-matrix
-                            // color even when paintKind == kLinearGradient
+                            // color when paintKind == kLinearGradient, or when paintKind ==
+                            // kBitmap but the referenced character doesn't resolve to a
+                            // decoded BitmapDef (unsupported/unresolved bitmap tag, or a
+                            // dangling characterId) — SceneRenderer falls back to this exact
+                            // same flat-color path in either failure case, so a bitmap fill
+                            // this runtime can't actually sample degrades to a solid color
+                            // instead of rendering nothing.
     PaintKind paintKind = PaintKind::kFlat;
     GradientPaint gradient;  // valid iff paintKind == kLinearGradient
+    BitmapPaint bitmap;      // valid iff paintKind == kBitmap
     std::vector<PointTwips> points;  // closed polygon; edge back to points[0] is implicit
 
     // Identifies which resolved swf::FillStyle this contour came from,

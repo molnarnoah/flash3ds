@@ -12,8 +12,10 @@
 // DefineEditTextTag.h; parsed structurally only, see that header). Phase 9
 // added morph shapes (DefineMorphShape only — swf/DefineMorphShapeTag.h;
 // DefineMorphShape2 is not parsed, see that header's file-level comment).
-// Bitmap characters (DefineBits*) are still recognized by tag but not
-// parsed (later phase; see docs/swf-support.md).
+// Priority Fix List item #2 (2026-08-31) added a ninth: bitmap characters
+// (DefineBitsLossless/2, DefineBitsJpeg2/3 — swf/DefineBitsTag.h; plain
+// DefineBits(6) and DefineBitsJpeg4(90) are NOT resolved, zero real-corpus
+// evidence — see that header's own file-level comment).
 //
 // Phase 5 (RAM Option B — lazy/on-demand parsing, 2026-08-24): build() no
 // longer parses every character's shape/font/etc. payload up front. It
@@ -64,6 +66,7 @@
 #include <vector>
 
 #include "runtime/Movie.h"
+#include "swf/DefineBitsTag.h"
 #include "swf/DefineButtonTag.h"
 #include "swf/DefineEditTextTag.h"
 #include "swf/DefineFontTag.h"
@@ -84,7 +87,7 @@ struct SpriteDef {
 
 using CharacterDef = std::variant<swf::ShapeDef, SpriteDef, swf::SoundDef, swf::FontDef,
                                    swf::TextDef, swf::ButtonDef, swf::EditTextDef,
-                                   swf::MorphShapeDef>;
+                                   swf::MorphShapeDef, swf::BitmapDef>;
 
 class CharacterDictionary {
 public:

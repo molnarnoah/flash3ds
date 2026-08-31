@@ -106,7 +106,7 @@ for the renderer architecture and known limitations.
 | `FILLSTYLEARRAY` — solid fills | ✅ |
 | `FILLSTYLEARRAY` — linear gradient fills | ✅ parsed AND rendered as a real per-pixel 256-stop gradient (2026-08-28 graphics/gradients task — see `docs/renderer.md`'s "Gradient rendering" section) |
 | `FILLSTYLEARRAY` — radial/focal-radial gradient fills | ✅ parsed (matrix + gradient stops); still rendered as a single averaged flat color — real corpus evidence (`/tmp/gradient_scan.cpp`, hobo.swf) found zero radial/focal-radial fills, so real rendering is deliberately not implemented against no evidence (same discipline as `docs/renderer.md`'s other evidence-scoped decisions) |
-| `FILLSTYLEARRAY` — bitmap fills (repeating/clipped, smoothed/non-smoothed) | ✅ parsed (character ID + matrix); rendered as a flat gray placeholder (bitmap decoding not implemented) |
+| `FILLSTYLEARRAY` — bitmap fills (repeating/clipped, smoothed/non-smoothed) | ✅ parsed AND rendered with real decoded bitmap pixel data (Priority Fix List item #2, 2026-08-31 — see `docs/renderer.md`'s "Bitmap rendering" section). Sampling is nearest-neighbor only (`smoothed` is parsed but not distinguished at render time — no established texture-filtering precedent to extend, same reasoning `docs/renderer.md` documents for other deferred filtering). |
 | `LINESTYLEARRAY` (LineStyle1) | ✅ |
 | `LineStyle2` (DefineShape4) | ❌ not implemented |
 | `SHAPERECORD` stream: StyleChangeRecord (MoveTo, style indices, new-styles sub-array) | ✅ |
@@ -122,7 +122,7 @@ for the renderer architecture and known limitations.
 | `DefineShape3` (32) | ✅ (RGBA solid/gradient/line colors) |
 | `DefineShape4` (83) | ❌ not implemented — `parseDefineShape` returns `std::nullopt` for this tag code |
 | `DefineSprite` (39) | ✅ header (CharacterId/FrameCount) + nested control-tag stream scan (absolute offsets into `Movie::data` — see `CharacterDictionary.h`) |
-| `DefineBits*` / `DefineText*` / `DefineFont*` / `DefineButton*` | ❌ still name/offset/length only (Phase 8+) |
+| `DefineBits*` / `DefineText*` / `DefineFont*` / `DefineButton*` | Text/Font/Button: ✅ (Phase 8). Bitmaps: `DefineBitsLossless`(20)/`DefineBitsLossless2`(36)/`DefineBitsJpeg2`(21)/`DefineBitsJpeg3`(35) ✅ fully decoded to RGBA8 (Priority Fix List item #2, 2026-08-31 — see `src/swf/DefineBitsTag.h`); `DefineBits`(6)/`JPEGTables`(8)/`DefineBitsJpeg4`(90) ❌ not implemented, zero real-corpus evidence |
 | `SetBackgroundColor` | ❌ not parsed — renderer always clears to white |
 | All other unlisted tags | ❌ still name/offset/length only |
 

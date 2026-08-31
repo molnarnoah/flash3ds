@@ -159,6 +159,35 @@ std::vector<uint8_t> buildDefineShapeWithLinearGradientBytes(
     int shapeVersion, uint16_t characterId, int32_t widthTwips, int32_t heightTwips,
     const std::vector<uint8_t>& gradientMatrixBytes, const std::vector<GradientStopFixture>& stops);
 
+// Priority Fix List item #2 (2026-08-31): a FILLSTYLEARRAY with exactly one
+// bitmap fill style (count=1, `fillStyleType` — one of
+// FillStyleType::kClippedBitmap/kRepeatingBitmap/kNonSmoothed* — followed by
+// BitmapId(UI16)=`bitmapCharacterId` then `bitmapMatrixBytes` verbatim, a
+// byte-aligned MATRIX e.g. from buildMatrixBytes). Mirrors
+// ShapeRecords.cpp's readFillStyleArray's bitmap-fill-style branch exactly.
+// Note the real per-pixel meaning of an IDENTITY bitmap matrix (scale=1,
+// translate=0, from buildMatrixBytes(0, 0)): per the SWF spec's "20 twips
+// per bitmap pixel at 100% zoom" convention (also documented at
+// SceneRenderer.cpp's resolveBitmapFill()), it makes exactly ONE bitmap
+// pixel span 20 twips of this shape's own local (pre-placement) coordinate
+// space — the same 20-twips-per-pixel relationship a stage's own
+// twips<->device-pixel scale normally uses, which is what makes a 1:1
+// bitmap-pixel-to-device-pixel test possible without a scaled matrix.
+std::vector<uint8_t> buildBitmapFillStyleArrayBytes(uint8_t fillStyleType,
+                                                     uint16_t bitmapCharacterId,
+                                                     const std::vector<uint8_t>& bitmapMatrixBytes);
+
+// A full DefineShape/DefineShape2/DefineShape3 tag body for a rectangle
+// filled with a bitmap instead of a solid color or gradient: CharacterId,
+// Bounds (RECT), then a ShapeWithStyle built from
+// buildBitmapFillStyleArrayBytes + an empty LineStyleArray +
+// buildRectShapeRecordsBytes (same rectangle-outline records a solid-fill
+// DefineShape uses).
+std::vector<uint8_t> buildDefineShapeWithBitmapFillBytes(
+    int shapeVersion, uint16_t characterId, int32_t widthTwips, int32_t heightTwips,
+    uint8_t fillStyleType, uint16_t bitmapCharacterId,
+    const std::vector<uint8_t>& bitmapMatrixBytes);
+
 // A DefineSprite (tag 39) body: CharacterId, FrameCount, then each of
 // `nestedTags` written as TagRecords (an End tag is appended automatically
 // if the last entry isn't already code 0) — exactly the nested-tag-stream
@@ -349,5 +378,88 @@ std::vector<uint8_t> buildDefineMorphShapeBytes(uint16_t characterId, int32_t st
                                                  int32_t endHeightTwips, uint8_t r1, uint8_t g1,
                                                  uint8_t b1, uint8_t a1, uint8_t r2, uint8_t g2,
                                                  uint8_t b2, uint8_t a2);
+
+// ---------------------------------------------------------------------
+// Priority Fix List item #2 (2026-08-31): DefineBits* tag body builders,
+// independently encoded from the same public SWF spec the production
+// parser (swf/DefineBitsTag.h) implements.
+// ---------------------------------------------------------------------
+
+// One PIX24-format (reserved byte + R + G + B, no alpha) pixel for
+// buildDefineBitsLosslessRgbBytes below.
+struct Pix24Fixture {
+    uint8_t r = 0, g = 0, b = 0;
+};
+
+// DefineBitsLossless (tag 20) body, BitmapFormat=5 (24-bit RGB, PIX24):
+// CharacterID, BitmapFormat, BitmapWidth, BitmapHeight, then
+// zlib-compressed `rows` (each row's PIX24 pixels — `rows.size()` must
+// equal `height`, each row's `size()` must equal `width`; PIX24 is
+// already 4 bytes/pixel, so no row padding is needed, matching the
+// parser's own paddedRowStride() computation for format 5).
+std::vector<uint8_t> buildDefineBitsLosslessRgbBytes(
+    uint16_t characterId, uint16_t width, uint16_t height,
+    const std::vector<std::vector<Pix24Fixture>>& rows);
+
+// One straight (non-premultiplied) RGBA pixel, as the CALLER of
+// buildDefineBitsLossless2ArgbBytes below thinks about color — the
+// builder itself premultiplies each pixel by its own alpha before zlib-
+// compressing (matching the real ARGB32 encoding DefineBitsLossless2
+// format 5 uses per spec), so a round-trip through
+// swf::parseDefineBits() should recover these exact straight values (up
+// to the same rounding parseLossless()'s unpremultiply() already
+// documents).
+struct StraightRgbaFixture {
+    uint8_t r = 0, g = 0, b = 0, a = 255;
+};
+
+// DefineBitsLossless2 (tag 36) body, BitmapFormat=5 (32-bit premultiplied
+// ARGB): same shape as buildDefineBitsLosslessRgbBytes but for the v2 tag
+// — `rows` are given in straight RGBA (see StraightRgbaFixture above),
+// premultiplied by this function before compressing.
+std::vector<uint8_t> buildDefineBitsLossless2ArgbBytes(
+    uint16_t characterId, uint16_t width, uint16_t height,
+    const std::vector<std::vector<StraightRgbaFixture>>& rows);
+
+// DefineBitsLossless/2 (tag 20/36 per `version2`) body, BitmapFormat=3
+// (8-bit colormapped): CharacterID, BitmapFormat=3, BitmapWidth,
+// BitmapHeight, BitmapColorTableSize (colorTable.size() - 1), then
+// zlib-compressed color table (RGB per entry if !version2, RGBA if
+// version2 — colorTable entries are given as RGBA always, the alpha
+// byte simply isn't written when !version2) followed by each row's
+// index bytes, padded to a 4-byte stride per row (matching the parser's
+// own paddedRowStride()).
+std::vector<uint8_t> buildDefineBitsLosslessColormapBytes(
+    uint16_t characterId, uint16_t width, uint16_t height,
+    const std::vector<StraightRgbaFixture>& colorTable,
+    const std::vector<std::vector<uint8_t>>& rowIndices, bool version2);
+
+// A real, tiny (8x8, ~670 bytes) baseline JPEG — the left half solid dark
+// red (200,20,20), the right half solid dark blue (20,20,200), encoded at
+// quality=100/no-chroma-subsampling to keep DCT rounding error small — see
+// this function's definition in SwfTestFixtures.cpp for the exact Pillow
+// command used to generate it. Like sampleMp3AudioBytes() above, this is
+// real encoder output (there's no reasonable way to hand-craft valid
+// Huffman-coded JPEG scan data the way SWF's own tag/record structures can
+// be built), not hand-built from spec bit-layouts — nothing here is
+// copied from Shift-DX/gameswf or any other SWF/Flash-specific source.
+const std::vector<uint8_t>& sampleTinyJpegBytes();
+
+// DefineBitsJpeg2 (tag 21) body: CharacterID, then `jpegBytes` verbatim
+// (normally sampleTinyJpegBytes()) — the whole rest of the tag is the raw
+// JPEG stream, no length prefix.
+std::vector<uint8_t> buildDefineBitsJpeg2Bytes(uint16_t characterId,
+                                                const std::vector<uint8_t>& jpegBytes);
+
+// DefineBitsJpeg3 (tag 35) body: CharacterID, JPEGDataSize (UI32),
+// `jpegBytes` (normally sampleTinyJpegBytes()), then zlib-compressed
+// `alphaBytes` (one byte per pixel, row-major — `alphaBytes.size()` must
+// equal the JPEG's own decoded width*height for a real parse to apply it;
+// pass an empty `alphaBytes` to build a JPEG3 tag with NO alpha record at
+// all, exercising parseJpeg3()'s "optional alpha, falls back to opaque"
+// path).
+std::vector<uint8_t> buildDefineBitsJpeg3Bytes(uint16_t characterId,
+                                                const std::vector<uint8_t>& jpegBytes,
+                                                const std::vector<uint8_t>& alphaBytes);
 
 }  // namespace flash3ds::test::fixtures

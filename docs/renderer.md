@@ -325,6 +325,110 @@ for the current support-matrix status.
   "Up"-state records (no mouse hit-testing/state machine exists yet — see
   `docs/avm1-support.md`'s Known Phase 8 limitations).
 
+### Bitmap rendering (2026-08-31, Priority Fix List item #2)
+
+Real per-pixel bitmap-fill rendering, replacing the flat gray
+(160,160,160,255) placeholder every bitmap fill previously rendered as (a
+hard visual ceiling for any title, like Extreme Pamplona, that leans on
+bitmap art rather than vector shapes). Scope confirmed by real-corpus
+tag histograms (`tools/swf_diagnostic`, all 8 Hobo titles + Extreme
+Pamplona's loader and every reachable content sub-SWF): `DefineBitsLossless`
+(20), `DefineBitsLossless2` (36), `DefineBitsJpeg2` (21), and
+`DefineBitsJpeg3` (35) are the only variants present anywhere in the
+corpus — `DefineBits`(6)/`JPEGTables`(8) (needs an external shared-tables
+tag this parser doesn't thread through) and `DefineBitsJpeg4`(90) (adds a
+deblocking-filter field on top of JPEG3) have zero occurrences and stay
+unimplemented, same evidence-driven-scope discipline as the Gradient
+rendering section above.
+
+`src/swf/DefineBitsTag.h/.cpp` decodes all four supported tags EAGERLY
+(unlike every other `Define*` parser in this codebase, which only reads
+structural fields — see that file's header comment for why bitmaps are the
+one deliberate exception) into one normalized representation,
+`swf::BitmapDef` (straight, non-premultiplied RGBA8, row-major): lossless
+tags are zlib-inflated per BitmapFormat (3 = 8-bit colormapped through a
+color table, 4 = 15-bit RGB, 5 = 24-bit RGB / 32-bit premultiplied ARGB,
+un-premultiplied at parse time so downstream code never needs to know
+which format a bitmap came from), and JPEG tags are decoded via a newly
+vendored decoder, `third_party/jpgd` (Rich Geldreich's Public-Domain/
+Apache-2.0 `jpeg-compressor`, chosen over LGPL `libjpeg` for the same
+no-dynamic-linking-on-3DS-homebrew reason `third_party/minimp3` documents
+its own license choice).
+
+**Real-corpus finding: the "erroneous EOI/SOI" JPEG quirk.** Every
+`DefineBitsJpeg2`/`3` tag across the corpus except one initially failed to
+decode. Investigation (`tools/real_game_harness/bitmap_ram_probe.cpp` plus
+ad hoc byte-level extraction) found the raw tag bytes are not always one
+self-contained JPEG stream as the spec describes: several encoders instead
+emit a shared quantization/Huffman-TABLES segment (SOI+DQT+DHT), then a
+spurious 4-byte `0xFF 0xD9 0xFF 0xD8` ("EOI SOI") marker pair, then the
+actual per-image segment (its own APP0/SOF/SOS/entropy-coded scan/EOI)
+which references the FIRST segment's tables by ID without redefining
+them — a real, well-known Flash-authoring-tool encoding quirk, not a
+corrupt file. `swf::stripErroneousEoiSoiMarkers()` (file-local in
+`DefineBitsTag.cpp`) splices out every occurrence of that exact 4-byte
+sequence before handing the bytes to `jpgd`, producing one continuous,
+valid JPEG stream — verified via a standalone probe against every failing
+corpus sample: 100% decode success, zero regression on the one sample that
+never had the quirk. See `DefineBitsTag.cpp`'s own comment on
+`stripErroneousEoiSoiMarkers()` for the byte-offset evidence and the
+(disproven) simpler "trim to last SOI" theory this project tried first.
+
+The fill-rendering pipeline mirrors the Gradient rendering pipeline above
+exactly, end to end:
+
+1. **`ShapeTessellator`** resolves a bitmap `FillStyle` into
+   `PaintKind::kBitmap`/`BitmapPaint` (matrix + `bitmapCharacterId` +
+   `repeat`/`smoothed` flags) — deliberately NOT resolving actual pixel
+   data at tessellation time, since `ShapeTessellator` has no
+   `CharacterDictionary` access by design (same separation of concerns
+   `docs/architecture.md` documents elsewhere).
+2. **`SceneRenderer`** (`resolveBitmapFill()`, file-local in
+   `SceneRenderer.cpp`) looks the bitmap character up via
+   `CharacterDictionary::find()`, then composes/inverts the shape's own
+   `BitmapMatrix` with its world matrix and the stage's twips-per-pixel
+   scale — same matrix-inversion shape as `resolveGradientFill()` — with
+   one extra step: per the SWF spec's "20 twips per bitmap pixel at 100%
+   zoom" convention, every one of the six resulting affine coefficients is
+   additionally divided by 20 to fold shape-local twips directly down to
+   bitmap PIXEL indices (an identity `BitmapMatrix` then means exactly one
+   bitmap pixel spans 20 twips of shape-local space — see
+   `tests/test_scene_renderer.cpp`'s
+   `SceneRenderer_BitmapFill_SamplesRealBitmapPixelsNotGrayPlaceholder`
+   for a hand-verifiable 1:1 device-pixel-to-bitmap-pixel test built on
+   exactly this fact). A near-singular transform or an unresolved/failed
+   bitmap character falls back to the polygon's flat `color`
+   (`toFlatColor()`'s pre-existing gray placeholder), same degenerate-case
+   handling the gradient path uses.
+3. **`SoftwareRenderer`/`Nintendo3DSRenderer`** (`fillPolygonBitmap()`/
+   `fillPolygonBitmapGroup()`) rasterize with the same independent
+   active-edge-table scanline copy pattern as `fillPolygonGradient()`,
+   sampling via **nearest-neighbor only** — `smoothed` is parsed and
+   carried through but bilinear filtering is deliberately deferred, same
+   "no established texture-filtering precedent to extend" reasoning as
+   other deferred-quality work in this file. `repeat` wraps via double-
+   modulo; clip mode (the default, non-repeating case) clamps to the
+   nearest edge pixel. `ColorTransform` is applied PER SAMPLED PIXEL at
+   render time (not precomputed into a ramp the way the 256-entry gradient
+   ramp is) — a bitmap can have far more distinct colors than a gradient's
+   256 stops, so precomputing a full color-transformed copy isn't the same
+   easy win there.
+
+**RAM cost, measured (not assumed) across the real corpus** via
+`tools/real_game_harness/bitmap_ram_probe.cpp` — see
+`docs/memory-audit.md`'s Priority Fix List item #2 addendum for the full
+per-file/per-character breakdown and 3DS RAM-budget discussion. Headline
+figures: ~1.5 MB decoded across Hobo2's 10 bitmap characters, ~7.3 MB
+across Extreme Pamplona's 10, and two standalone 1024x768 `DefineBitsJpeg2`
+characters (Hobo6/Hobo7, one each) that alone cost ~3 MB decoded RGBA8
+each — real, resident, EAGERLY-decoded memory per `DefineBitsTag.h`'s own
+design (see that file's header comment for why lazy/on-demand decode,
+Roadmap Phase 5's pattern for other character kinds, wasn't used here).
+
+See `IRenderer.h`'s `DeviceBitmapFill` doc comment for the full
+coordinate-space contract, and `docs/swf-support.md`'s `FILLSTYLEARRAY`/
+`DefineBits*` rows for the current support-matrix status.
+
 ## Known limitations
 
 - **No color transform application.** `PlaceObject`/`PlaceObject2`'s

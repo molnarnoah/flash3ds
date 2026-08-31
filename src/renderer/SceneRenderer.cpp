@@ -120,13 +120,89 @@ bool resolveGradientFill(const GradientPaint& paint, const swf::Matrix& worldMat
     return true;
 }
 
+// Resolves a TessellatedPolygon's BitmapPaint into a device-pixel-ready
+// DeviceBitmapFill (2026-08-31, Priority Fix List item #2 — see
+// IRenderer.h's DeviceBitmapFill doc comment and ShapeTessellator.h's
+// BitmapPaint doc comment). Two things this does that
+// resolveGradientFill() above doesn't need to: (1) actually look up
+// `paint.bitmapCharacterId` in `characters` — ShapeTessellator has no
+// CharacterDictionary access, so this is the first point in the pipeline
+// that CAN resolve it, and (2) fold an extra /20 scale into the inverted
+// matrix, since BitmapPaint::matrix maps "bitmap space" at 20 twips per
+// source pixel (matching the SWF spec's own bitmap-fill convention) into
+// shape-local twips, where DeviceGradientFill's gradient square is already
+// unscaled. Returns false (leaving `out` unmodified) if the character
+// doesn't resolve to a decoded BitmapDef (an out-of-scope DefineBits(6)/
+// DefineBitsJpeg4(90) tag, a dangling characterId, or a BitmapDef whose own
+// parse failed and left `pixels` empty) or the transform is degenerate —
+// callers fall back to the polygon's flat toFlatColor() color in either
+// case, exactly like a gradient fill that hits the same degenerate-matrix
+// case.
+bool resolveBitmapFill(const BitmapPaint& paint, const swf::Matrix& worldMatrix,
+                        const swf::ColorTransform& worldColorTransform,
+                        const runtime::CharacterDictionary& characters, double pixelsPerTwipX,
+                        double pixelsPerTwipY, DeviceBitmapFill& out) {
+    const runtime::CharacterDef* def = characters.find(paint.bitmapCharacterId);
+    if (!def) return false;
+    const auto* bitmapDef = std::get_if<swf::BitmapDef>(def);
+    if (!bitmapDef || bitmapDef->pixels.empty()) return false;
+
+    swf::Matrix combinedLocal = swf::concatMatrix(worldMatrix, paint.matrix);
+
+    double A = pixelsPerTwipX * combinedLocal.scaleX;
+    double C = pixelsPerTwipX * combinedLocal.rotateSkew1;
+    double TX = pixelsPerTwipX * combinedLocal.translateXTwips;
+    double B = pixelsPerTwipY * combinedLocal.rotateSkew0;
+    double D = pixelsPerTwipY * combinedLocal.scaleY;
+    double TY = pixelsPerTwipY * combinedLocal.translateYTwips;
+
+    double det = A * D - B * C;
+    if (std::fabs(det) < 1e-9) return false;
+
+    // Inverting the UN-scaled 2x2 first (exactly resolveGradientFill()'s
+    // own invA..invD formulas) and dividing by 20 afterwards gives device-
+    // pixel -> bitmap-space-in-TWIPS -> bitmap PIXEL index in one step:
+    // if (u, v) = device-pixel -> bitmap-space-in-twips via the UN-divided
+    // inverse (u = invA_full*px + invC_full*py + invTX_full, etc.), then
+    // the actual pixel index is (u/20, v/20) — and since division by 20 is
+    // linear, (invA_full/20, invC_full/20, invTX_full/20) computed from
+    // the ALREADY-divided invA/invC below is exactly invTX_full/20 too
+    // (distributing the /20 over the whole affine expression), so no
+    // separate translation-term scaling is needed beyond just using the
+    // pre-divided invA/invB/invC/invD in the same -invA*TX-invC*TY formula
+    // resolveGradientFill() uses for its own (unscaled) invTX/invTY.
+    double invA = (D / det) / 20.0;
+    double invC = (-C / det) / 20.0;
+    double invB = (-B / det) / 20.0;
+    double invD = (A / det) / 20.0;
+
+    out.a = invA;
+    out.c = invC;
+    out.tx = -invA * TX - invC * TY;
+    out.b = invB;
+    out.d = invD;
+    out.ty = -invB * TX - invD * TY;
+    out.width = bitmapDef->width;
+    out.height = bitmapDef->height;
+    out.repeat = paint.repeat;
+    out.smoothed = paint.smoothed;
+    out.colorTransform = worldColorTransform;
+    out.pixels = bitmapDef->pixels.data();
+    return true;
+}
+
 // Shared by renderShapeCharacter()/renderMorphShapeCharacter(): fills one
-// already-tessellated polygon, taking the gradient branch when the polygon
-// resolved to one and the device-space matrix inversion above didn't hit
-// the degenerate case, falling back to the existing flat-fill call
-// otherwise (identical to this function's pre-gradient-task behavior).
+// already-tessellated polygon, taking the gradient/bitmap branch when the
+// polygon resolved to one and the device-space matrix inversion above
+// didn't hit the degenerate case, falling back to the existing flat-fill
+// call otherwise (identical to this function's pre-gradient-task
+// behavior). `characters` is only actually used by the kBitmap branch —
+// threaded through unconditionally so every call site has one obvious
+// signature regardless of which paint kinds a given polygon set happens
+// to use.
 void fillTessellatedPolygon(const TessellatedPolygon& poly, const swf::Matrix& worldMatrix,
-                             const swf::ColorTransform& worldColorTransform, IRenderer& target,
+                             const swf::ColorTransform& worldColorTransform,
+                             const runtime::CharacterDictionary& characters, IRenderer& target,
                              double pixelsPerTwipX, double pixelsPerTwipY) {
     auto devicePoints = toDevicePolyline(poly.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
     if (poly.paintKind == PaintKind::kLinearGradient) {
@@ -134,6 +210,13 @@ void fillTessellatedPolygon(const TessellatedPolygon& poly, const swf::Matrix& w
         if (resolveGradientFill(poly.gradient, worldMatrix, worldColorTransform, pixelsPerTwipX,
                                  pixelsPerTwipY, fill)) {
             target.fillPolygonGradient(devicePoints, fill);
+            return;
+        }
+    } else if (poly.paintKind == PaintKind::kBitmap) {
+        DeviceBitmapFill fill;
+        if (resolveBitmapFill(poly.bitmap, worldMatrix, worldColorTransform, characters,
+                               pixelsPerTwipX, pixelsPerTwipY, fill)) {
+            target.fillPolygonBitmap(devicePoints, fill);
             return;
         }
     }
@@ -182,7 +265,8 @@ void fillTessellatedPolygon(const TessellatedPolygon& poly, const swf::Matrix& w
 // between two contours of the very same fill run in that case.
 void fillTessellatedPolygons(const std::vector<TessellatedPolygon>& polygons,
                               const swf::Matrix& worldMatrix,
-                              const swf::ColorTransform& worldColorTransform, IRenderer& target,
+                              const swf::ColorTransform& worldColorTransform,
+                              const runtime::CharacterDictionary& characters, IRenderer& target,
                               double pixelsPerTwipX, double pixelsPerTwipY) {
     for (size_t i = 0; i < polygons.size();) {
         const TessellatedPolygon& first = polygons[i];
@@ -194,7 +278,7 @@ void fillTessellatedPolygons(const std::vector<TessellatedPolygon>& polygons,
         size_t count = end - i;
 
         if (count == 1) {
-            fillTessellatedPolygon(first, worldMatrix, worldColorTransform, target,
+            fillTessellatedPolygon(first, worldMatrix, worldColorTransform, characters, target,
                                     pixelsPerTwipX, pixelsPerTwipY);
             i = end;
             continue;
@@ -211,6 +295,14 @@ void fillTessellatedPolygons(const std::vector<TessellatedPolygon>& polygons,
             if (resolveGradientFill(first.gradient, worldMatrix, worldColorTransform,
                                      pixelsPerTwipX, pixelsPerTwipY, fill)) {
                 target.fillPolygonGradientGroup(contours, fill);
+                i = end;
+                continue;
+            }
+        } else if (first.paintKind == PaintKind::kBitmap) {
+            DeviceBitmapFill fill;
+            if (resolveBitmapFill(first.bitmap, worldMatrix, worldColorTransform, characters,
+                                   pixelsPerTwipX, pixelsPerTwipY, fill)) {
+                target.fillPolygonBitmapGroup(contours, fill);
                 i = end;
                 continue;
             }
@@ -335,7 +427,16 @@ void SceneRenderer::renderCharacter(uint16_t characterId, const swf::Matrix& wor
     // sprite-resolving depth gets a child at sync time), but fail safe
     // rather than crash/recurse via a stale path. FontDef/SoundDef aren't
     // directly renderable leaf characters (a font is only ever referenced
-    // BY a TextDef/EditTextDef, never placed on stage itself).
+    // BY a TextDef/EditTextDef, never placed on stage itself). Likewise
+    // BitmapDef (2026-08-31, Priority Fix List item #2) is never placed
+    // directly on the display list by a real authoring tool — a bitmap
+    // dragged onto the stage is always wrapped in an auto-generated shape
+    // whose fill style references it by bitmapCharacterId (see
+    // ShapeTessellator.h's BitmapPaint/SceneRenderer.cpp's
+    // resolveBitmapFill()); a PlaceObject2 that somehow DID target a bare
+    // bitmap character ID directly falls through every branch above and is
+    // silently skipped, same as any other character kind with no leaf-
+    // rendering branch here.
 }
 
 void SceneRenderer::renderShapeCharacter(const swf::ShapeDef& shapeDef,
@@ -356,7 +457,7 @@ void SceneRenderer::renderShapeCharacter(const swf::ShapeDef& shapeDef,
     }
     const TessellatedShape& tess = it->second;
 
-    fillTessellatedPolygons(tess.polygons, worldMatrix, worldColorTransform, target,
+    fillTessellatedPolygons(tess.polygons, worldMatrix, worldColorTransform, *characters_, target,
                              pixelsPerTwipX, pixelsPerTwipY);
     for (const auto& stroke : tess.strokes) {
         auto devicePoints =
@@ -412,7 +513,7 @@ void SceneRenderer::renderMorphShapeCharacter(const swf::MorphShapeDef& morphDef
 
     TessellatedShape tess = tessellateShape(shape);
 
-    fillTessellatedPolygons(tess.polygons, worldMatrix, worldColorTransform, target,
+    fillTessellatedPolygons(tess.polygons, worldMatrix, worldColorTransform, *characters_, target,
                              pixelsPerTwipX, pixelsPerTwipY);
     for (const auto& stroke : tess.strokes) {
         auto devicePoints =
@@ -509,7 +610,7 @@ void SceneRenderer::renderGlyph(const swf::Shape& glyphShape, const swf::RgbaCol
     // #1 for glyph rendering specifically: the outer boundary and inner
     // counter contours are now combined-filled with one even-odd pass
     // instead of each being painted as its own solid patch.
-    fillTessellatedPolygons(tess.polygons, worldMatrix, worldColorTransform, target,
+    fillTessellatedPolygons(tess.polygons, worldMatrix, worldColorTransform, *characters_, target,
                              pixelsPerTwipX, pixelsPerTwipY);
     // Glyph shapes never carry line styles (scaled.lineStyles is always
     // empty), so tess.strokes is always empty here too — nothing to draw.

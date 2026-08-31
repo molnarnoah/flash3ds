@@ -243,6 +243,23 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
                 poly.gradient.matrix = fillSubpathStyle->gradientMatrix;
                 poly.gradient.spreadMode = fillSubpathStyle->gradient.spreadMode;
                 poly.gradient.ramp = buildGradientRamp(fillSubpathStyle->gradient);
+            } else if (fillSubpathStyle->isBitmap()) {
+                // Priority Fix List item #2 (2026-08-31) — see this file's
+                // header comment and IRenderer.h's DeviceBitmapFill doc
+                // comment. Only the fill's own matrix/characterId/repeat/
+                // smoothed flags are captured here; the actual decoded
+                // pixel buffer is looked up later by SceneRenderer (see
+                // BitmapPaint's own doc comment for why this file can't do
+                // that lookup itself).
+                poly.paintKind = PaintKind::kBitmap;
+                poly.bitmap.matrix = fillSubpathStyle->gradientMatrix;
+                poly.bitmap.bitmapCharacterId = fillSubpathStyle->bitmapCharacterId;
+                poly.bitmap.repeat =
+                    fillSubpathStyle->type == swf::FillStyleType::kRepeatingBitmap ||
+                    fillSubpathStyle->type == swf::FillStyleType::kNonSmoothedRepeatingBitmap;
+                poly.bitmap.smoothed =
+                    fillSubpathStyle->type == swf::FillStyleType::kRepeatingBitmap ||
+                    fillSubpathStyle->type == swf::FillStyleType::kClippedBitmap;
             }
             result.polygons.push_back(std::move(poly));
         }

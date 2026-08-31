@@ -55,6 +55,15 @@ public:
     void fillPolygonGradientGroup(const std::vector<std::vector<PointTwips>>& contours,
                                    const DeviceGradientFill& fill) override;
 
+    // Bitmap rendering (2026-08-31, Priority Fix List item #2) — see
+    // IRenderer.h's DeviceBitmapFill doc comment. Same "independent copy of
+    // the active-edge-table scanline loop, never risk the tuned flat-fill
+    // hot path" rationale as fillPolygonGradient()/fillPolygonGroup() above.
+    void fillPolygonBitmap(const std::vector<PointTwips>& devicePoints,
+                            const DeviceBitmapFill& fill) override;
+    void fillPolygonBitmapGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                 const DeviceBitmapFill& fill) override;
+
     int width() const { return width_; }
     int height() const { return height_; }
 
@@ -155,6 +164,13 @@ private:
     // See fillPolygonGradient()'s .cpp comment for the incremental
     // gradient-space stepping this uses.
     void fillSpanGradient(int y, int xStart, int xEnd, const DeviceGradientFill& fill);
+
+    // Bitmap counterpart to fillSpanGradient() — same pre-clamped-bounds
+    // contract and incremental-space-stepping shape, sampling a per-pixel
+    // color from `fill`'s decoded bitmap (nearest-neighbor — see
+    // fillPolygonBitmap()'s .cpp comment for why) instead of a gradient
+    // ramp.
+    void fillSpanBitmap(int y, int xStart, int xEnd, const DeviceBitmapFill& fill);
 
     int width_ = 0;
     int height_ = 0;

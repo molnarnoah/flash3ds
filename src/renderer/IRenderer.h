@@ -45,6 +45,56 @@ struct DeviceGradientFill {
     double a = 1.0, b = 0.0, c = 0.0, d = 1.0, tx = 0.0, ty = 0.0;
 };
 
+// A device-pixel-space-ready bitmap fill (2026-08-31, Priority Fix List
+// item #2 — see renderer/ShapeTessellator.h's BitmapPaint doc comment and
+// swf/DefineBitsTag.h for the full design). Mirrors DeviceGradientFill's
+// own shape closely: everything here is already resolved by the caller
+// (SceneRenderer) so the implementation doesn't need to know about
+// FillStyle/CharacterDictionary at all — an affine transform mapping a
+// DEVICE pixel coordinate back into the bitmap's own PIXEL space (not the
+// "20 twips per source pixel" space BitmapPaint's own matrix uses —
+// SceneRenderer folds that /20 scale into this transform, so the
+// implementation just does `px = a*devX + c*devY + tx` and reads pixel
+// (round(px), round(py)) directly, no further scaling), plus a non-owning
+// pointer to the RAW (NOT ColorTransform-applied — see `colorTransform`
+// below) RGBA8 pixel data owned by the CharacterDictionary's cached
+// BitmapDef (which outlives any single render() call), and its width/
+// height for bounds-checking/wrapping. `repeat` selects whether an
+// out-of-[0,width)x[0,height) sample coordinate wraps
+// (kRepeatingBitmap/kNonSmoothedRepeatingBitmap) or clamps to the nearest
+// edge pixel (k*ClippedBitmap) — never "paints nothing", matching every
+// real player's behavior for a clipped bitmap fill (the *shape*, not the
+// bitmap, is what bounds the visible fill region; a clipped bitmap still
+// covers its whole shape, just by stretching its edge pixels rather than
+// tiling). `smoothed` is currently unused by every IRenderer implementation
+// (see SoftwareRenderer.cpp's fillPolygonBitmap() for why: this renderer
+// has no texture-filtering precedent anywhere else either — flat and
+// gradient fills are already sampled at exact/interpolated-but-not-
+// filtered precision — so bilinear sampling for the "smoothed" variants is
+// left as a documented future refinement rather than implemented without
+// an established convention to match); it's still carried through from
+// BitmapPaint in case a future pass adds it.
+//
+// `colorTransform`, unlike DeviceGradientFill's own ramp (which has
+// ColorTransform baked into all 256 entries up front, a fixed cost), is
+// applied by the implementation PER SAMPLED pixel instead — a source
+// bitmap can have far more distinct colors than a 256-stop ramp (a real
+// photo easily has tens of thousands), so pre-transforming the whole
+// source buffer up front would cost proportional to the BITMAP's size
+// every time it's resolved, where applying it lazily at sample time costs
+// proportional to how many PIXELS actually get PAINTED — the same cost
+// class every other paint kind already pays (one applyColorTransform()
+// call per output pixel, not per source-data byte).
+struct DeviceBitmapFill {
+    const swf::RgbaColor* pixels = nullptr;  // row-major, top-to-bottom, width*height entries, raw
+    int width = 0;
+    int height = 0;
+    bool repeat = true;
+    bool smoothed = true;
+    swf::ColorTransform colorTransform;  // default-constructed == identity; see above
+    double a = 1.0, b = 0.0, c = 0.0, d = 1.0, tx = 0.0, ty = 0.0;
+};
+
 class IRenderer {
 public:
     virtual ~IRenderer() = default;
@@ -108,6 +158,27 @@ public:
     // for the same reason: never risk the tuned flat-fill hot path.
     virtual void fillPolygonGradientGroup(const std::vector<std::vector<PointTwips>>& contours,
                                            const DeviceGradientFill& fill) = 0;
+
+    // Bitmap counterpart to fillPolygon()/fillPolygonGradient() (2026-08-31,
+    // Priority Fix List item #2) — same device pixel-space contract as
+    // fillPolygon(), sampling a per-pixel color from `fill`'s decoded
+    // bitmap instead of a flat color or gradient ramp. See
+    // DeviceBitmapFill's own doc comment above for what the caller has
+    // already resolved. A deliberately separate entry point (not folded
+    // into fillPolygonGradient() as a third paint variant), matching the
+    // existing flat/gradient split and for the same reason: never risk the
+    // tuned flat-fill hot path, and keep each paint kind's implementation
+    // independently reasoned-about.
+    virtual void fillPolygonBitmap(const std::vector<PointTwips>& devicePoints,
+                                    const DeviceBitmapFill& fill) = 0;
+
+    // Bitmap counterpart to fillPolygonGroup()/fillPolygonGradientGroup() —
+    // same combined-contour, combined-even-odd contract as those two, for
+    // a bitmap-filled shape whose fill forms multiple disjoint contours
+    // (e.g. a hole/counter under a bitmap fill instead of a flat/gradient
+    // one).
+    virtual void fillPolygonBitmapGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                         const DeviceBitmapFill& fill) = 0;
 };
 
 }  // namespace flash3ds::renderer

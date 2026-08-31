@@ -204,6 +204,90 @@ void SoftwareRenderer::fillSpanGradient(int y, int xStart, int xEnd, const Devic
     }
 }
 
+namespace {
+
+// Nearest-neighbor sample of `fill`'s decoded bitmap at bitmap-PIXEL-space
+// coordinate (bx, by) — SceneRenderer's resolveBitmapFill() already folds
+// the SWF "20 twips per source pixel" scale into DeviceBitmapFill's own
+// a/b/c/d/tx/ty (see that struct's doc comment), so this function only
+// ever deals in plain pixel indices, not twips.
+//
+// Bitmap fills (2026-08-31, Priority Fix List item #2): nearest-neighbor
+// only, deliberately — this renderer has no texture-filtering precedent
+// anywhere else to extend (fillPolygon()'s flat color and
+// fillPolygonGradient()'s ramp lookup are both already exact/analytic
+// per-pixel evaluations, not sampled-and-filtered from a smaller source),
+// so bilinear sampling for FillStyleType::kRepeatingBitmap/
+// kClippedBitmap's "smoothed" variants (as opposed to the
+// kNonSmoothedRepeatingBitmap/kNonSmoothedClippedBitmap pair) is left as a
+// documented, explicit simplification rather than implemented without an
+// established convention to match — DeviceBitmapFill::smoothed is still
+// threaded all the way through from the SWF fill style for a future pass
+// to pick up.
+swf::RgbaColor sampleBitmap(const DeviceBitmapFill& fill, double bx, double by) {
+    if (!fill.pixels || fill.width <= 0 || fill.height <= 0) return swf::RgbaColor{0, 0, 0, 0};
+
+    int ix = static_cast<int>(std::floor(bx));
+    int iy = static_cast<int>(std::floor(by));
+    if (fill.repeat) {
+        // kRepeatingBitmap/kNonSmoothedRepeatingBitmap: tile — wrap into
+        // [0, width)/[0, height) (C's % can return negative for a negative
+        // dividend, so add width/height back before the second % rather
+        // than assuming a single % suffices).
+        ix = ((ix % fill.width) + fill.width) % fill.width;
+        iy = ((iy % fill.height) + fill.height) % fill.height;
+    } else {
+        // k*ClippedBitmap: clamp to the nearest edge pixel — the SHAPE
+        // still bounds the fill's visible extent (a clipped bitmap fill
+        // doesn't stop covering its shape outside the bitmap's own
+        // bounds, it just stretches the edge pixel there), matching every
+        // real player's behavior.
+        ix = std::max(0, std::min(fill.width - 1, ix));
+        iy = std::max(0, std::min(fill.height - 1, iy));
+    }
+    const swf::RgbaColor& raw =
+        fill.pixels[static_cast<size_t>(iy) * static_cast<size_t>(fill.width) +
+                     static_cast<size_t>(ix)];
+    // Applied per sampled (i.e. actually painted) pixel, not precomputed
+    // into the source buffer — see DeviceBitmapFill::colorTransform's own
+    // doc comment in IRenderer.h for why.
+    return swf::applyColorTransform(raw, fill.colorTransform);
+}
+
+}  // namespace
+
+void SoftwareRenderer::fillSpanBitmap(int y, int xStart, int xEnd, const DeviceBitmapFill& fill) {
+    if (xStart > xEnd) return;  // empty span, same convention as fillSpan()/fillSpanGradient()
+    const size_t rowOffset = static_cast<size_t>(y) * static_cast<size_t>(width_);
+
+    // Same incremental-stepping convention as fillSpanGradient()'s gx, just
+    // in two dimensions (a bitmap fill's sample coordinate genuinely
+    // depends on both device x and y, unlike a linear gradient's 1-D t) —
+    // bx/by evaluated once at the span's first pixel center, then stepped
+    // by fill.a/fill.b each x++ instead of recomputing the full affine
+    // expression from scratch every iteration.
+    double py = y + 0.5;
+    double bx = fill.a * (xStart + 0.5) + fill.c * py + fill.tx;
+    double by = fill.b * (xStart + 0.5) + fill.d * py + fill.ty;
+
+    for (int x = xStart; x <= xEnd; ++x, bx += fill.a, by += fill.b) {
+        swf::RgbaColor color = sampleBitmap(fill, bx, by);
+        if (color.a == 0) continue;  // no-op, same as blendPixel()/fillSpan()/fillSpanGradient()
+        size_t idx = rowOffset + static_cast<size_t>(x);
+        if (color.a == 255) {
+            pixels_[idx] = color;
+            ++opaquePixelWrites_;
+            continue;
+        }
+        swf::RgbaColor& dst = pixels_[idx];
+        dst.r = blendChannel(dst.r, color.r, color.a);
+        dst.g = blendChannel(dst.g, color.g, color.a);
+        dst.b = blendChannel(dst.b, color.b, color.a);
+        dst.a = static_cast<uint8_t>(std::min(255, static_cast<int>(dst.a) + color.a));
+        ++blendedPixelWrites_;
+    }
+}
+
 void SoftwareRenderer::fillPolygon(const std::vector<PointTwips>& devicePoints,
                                     swf::RgbaColor color) {
     if (devicePoints.size() < 3) return;
@@ -460,6 +544,169 @@ void SoftwareRenderer::fillPolygonGradient(const std::vector<PointTwips>& device
             xStart = std::max(xStart, 0);
             xEnd = std::min(xEnd, width_ - 1);
             fillSpanGradient(y, xStart, xEnd, fill);
+        }
+    }
+}
+
+// Bitmap rendering (2026-08-31, Priority Fix List item #2) — see
+// IRenderer.h's DeviceBitmapFill doc comment and this class's header
+// comment for why this is a full, independent copy of fillPolygon()'s
+// active-edge-table scanline loop rather than a shared refactor, same
+// rationale as fillPolygonGradient() above. The only difference from
+// fillPolygon() below is the final call (fillSpanBitmap() instead of
+// fillSpan()) and the roundToInt()-based span bounds (matching
+// fillPolygonGradient()'s convention, not fillPolygon()'s AA-coverage
+// split) — the edge-building/active-list/intersection math is intentionally
+// identical so this produces the same polygon coverage a flat fill of the
+// same shape would.
+void SoftwareRenderer::fillPolygonBitmap(const std::vector<PointTwips>& devicePoints,
+                                          const DeviceBitmapFill& fill) {
+    if (devicePoints.size() < 3) return;
+
+    int minY = static_cast<int>(devicePoints[0].y);
+    int maxY = static_cast<int>(devicePoints[0].y);
+    for (const auto& p : devicePoints) {
+        minY = std::min(minY, static_cast<int>(p.y));
+        maxY = std::max(maxY, static_cast<int>(p.y));
+    }
+    minY = std::max(minY, 0);
+    maxY = std::min(maxY, height_ - 1);
+
+    size_t n = devicePoints.size();
+
+    struct Edge {
+        double ax, ay, bx, by;
+        double yLo, yHi;
+    };
+    std::vector<Edge> edges;
+    edges.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        const PointTwips& a = devicePoints[i];
+        const PointTwips& b = devicePoints[(i + 1) % n];
+        double ay = a.y, by = b.y;
+        if (ay == by) continue;
+        edges.push_back(Edge{static_cast<double>(a.x), ay, static_cast<double>(b.x), by,
+                              std::min(ay, by), std::max(ay, by)});
+    }
+    std::sort(edges.begin(), edges.end(),
+              [](const Edge& l, const Edge& r) { return l.yLo < r.yLo; });
+
+    std::vector<double> intersections;
+    std::vector<const Edge*> active;
+    size_t nextEdge = 0;
+
+    for (int y = minY; y <= maxY; ++y) {
+        double scanY = y + 0.5;
+
+        while (nextEdge < edges.size() && edges[nextEdge].yLo <= scanY) {
+            active.push_back(&edges[nextEdge]);
+            ++nextEdge;
+        }
+        active.erase(std::remove_if(active.begin(), active.end(),
+                                     [scanY](const Edge* e) { return e->yHi <= scanY; }),
+                     active.end());
+
+        intersections.clear();
+        for (const Edge* e : active) {
+            if ((scanY >= e->ay && scanY < e->by) || (scanY >= e->by && scanY < e->ay)) {
+                double t = (scanY - e->ay) / (e->by - e->ay);
+                double x = e->ax + t * (e->bx - e->ax);
+                intersections.push_back(x);
+            }
+        }
+
+        if (intersections.empty()) continue;
+        std::sort(intersections.begin(), intersections.end());
+
+        for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
+            int xStart = roundToInt(intersections[i]);
+            int xEnd = roundToInt(intersections[i + 1]);
+            xStart = std::max(xStart, 0);
+            xEnd = std::min(xEnd, width_ - 1);
+            fillSpanBitmap(y, xStart, xEnd, fill);
+        }
+    }
+}
+
+// Bitmap counterpart to fillPolygonGroup()/fillPolygonGradientGroup() above
+// — same combined-multi-contour edge list, same rationale for staying a
+// separate copy. The only difference from fillPolygonGradientGroup() is
+// the final call (fillSpanBitmap() instead of fillSpanGradient()).
+void SoftwareRenderer::fillPolygonBitmapGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                               const DeviceBitmapFill& fill) {
+    bool haveBounds = false;
+    int minY = 0, maxY = 0;
+    for (const auto& contour : contours) {
+        if (contour.size() < 3) continue;
+        for (const auto& p : contour) {
+            int y = static_cast<int>(p.y);
+            if (!haveBounds) {
+                minY = maxY = y;
+                haveBounds = true;
+            } else {
+                minY = std::min(minY, y);
+                maxY = std::max(maxY, y);
+            }
+        }
+    }
+    if (!haveBounds) return;
+    minY = std::max(minY, 0);
+    maxY = std::min(maxY, height_ - 1);
+
+    struct Edge {
+        double ax, ay, bx, by;
+        double yLo, yHi;
+    };
+    std::vector<Edge> edges;
+    for (const auto& contour : contours) {
+        size_t n = contour.size();
+        if (n < 3) continue;
+        for (size_t i = 0; i < n; ++i) {
+            const PointTwips& a = contour[i];
+            const PointTwips& b = contour[(i + 1) % n];
+            double ay = a.y, by = b.y;
+            if (ay == by) continue;
+            edges.push_back(Edge{static_cast<double>(a.x), ay, static_cast<double>(b.x), by,
+                                  std::min(ay, by), std::max(ay, by)});
+        }
+    }
+    if (edges.empty()) return;
+    std::sort(edges.begin(), edges.end(),
+              [](const Edge& l, const Edge& r) { return l.yLo < r.yLo; });
+
+    std::vector<double> intersections;
+    std::vector<const Edge*> active;
+    size_t nextEdge = 0;
+
+    for (int y = minY; y <= maxY; ++y) {
+        double scanY = y + 0.5;
+
+        while (nextEdge < edges.size() && edges[nextEdge].yLo <= scanY) {
+            active.push_back(&edges[nextEdge]);
+            ++nextEdge;
+        }
+        active.erase(std::remove_if(active.begin(), active.end(),
+                                     [scanY](const Edge* e) { return e->yHi <= scanY; }),
+                     active.end());
+
+        intersections.clear();
+        for (const Edge* e : active) {
+            if ((scanY >= e->ay && scanY < e->by) || (scanY >= e->by && scanY < e->ay)) {
+                double t = (scanY - e->ay) / (e->by - e->ay);
+                double x = e->ax + t * (e->bx - e->ax);
+                intersections.push_back(x);
+            }
+        }
+
+        if (intersections.empty()) continue;
+        std::sort(intersections.begin(), intersections.end());
+
+        for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
+            int xStart = roundToInt(intersections[i]);
+            int xEnd = roundToInt(intersections[i + 1]);
+            xStart = std::max(xStart, 0);
+            xEnd = std::min(xEnd, width_ - 1);
+            fillSpanBitmap(y, xStart, xEnd, fill);
         }
     }
 }
