@@ -140,6 +140,87 @@ void fillTessellatedPolygon(const TessellatedPolygon& poly, const swf::Matrix& w
     target.fillPolygon(devicePoints, swf::applyColorTransform(poly.color, worldColorTransform));
 }
 
+// Hole/counter rendering (2026-08-31, Priority Fix List item #1 — see
+// ShapeTessellator.h's TessellatedPolygon::fillGroupId doc comment and
+// IRenderer.h's fillPolygonGroup() doc comment for the full design).
+// Shared by every call site that used to loop over `tess.polygons` calling
+// fillTessellatedPolygon() once per contour independently
+// (renderShapeCharacter/renderMorphShapeCharacter/renderGlyph): groups
+// `polygons` by fillGroupId (same group id => different contours of the
+// SAME original fill style, e.g. an outer boundary and an inner counter)
+// and paints each group with exactly ONE call — fillTessellatedPolygon()
+// unchanged for a lone-contour group (the overwhelming common case, so
+// this reduces to the exact prior behavior/cost for it), or a combined
+// even-odd fillPolygonGroup()/fillPolygonGradientGroup() call for a real
+// multi-contour group.
+//
+// IMPORTANT (2026-08-31, real-corpus regression found + fixed against
+// hobo.swf's characterId=89 "mute button" icon — see git history/commit
+// message for the full before/after evidence): a group is combined ONLY
+// when its same-fillGroupId members are CONTIGUOUS in `polygons` — i.e.
+// no polygon of a DIFFERENT fillGroupId sits between them in the
+// tessellator's authored-order emission. An earlier version of this
+// function scanned the ENTIRE remaining list for same-fillGroupId matches
+// regardless of what sat between them, which silently reordered painter's-
+// algorithm z-order whenever a same-style contour was meant to be
+// repainted LATER, on top of intervening differently-styled contours,
+// rather than combined as a true nested hole of an EARLIER same-style
+// contour. Concretely: character 89 emits polygons in the order
+// {white outer circle, black detail x3, white highlight, black detail} —
+// the two white contours share a fillGroupId but are NOT a boundary+hole
+// pair; the second white contour is a deliberate overpaint that must stay
+// AFTER the three black contours, not get pulled forward and combined
+// with the first white contour (which produced a spurious even-odd hole
+// and, more importantly, lost the "repaint white on top of black" step
+// entirely). Restricting combination to contiguous runs preserves that
+// z-order exactly — non-contiguous same-fillGroupId contours simply paint
+// independently, in their own original position, same as before this
+// whole fillGroupId mechanism existed. Genuine boundary+hole pairs (the
+// actual target of this fix, e.g. a glyph's outer contour immediately
+// followed by its counter contour, or vice versa) are still combined
+// correctly, since nothing of a different fill style is ever tessellated
+// between two contours of the very same fill run in that case.
+void fillTessellatedPolygons(const std::vector<TessellatedPolygon>& polygons,
+                              const swf::Matrix& worldMatrix,
+                              const swf::ColorTransform& worldColorTransform, IRenderer& target,
+                              double pixelsPerTwipX, double pixelsPerTwipY) {
+    for (size_t i = 0; i < polygons.size();) {
+        const TessellatedPolygon& first = polygons[i];
+
+        size_t end = i + 1;
+        while (end < polygons.size() && polygons[end].fillGroupId == first.fillGroupId) {
+            ++end;
+        }
+        size_t count = end - i;
+
+        if (count == 1) {
+            fillTessellatedPolygon(first, worldMatrix, worldColorTransform, target,
+                                    pixelsPerTwipX, pixelsPerTwipY);
+            i = end;
+            continue;
+        }
+
+        std::vector<std::vector<PointTwips>> contours;
+        contours.reserve(count);
+        for (size_t m = i; m < end; ++m) {
+            contours.push_back(toDevicePolyline(polygons[m].points, worldMatrix, pixelsPerTwipX,
+                                                 pixelsPerTwipY));
+        }
+        if (first.paintKind == PaintKind::kLinearGradient) {
+            DeviceGradientFill fill;
+            if (resolveGradientFill(first.gradient, worldMatrix, worldColorTransform,
+                                     pixelsPerTwipX, pixelsPerTwipY, fill)) {
+                target.fillPolygonGradientGroup(contours, fill);
+                i = end;
+                continue;
+            }
+        }
+        target.fillPolygonGroup(contours,
+                                 swf::applyColorTransform(first.color, worldColorTransform));
+        i = end;
+    }
+}
+
 }  // namespace
 
 SceneRenderer::SceneRenderer(const runtime::Movie& movie,
@@ -275,10 +356,8 @@ void SceneRenderer::renderShapeCharacter(const swf::ShapeDef& shapeDef,
     }
     const TessellatedShape& tess = it->second;
 
-    for (const auto& poly : tess.polygons) {
-        fillTessellatedPolygon(poly, worldMatrix, worldColorTransform, target, pixelsPerTwipX,
-                                pixelsPerTwipY);
-    }
+    fillTessellatedPolygons(tess.polygons, worldMatrix, worldColorTransform, target,
+                             pixelsPerTwipX, pixelsPerTwipY);
     for (const auto& stroke : tess.strokes) {
         auto devicePoints =
             toDevicePolyline(stroke.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
@@ -333,10 +412,8 @@ void SceneRenderer::renderMorphShapeCharacter(const swf::MorphShapeDef& morphDef
 
     TessellatedShape tess = tessellateShape(shape);
 
-    for (const auto& poly : tess.polygons) {
-        fillTessellatedPolygon(poly, worldMatrix, worldColorTransform, target, pixelsPerTwipX,
-                                pixelsPerTwipY);
-    }
+    fillTessellatedPolygons(tess.polygons, worldMatrix, worldColorTransform, target,
+                             pixelsPerTwipX, pixelsPerTwipY);
     for (const auto& stroke : tess.strokes) {
         auto devicePoints =
             toDevicePolyline(stroke.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
@@ -422,10 +499,18 @@ void SceneRenderer::renderGlyph(const swf::Shape& glyphShape, const swf::RgbaCol
             p.x += offsetXTwips;
             p.y += offsetYTwips;
         }
-        auto devicePoints =
-            toDevicePolyline(poly.points, worldMatrix, pixelsPerTwipX, pixelsPerTwipY);
-        target.fillPolygon(devicePoints, swf::applyColorTransform(poly.color, worldColorTransform));
     }
+    // A glyph synthesizes exactly ONE FillStyle (fs above), so every
+    // polygon tessellateShape() emits here shares the same fillGroupId by
+    // construction — meaning any letterform with a counter (O, A, B, D, P,
+    // Q, R, ...) naturally becomes a single multi-contour group. Routing
+    // through the shared helper (instead of the old per-polygon
+    // fillPolygon() loop) is what actually closes Priority Fix List item
+    // #1 for glyph rendering specifically: the outer boundary and inner
+    // counter contours are now combined-filled with one even-odd pass
+    // instead of each being painted as its own solid patch.
+    fillTessellatedPolygons(tess.polygons, worldMatrix, worldColorTransform, target,
+                             pixelsPerTwipX, pixelsPerTwipY);
     // Glyph shapes never carry line styles (scaled.lineStyles is always
     // empty), so tess.strokes is always empty here too — nothing to draw.
 }

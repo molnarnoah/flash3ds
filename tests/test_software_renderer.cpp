@@ -430,3 +430,76 @@ TEST_CASE(SoftwareRenderer_WritePpm_ProducesValidP6Header) {
     CHECK_EQ(maxVal, 255);
     std::fclose(f);
 }
+
+// Hole/counter rendering (2026-08-31, Priority Fix List item #1) — see
+// IRenderer.h's fillPolygonGroup() doc comment and
+// ShapeTessellator.h's TessellatedPolygon::fillGroupId doc comment for the
+// full design. This is the pixel-level proof that combining two contours
+// into one fillPolygonGroup() call produces a genuine even-odd hole,
+// distinct from what calling fillPolygon() on each independently would do.
+TEST_CASE(SoftwareRenderer_FillPolygonGroup_TwoNestedContours_InnerBecomesHole) {
+    SoftwareRenderer renderer(20, 20);
+    renderer.beginFrame(RgbaColor{255, 255, 255, 255});  // white background
+
+    // Outer 16x16 square (2,2)-(18,18); inner 6x6 square (8,8)-(14,14) —
+    // both wound the same way (clockwise), matching how a real font's
+    // outer boundary and inner counter are typically authored. Even-odd
+    // fill doesn't require opposite winding to work (unlike nonzero
+    // winding) — that's part of what makes it the right rule here, since
+    // this project's tessellator makes no attempt to normalize winding
+    // direction across separately-authored contours.
+    std::vector<PointTwips> outer = {{2, 2}, {18, 2}, {18, 18}, {2, 18}};
+    std::vector<PointTwips> inner = {{8, 8}, {14, 8}, {14, 14}, {8, 14}};
+
+    renderer.fillPolygonGroup({outer, inner}, RgbaColor{0, 128, 0, 255});  // green
+
+    // Between the outer and inner boundary: covered by exactly ONE contour
+    // (odd) -> filled green.
+    auto ring = renderer.pixelAt(5, 5);
+    CHECK_EQ(ring.r, 0);
+    CHECK_EQ(ring.g, 128);
+    CHECK_EQ(ring.b, 0);
+
+    // Dead center, inside BOTH the outer and inner contour: covered by an
+    // EVEN number of contours (two) -> even-odd rule says "outside" -> left
+    // as background white, i.e. a real hole. This is exactly the pixel
+    // that would be wrongly green if the two contours had instead been
+    // painted with two independent fillPolygon() calls (the pre-fix bug).
+    auto center = renderer.pixelAt(10, 10);
+    CHECK_EQ(center.r, 255);
+    CHECK_EQ(center.g, 255);
+    CHECK_EQ(center.b, 255);
+
+    // Fully outside both contours: untouched background.
+    auto outside = renderer.pixelAt(0, 0);
+    CHECK_EQ(outside.r, 255);
+    CHECK_EQ(outside.g, 255);
+    CHECK_EQ(outside.b, 255);
+}
+
+TEST_CASE(SoftwareRenderer_FillPolygonGroup_SingleContour_MatchesPlainFillPolygon) {
+    // The single-contour case must behave identically to fillPolygon() —
+    // SceneRenderer's grouping helper only ever calls fillPolygonGroup()
+    // for a REAL multi-contour group and keeps calling plain fillPolygon()
+    // otherwise, but fillPolygonGroup() itself should still be correct if
+    // handed just one contour (e.g. from a future direct caller), not rely
+    // on always being called with 2+.
+    SoftwareRenderer a(20, 20), b(20, 20);
+    a.beginFrame(RgbaColor{255, 255, 255, 255});
+    b.beginFrame(RgbaColor{255, 255, 255, 255});
+
+    std::vector<PointTwips> square = {{2, 2}, {12, 2}, {12, 12}, {2, 12}};
+    a.fillPolygon(square, RgbaColor{255, 0, 0, 255});
+    b.fillPolygonGroup({square}, RgbaColor{255, 0, 0, 255});
+
+    for (int y = 0; y < 20; ++y) {
+        for (int x = 0; x < 20; ++x) {
+            auto pa = a.pixelAt(x, y);
+            auto pb = b.pixelAt(x, y);
+            CHECK_EQ(pa.r, pb.r);
+            CHECK_EQ(pa.g, pb.g);
+            CHECK_EQ(pa.b, pb.b);
+            CHECK_EQ(pa.a, pb.a);
+        }
+    }
+}

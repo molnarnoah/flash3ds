@@ -62,18 +62,47 @@
 //   cutout intact); "Armor Games" and the HOBO/CONTROLS title art all
 //   render correctly in the same frame.
 //
-//   Still NOT handled, unchanged from before this fix: when a single
-//   FillStyle's edges form MULTIPLE disjoint contours where one is
-//   genuinely meant to be a hole in another (e.g. the letter "O" — an
-//   outer boundary loop and an inner counter loop, both authored under the
-//   same fill index), each contour still becomes its own independently-
-//   filled solid polygon rather than a true even-odd cutout — so a hole
-//   renders as another solid patch of the same color instead of
-//   transparent. Closing that gap for real needs a multi-contour-aware
-//   (even-odd or nonzero winding) fill rule in SoftwareRenderer, plus a
-//   reliable way to tell "hole" and "separate region" contours apart that
-//   doesn't just use winding sign — see docs/renderer.md's own note on
-//   this narrower remaining case.
+//   Hole/counter rendering (2026-08-31, Priority Fix List item #1): the
+//   narrower remaining gap described in the paragraph above — a single
+//   FillStyle's edges forming multiple disjoint contours where one is
+//   genuinely a hole in another (e.g. the letter "O") — is now handled,
+//   WITHOUT reintroducing either rejected design's failure mode. The key
+//   realization: this run-scoped tessellator already never welds edges
+//   across a MoveTo boundary (that's exactly why it sidesteps the mute-
+//   icon/"Armor Games" regressions above), so every contour it emits is
+//   already a correct, independently-closed polygon — the only thing
+//   missing was a way to tell the RENDERER that two or more of those
+//   already-correct contours belong to the same original fill style and
+//   must be filled TOGETHER with one combined even-odd rule, rather than
+//   each being painted as its own fully-opaque solid region. `fillGroupId`
+//   below is exactly that: every TessellatedPolygon carries the identity
+//   of the resolved swf::FillStyle it came from (assigned in first-seen
+//   order per tessellateShape() call — see the .cpp), so the caller
+//   (SceneRenderer) can group same-style contours and hand them to
+//   IRenderer::fillPolygonGroup()/fillPolygonGradientGroup() for a
+//   combined fill instead of independent per-contour fillPolygon() calls.
+//   No edge welding, endpoint matching, or winding-sign filtering is
+//   involved — the fix is purely "which already-correct contours get
+//   painted in one call vs. separately", so it carries none of the risk
+//   that sank the two rejected designs above.
+//
+//   One real regression WAS found and fixed during this same 2026-08-31
+//   change, worth recording here since it's a subtlety of exactly this
+//   fillGroupId field, not of the tessellator's own contour extraction:
+//   `fillGroupId` only says "these contours share a resolved FillStyle",
+//   NOT "these contours are a boundary+hole pair meant to be combined".
+//   Real content (hobo.swf characterId=89, the same mute-button icon
+//   already called out above) emits two same-fillGroupId white contours
+//   with three differently-styled black contours authored BETWEEN them —
+//   the second white contour is a deliberate painter's-algorithm overpaint
+//   (repaint white on top of the black detail), not a hole in the first
+//   one. SceneRenderer.cpp's fillTessellatedPolygons() therefore only
+//   combines same-fillGroupId contours when they're CONTIGUOUS in
+//   `polygons` (nothing of a different fillGroupId between them) — see
+//   that function's own doc comment for the full writeup. A genuine
+//   boundary+hole pair (this field's actual target) is unaffected, since
+//   nothing of a different fill style is ever tessellated between two
+//   contours of the very same fill run in that case.
 //
 // Gradient and bitmap fills are reduced to a single representative flat
 // color (see FillStyle::toFlatColor below) — proper gradient/bitmap
@@ -124,6 +153,20 @@ struct TessellatedPolygon {
     PaintKind paintKind = PaintKind::kFlat;
     GradientPaint gradient;  // valid iff paintKind == kLinearGradient
     std::vector<PointTwips> points;  // closed polygon; edge back to points[0] is implicit
+
+    // Identifies which resolved swf::FillStyle this contour came from,
+    // assigned in first-seen order within one tessellateShape() call (see
+    // the .cpp) — NOT a global/stable id across different shapes or calls.
+    // Two polygons from the same tessellateShape() call with the same
+    // fillGroupId are different contours of the SAME original fill region
+    // (e.g. an outer boundary and an inner counter/hole) and must be
+    // combined-filled together via IRenderer::fillPolygonGroup()/
+    // fillPolygonGradientGroup() rather than painted independently — see
+    // this file's header comment ("Hole/counter rendering") for why. -1
+    // never occurs in practice (every flushed polygon has a resolved style
+    // by construction) — it exists only as an explicit "not assigned"
+    // sentinel for defensive/default-constructed instances.
+    int fillGroupId = -1;
 };
 
 struct TessellatedStroke {

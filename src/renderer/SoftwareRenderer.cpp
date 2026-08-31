@@ -464,6 +464,219 @@ void SoftwareRenderer::fillPolygonGradient(const std::vector<PointTwips>& device
     }
 }
 
+// Hole/counter rendering (2026-08-31, Priority Fix List item #1) — see
+// IRenderer.h's fillPolygonGroup() doc comment and ShapeTessellator.h's
+// TessellatedPolygon::fillGroupId doc comment for the full design. Same
+// active-edge-table algorithm as fillPolygon() above, generalized to build
+// its edge list from MULTIPLE closed contours instead of one: every
+// contour contributes its own closed-loop edges (vertex i -> vertex
+// (i+1)%n, including the implicit closing edge back to point 0) into ONE
+// combined, y-sorted edge list, and everything after that — the active-
+// edge sweep, per-scanline intersection test, sort, and even-odd pairwise
+// span fill (including the same coverage-based anti-aliasing) — is
+// IDENTICAL to fillPolygon()'s own loop, copied verbatim. This is what
+// makes it correct with no further changes: even-odd fill already means
+// "a point is inside iff it's covered by an ODD number of contour
+// crossings on its scanline", which is exactly the rule that turns a
+// second, disjoint contour sharing one fill style (e.g. the letter O's
+// inner counter) into a hole instead of another solid patch, PROVIDED its
+// edges are tested together with the outer contour's on the same scanline
+// sweep — which combining them into one edge list before sorting achieves
+// directly, with no edge welding or endpoint matching involved.
+void SoftwareRenderer::fillPolygonGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                         swf::RgbaColor color) {
+    bool haveBounds = false;
+    int minY = 0, maxY = 0;
+    for (const auto& contour : contours) {
+        if (contour.size() < 3) continue;
+        for (const auto& p : contour) {
+            int y = static_cast<int>(p.y);
+            if (!haveBounds) {
+                minY = maxY = y;
+                haveBounds = true;
+            } else {
+                minY = std::min(minY, y);
+                maxY = std::max(maxY, y);
+            }
+        }
+    }
+    if (!haveBounds) return;
+    minY = std::max(minY, 0);
+    maxY = std::min(maxY, height_ - 1);
+
+    struct Edge {
+        double ax, ay, bx, by;
+        double yLo, yHi;
+    };
+    std::vector<Edge> edges;
+    for (const auto& contour : contours) {
+        size_t n = contour.size();
+        if (n < 3) continue;
+        for (size_t i = 0; i < n; ++i) {
+            const PointTwips& a = contour[i];
+            const PointTwips& b = contour[(i + 1) % n];
+            double ay = a.y, by = b.y;
+            if (ay == by) continue;
+            edges.push_back(Edge{static_cast<double>(a.x), ay, static_cast<double>(b.x), by,
+                                  std::min(ay, by), std::max(ay, by)});
+        }
+    }
+    if (edges.empty()) return;
+    std::sort(edges.begin(), edges.end(),
+              [](const Edge& l, const Edge& r) { return l.yLo < r.yLo; });
+
+    std::vector<double> intersections;
+    std::vector<const Edge*> active;
+    size_t nextEdge = 0;
+
+    for (int y = minY; y <= maxY; ++y) {
+        double scanY = y + 0.5;
+
+        while (nextEdge < edges.size() && edges[nextEdge].yLo <= scanY) {
+            active.push_back(&edges[nextEdge]);
+            ++nextEdge;
+        }
+        active.erase(std::remove_if(active.begin(), active.end(),
+                                     [scanY](const Edge* e) { return e->yHi <= scanY; }),
+                     active.end());
+
+        intersections.clear();
+        for (const Edge* e : active) {
+            if ((scanY >= e->ay && scanY < e->by) || (scanY >= e->by && scanY < e->ay)) {
+                double t = (scanY - e->ay) / (e->by - e->ay);
+                double x = e->ax + t * (e->bx - e->ax);
+                intersections.push_back(x);
+            }
+        }
+
+        if (intersections.empty()) continue;
+        std::sort(intersections.begin(), intersections.end());
+
+        // Same even-odd pairwise span fill + edge-coverage AA as
+        // fillPolygon() — see that function's own comment for the full
+        // rationale; copied verbatim so this combined-contour path renders
+        // identically (same AA behavior) to the single-contour path.
+        for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
+            double xLeft = intersections[i];
+            double xRight = intersections[i + 1];
+            if (xRight <= xLeft) continue;
+
+            int leftPixel = static_cast<int>(std::floor(xLeft));
+            int rightPixel = static_cast<int>(std::ceil(xRight)) - 1;
+
+            if (rightPixel <= leftPixel) {
+                double coverage = xRight - xLeft;
+                if (leftPixel >= 0 && leftPixel < width_) {
+                    blendPixelCoverage(leftPixel, y, color, coverage);
+                }
+                continue;
+            }
+
+            double leftCoverage = (leftPixel + 1) - xLeft;
+            if (leftPixel >= 0 && leftPixel < width_) {
+                blendPixelCoverage(leftPixel, y, color, leftCoverage);
+            }
+
+            double rightCoverage = xRight - rightPixel;
+            if (rightPixel >= 0 && rightPixel < width_) {
+                blendPixelCoverage(rightPixel, y, color, rightCoverage);
+            }
+
+            int interiorStart = std::max(leftPixel + 1, 0);
+            int interiorEnd = std::min(rightPixel - 1, width_ - 1);
+            if (interiorStart <= interiorEnd) {
+                fillSpan(y, interiorStart, interiorEnd, color);
+            }
+        }
+    }
+}
+
+// Gradient counterpart to fillPolygonGroup() above — same combined-
+// multi-contour edge list, same rationale for staying a separate copy
+// as fillPolygonGradient() vs. fillPolygon(). The only difference from
+// fillPolygonGroup() is the final call (fillSpanGradient() instead of
+// fillSpan(), and roundToInt()-based span bounds instead of the AA
+// coverage split — matching fillPolygonGradient()'s own, not
+// fillPolygon()'s, span-fill convention).
+void SoftwareRenderer::fillPolygonGradientGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                                 const DeviceGradientFill& fill) {
+    bool haveBounds = false;
+    int minY = 0, maxY = 0;
+    for (const auto& contour : contours) {
+        if (contour.size() < 3) continue;
+        for (const auto& p : contour) {
+            int y = static_cast<int>(p.y);
+            if (!haveBounds) {
+                minY = maxY = y;
+                haveBounds = true;
+            } else {
+                minY = std::min(minY, y);
+                maxY = std::max(maxY, y);
+            }
+        }
+    }
+    if (!haveBounds) return;
+    minY = std::max(minY, 0);
+    maxY = std::min(maxY, height_ - 1);
+
+    struct Edge {
+        double ax, ay, bx, by;
+        double yLo, yHi;
+    };
+    std::vector<Edge> edges;
+    for (const auto& contour : contours) {
+        size_t n = contour.size();
+        if (n < 3) continue;
+        for (size_t i = 0; i < n; ++i) {
+            const PointTwips& a = contour[i];
+            const PointTwips& b = contour[(i + 1) % n];
+            double ay = a.y, by = b.y;
+            if (ay == by) continue;
+            edges.push_back(Edge{static_cast<double>(a.x), ay, static_cast<double>(b.x), by,
+                                  std::min(ay, by), std::max(ay, by)});
+        }
+    }
+    if (edges.empty()) return;
+    std::sort(edges.begin(), edges.end(),
+              [](const Edge& l, const Edge& r) { return l.yLo < r.yLo; });
+
+    std::vector<double> intersections;
+    std::vector<const Edge*> active;
+    size_t nextEdge = 0;
+
+    for (int y = minY; y <= maxY; ++y) {
+        double scanY = y + 0.5;
+
+        while (nextEdge < edges.size() && edges[nextEdge].yLo <= scanY) {
+            active.push_back(&edges[nextEdge]);
+            ++nextEdge;
+        }
+        active.erase(std::remove_if(active.begin(), active.end(),
+                                     [scanY](const Edge* e) { return e->yHi <= scanY; }),
+                     active.end());
+
+        intersections.clear();
+        for (const Edge* e : active) {
+            if ((scanY >= e->ay && scanY < e->by) || (scanY >= e->by && scanY < e->ay)) {
+                double t = (scanY - e->ay) / (e->by - e->ay);
+                double x = e->ax + t * (e->bx - e->ax);
+                intersections.push_back(x);
+            }
+        }
+
+        if (intersections.empty()) continue;
+        std::sort(intersections.begin(), intersections.end());
+
+        for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
+            int xStart = roundToInt(intersections[i]);
+            int xEnd = roundToInt(intersections[i + 1]);
+            xStart = std::max(xStart, 0);
+            xEnd = std::min(xEnd, width_ - 1);
+            fillSpanGradient(y, xStart, xEnd, fill);
+        }
+    }
+}
+
 void SoftwareRenderer::strokePolyline(const std::vector<PointTwips>& devicePoints,
                                        swf::RgbaColor color, int widthPixels) {
     if (devicePoints.size() < 2) return;

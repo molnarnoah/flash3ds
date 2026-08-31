@@ -81,6 +81,33 @@ public:
     // approximate width (in device pixels).
     virtual void strokePolyline(const std::vector<PointTwips>& devicePoints,
                                  swf::RgbaColor color, int widthPixels) = 0;
+
+    // Combined even-odd fill across MULTIPLE closed contours that share one
+    // logical fill region (2026-08-31, Priority Fix List item #1 — hole/
+    // counter rendering; see ShapeTessellator.h's TessellatedPolygon::
+    // fillGroupId doc comment and docs/renderer.md for the full writeup).
+    // SWF shapes can describe a single fill style as several disjoint
+    // MoveTo-bounded pen runs within one shape (e.g. the letter "O": an
+    // outer boundary contour plus an inner counter contour, both under the
+    // same FillStyle) — filling each contour independently and fully (what
+    // repeated fillPolygon() calls would do) renders the counter as another
+    // solid patch instead of a transparent cutout. This entry point fills
+    // every contour's edges TOGETHER in one combined even-odd scanline
+    // pass, so a point covered by an odd number of contours is filled and a
+    // point covered by an even number (e.g. inside both the outer boundary
+    // and the inner counter) is left as background — producing the correct
+    // hole. Every `contours` entry is itself in the same device pixel-space
+    // as fillPolygon()'s `devicePoints`.
+    virtual void fillPolygonGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                   swf::RgbaColor color) = 0;
+
+    // Gradient counterpart to fillPolygonGroup() — same combined-even-odd
+    // contract, sampling per-pixel from `fill` instead of a flat color. A
+    // deliberately separate entry point (not a `color OR gradient` variant),
+    // matching the existing fillPolygon()/fillPolygonGradient() split and
+    // for the same reason: never risk the tuned flat-fill hot path.
+    virtual void fillPolygonGradientGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                           const DeviceGradientFill& fill) = 0;
 };
 
 }  // namespace flash3ds::renderer

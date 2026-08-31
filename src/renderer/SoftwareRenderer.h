@@ -39,6 +39,22 @@ public:
     void strokePolyline(const std::vector<PointTwips>& devicePoints, swf::RgbaColor color,
                          int widthPixels) override;
 
+    // Hole/counter rendering (2026-08-31) — see IRenderer.h's doc comment.
+    // Deliberately independent implementations (same rationale as
+    // fillPolygon() vs. fillPolygonGradient() above: never risk the tuned
+    // hot path), built from the exact same active-edge-table scanline
+    // algorithm as fillPolygon()/fillPolygonGradient() — the only
+    // difference is the edge list is built from EVERY contour in
+    // `contours` combined into one list before the scanline sweep, instead
+    // of from a single polygon's points. That's sufficient on its own to
+    // get correct even-odd multi-contour (hole) semantics: the sweep/
+    // intersection/pairwise-span-fill logic doesn't know or care how many
+    // separate contours its edges came from.
+    void fillPolygonGroup(const std::vector<std::vector<PointTwips>>& contours,
+                           swf::RgbaColor color) override;
+    void fillPolygonGradientGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                   const DeviceGradientFill& fill) override;
+
     int width() const { return width_; }
     int height() const { return height_; }
 

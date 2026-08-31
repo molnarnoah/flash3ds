@@ -179,18 +179,74 @@ previously missing or muddy, and the mute-icon crop shows the correct
 white circle with its black speaker cutout intact — neither of the two
 rejected iterations' regressions reappear.
 
-**Still open** (unchanged from before this fix, and NOT what this fix
-addresses): a single fill style whose edges form multiple disjoint
+**Was open, now closed** — see "Hole/counter rendering" below
+(2026-08-31): a single fill style whose edges form multiple disjoint
 contours where one is genuinely meant to be a hole in the other (the
-letter "O" case) still renders as two solid same-color patches rather
-than a true even-odd cutout. Closing that gap needs a real multi-contour-
-aware (even-odd or nonzero-winding) fill rule in `SoftwareRenderer` — it
-currently only supports filling a single simple contour — plus a reliable
-way to tell "hole" and "separate same-style region" contours apart that
-isn't winding sign (rejected iteration 2 above is exactly why: winding
-sign alone can't distinguish them). No unit test or real corpus content
-examined so far exercises this narrower case badly enough to prioritize
-it yet.
+letter "O" case) used to render as two solid same-color patches rather
+than a true even-odd cutout. This no longer happens.
+
+### Hole/counter rendering (2026-08-31, Priority Fix List item #1)
+
+Closes the gap left open above. `ShapeTessellator` now assigns every
+`TessellatedPolygon` a `fillGroupId` — the identity of the resolved
+`swf::FillStyle` it came from, in first-seen order per `tessellateShape()`
+call (see `ShapeTessellator.h`'s own "Hole/counter rendering" comment for
+the full field-level writeup). `IRenderer` gained `fillPolygonGroup()`/
+`fillPolygonGradientGroup()`, which fill several closed contours together
+in ONE combined even-odd scanline pass (reusing `SoftwareRenderer`'s
+existing AET sweep unchanged, just built from multiple contours' edges
+instead of one) — a point covered by an odd number of the group's
+contours is filled, an even number (inside both an outer boundary and an
+inner counter) is left as background, producing a real cutout.
+`SceneRenderer.cpp`'s new `fillTessellatedPolygons()` groups a shape's
+polygons by `fillGroupId` and issues one combined call per group instead
+of one `fillPolygon()` call per contour.
+
+This deliberately requires no edge welding, endpoint matching, or
+winding-sign filtering — the two properties that sank the two rejected
+run-scoped-predecessor designs above — because it never changes what a
+contour IS, only which already-correct contours get painted together
+vs. independently.
+
+**A real regression was found and fixed during this same change**,
+against the same characterId=89 mute-button icon called out in both
+rejected designs above — worth recording since it's a genuinely different
+failure mode from either of those. The icon emits polygons in the order
+{white outer circle, black detail x3, white highlight, black detail x1};
+the two white contours share a `fillGroupId` (same `FillStyle`) but are
+NOT a boundary+hole pair — the second white contour is a deliberate
+painter's-algorithm overpaint, meant to be drawn AFTER the three black
+contours to restore a white highlight on top of them. An initial version
+of `fillTessellatedPolygons()` scanned the *entire* remaining polygon list
+for same-`fillGroupId` matches regardless of what sat between them,
+pulling that second white contour forward and combining it with the
+first — which both discarded the "repaint on top of black" step entirely
+(rendering a plain solid white circle, confirmed via a real hobo.swf
+render) and applied a spurious even-odd hole-punch between two contours
+that were never meant to be combined. The fix: only combine same-
+`fillGroupId` contours when they're **contiguous** in the polygon list —
+i.e. no differently-styled contour sits between them in the tessellator's
+authored-order emission. A genuine boundary+hole pair (the actual target
+of this whole fix) is unaffected, since nothing of a different fill style
+is ever tessellated between two contours of the very same fill run in
+that case; only spurious combinations across an intervening different-
+style overpaint are prevented.
+
+**Verification.** All 434 unit tests pass (431 pre-existing + 3 new:
+`fillGroupId` assertions in `test_shape_tessellator.cpp`,
+`SoftwareRenderer_FillPolygonGroup_TwoNestedContours_InnerBecomesHole`
+and `SoftwareRenderer_FillPolygonGroup_SingleContour_MatchesPlainFillPolygon`
+in `test_software_renderer.cpp`). Rendered hobo.swf frame 1 before and
+after (via `git stash` on just the affected files) and compared crops
+directly: the character-portrait panel AND the CONTROLS keybox panel now
+render as proper hollow-bordered frames instead of solid filled
+rectangles, the "A"/"S" control-key letters now show their counters
+correctly, the mute-button icon renders pixel-identical to its original
+(already-correct) appearance, and the HOBO logo/CONTROLS text/"Armor
+Games" caption — the previously-fragile regions from the two rejected
+designs above — are unchanged. No other differences were found within the
+full before/after diff bounding box (20,452 pixels, x:[176,422],
+y:[107,378]).
 
 ### Gradient rendering (2026-08-28)
 

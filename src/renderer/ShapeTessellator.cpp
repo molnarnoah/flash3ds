@@ -208,10 +208,31 @@ TessellatedShape tessellateShape(const swf::Shape& shape, int curveSubdivisions)
     std::vector<PointTwips> fillSubpath;
     const swf::FillStyle* fillSubpathStyle = nullptr;
 
+    // Hole/counter rendering (2026-08-31) — see this file's header comment.
+    // Assigns a stable-within-this-call integer id to each distinct
+    // resolved FillStyle pointer, in first-seen order, so the caller can
+    // later tell which of this shape's emitted polygons are different
+    // contours of the SAME original fill region (same pointer => same
+    // style slot in `activeFillStyles`/`sc.newFillStyles` at the time it
+    // was resolved) versus genuinely different fill styles. A linear scan
+    // is deliberately fine here: a shape's distinct fill style count is
+    // always small (single digits to low tens even for complex real
+    // content), so this never approaches being a real cost next to the
+    // rest of tessellation.
+    std::vector<const swf::FillStyle*> fillGroupOrder;
+    auto fillGroupIdFor = [&](const swf::FillStyle* style) -> int {
+        for (size_t i = 0; i < fillGroupOrder.size(); ++i) {
+            if (fillGroupOrder[i] == style) return static_cast<int>(i);
+        }
+        fillGroupOrder.push_back(style);
+        return static_cast<int>(fillGroupOrder.size() - 1);
+    };
+
     auto flushFill = [&]() {
         if (fillSubpath.size() >= 3 && fillSubpathStyle) {
             TessellatedPolygon poly;
             poly.color = toFlatColor(*fillSubpathStyle);
+            poly.fillGroupId = fillGroupIdFor(fillSubpathStyle);
             poly.points = fillSubpath;
             // Real gradient rendering, scoped to kLinearGradient only —
             // see this file's header comment and IRenderer.h's

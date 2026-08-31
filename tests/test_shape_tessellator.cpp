@@ -361,6 +361,85 @@ TEST_CASE(TessellateShape_TwoAdjacentSquaresNoMoveToBetween_ProducesTwoSeparateP
     }
     CHECK(sawRed);
     CHECK(sawBlue);
+    // The two squares use DIFFERENT fill styles (A vs. B) — Priority Fix
+    // List item #1's grouping must keep them as separate fillGroupIds, not
+    // combine them into one even-odd group (that would be wrong: they're
+    // unrelated adjacent regions, not an outer/hole pair of the same
+    // style).
+    CHECK(tess.polygons[0].fillGroupId != tess.polygons[1].fillGroupId);
+}
+
+TEST_CASE(TessellateShape_HoleLikeContourSameFillStyleTwoMoveToRuns_ShareFillGroupId) {
+    // Priority Fix List item #1 (2026-08-31) — hole/counter rendering. This
+    // builds the letter-"O"-shaped case the tessellator's own header
+    // comment describes: an outer boundary contour and a separate,
+    // disjoint inner contour, BOTH authored under the SAME fill style
+    // (unlike the adjacent-squares test above, which deliberately uses two
+    // DIFFERENT styles). Real font glyph data authors exactly this pattern
+    // (see SceneRenderer::renderGlyph, which synthesizes a single-entry
+    // FillStyle array for every glyph — so any letterform with a counter
+    // naturally produces this shape). The fix is entirely about what the
+    // TESSELLATOR reports (same fillGroupId for both contours, so the
+    // renderer can combine-fill them) — the actual even-odd/hole pixel
+    // behavior is verified separately in test_software_renderer.cpp
+    // (SoftwareRenderer::fillPolygonGroup) and test_scene_renderer.cpp
+    // (end-to-end through SceneRenderer).
+    Shape shape;
+    FillStyle fill;
+    fill.type = FillStyleType::kSolid;
+    fill.solidColor = RgbaColor{0, 200, 0, 255};  // green
+    shape.fillStyles.push_back(fill);
+
+    // Outer boundary: a 200x200 square, MoveTo'd, fillStyle1 = 1.
+    ShapeRecord outerMoveTo;
+    outerMoveTo.type = ShapeRecordType::kStyleChange;
+    outerMoveTo.styleChange = std::make_shared<ShapeStyleChange>();
+    outerMoveTo.styleChange->hasMoveTo = true;
+    outerMoveTo.styleChange->moveToXTwips = 0;
+    outerMoveTo.styleChange->moveToYTwips = 0;
+    outerMoveTo.styleChange->fillStyle1 = 1;
+    shape.records.push_back(outerMoveTo);
+
+    auto addEdge = [&](int32_t dx, int32_t dy) {
+        ShapeRecord edge;
+        edge.type = ShapeRecordType::kStraightEdge;
+        edge.edge.straightEdge.deltaXTwips = dx;
+        edge.edge.straightEdge.deltaYTwips = dy;
+        shape.records.push_back(edge);
+    };
+    addEdge(200, 0);
+    addEdge(0, 200);
+    addEdge(-200, 0);
+    addEdge(0, -200);  // back to (0, 0), closing the outer square explicitly
+
+    // Inner "hole" contour: a disjoint 60x60 square in the middle
+    // (50,50)-(110,110), a fresh MoveTo, SAME fillStyle1 = 1 as the outer
+    // boundary — this is exactly what makes it a hole/counter case rather
+    // than an unrelated separate region.
+    ShapeRecord innerMoveTo;
+    innerMoveTo.type = ShapeRecordType::kStyleChange;
+    innerMoveTo.styleChange = std::make_shared<ShapeStyleChange>();
+    innerMoveTo.styleChange->hasMoveTo = true;
+    innerMoveTo.styleChange->moveToXTwips = 50;
+    innerMoveTo.styleChange->moveToYTwips = 50;
+    innerMoveTo.styleChange->fillStyle1 = 1;
+    shape.records.push_back(innerMoveTo);
+    addEdge(60, 0);
+    addEdge(0, 60);
+    addEdge(-60, 0);
+    addEdge(0, -60);
+
+    auto tess = tessellateShape(shape);
+
+    // Two genuinely separate, fully-preserved contours — NOT welded into
+    // one polygon (that was the earlier, rejected whole-shape-chaining
+    // design's failure mode) and NOT dropped.
+    CHECK_EQ(tess.polygons.size(), static_cast<size_t>(2));
+    // Same resolved FillStyle -> same fillGroupId, so the renderer knows to
+    // combine-fill them via IRenderer::fillPolygonGroup() instead of
+    // painting each as an independently solid polygon.
+    CHECK_EQ(tess.polygons[0].fillGroupId, tess.polygons[1].fillGroupId);
+    CHECK(tess.polygons[0].fillGroupId >= 0);
 }
 
 TEST_CASE(TessellateShape_RadialGradientFill_StaysFlatByEvidenceDrivenScope) {

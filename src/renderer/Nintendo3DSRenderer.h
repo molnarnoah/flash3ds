@@ -82,6 +82,15 @@ public:
     void strokePolyline(const std::vector<PointTwips>& devicePoints, swf::RgbaColor color,
                          int widthPixels) override;
 
+    // Hole/counter rendering (2026-08-31) — forward to the wrapped
+    // SoftwareRenderer, same composition pattern and rasterMs_ timing
+    // accumulation as fillPolygon()/fillPolygonGradient()/strokePolyline()
+    // above.
+    void fillPolygonGroup(const std::vector<std::vector<PointTwips>>& contours,
+                           swf::RgbaColor color) override;
+    void fillPolygonGradientGroup(const std::vector<std::vector<PointTwips>>& contours,
+                                   const DeviceGradientFill& fill) override;
+
     int width() const { return software_.width(); }
     int height() const { return software_.height(); }
 
